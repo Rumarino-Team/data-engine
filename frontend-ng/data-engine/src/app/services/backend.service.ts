@@ -45,8 +45,12 @@ export class BackendService {
 
 	constructor(private http: HttpClient) { }
 
+	private normalizePath(path: string): string {
+		return path.trim().replace(/^['\"]|['\"]$/g, '');
+	}
+
 	initVideoState(dir: string): Observable<any> {
-		return this.http.post(`${this.apiUrl}/video/init_state`, { video_frames_dir: dir });
+		return this.http.post(`${this.apiUrl}/video/init_state`, { video_frames_dir: this.normalizePath(dir) });
 	}
 
 	resetVideoState(): Observable<any> {

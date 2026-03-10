@@ -2,6 +2,7 @@ import numpy as np
 import cv2
 from pathlib import Path
 import shutil
+import hashlib
 
 
 def show_mask(image, mask, random_color=False, borders=True):
@@ -157,3 +158,60 @@ def save_video_masks(video_dir, video_segments):
         saved_paths[frame_idx].append(str(output_path))
     
     return saved_paths
+
+
+def extract_video_to_frames(video_path: Path, output_root: Path, image_extensions: set[str] | None = None) -> Path:
+    """
+    Extract a video into a cached frame directory.
+
+    Parameters:
+    - video_path: path to the source video file
+    - output_root: root directory where extracted frame folders are stored
+    - image_extensions: frame extensions considered valid for cache checks
+
+    Returns: Path to directory containing extracted frame images
+    """
+    valid_image_extensions = image_extensions or {".jpg", ".jpeg", ".png", ".bmp"}
+
+    file_stats = video_path.stat()
+    cache_key = hashlib.sha1(
+        f"{video_path.resolve()}:{file_stats.st_size}:{file_stats.st_mtime_ns}".encode("utf-8")
+    ).hexdigest()[:12]
+
+    output_dir = output_root / f"{video_path.stem}_{cache_key}"
+    output_root.mkdir(parents=True, exist_ok=True)
+
+    if output_dir.exists():
+        cached_frames = [
+            frame_path
+            for frame_path in output_dir.iterdir()
+            if frame_path.is_file() and frame_path.suffix.lower() in valid_image_extensions
+        ]
+        if cached_frames:
+            return output_dir
+        shutil.rmtree(output_dir, ignore_errors=True)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        raise ValueError(f"Unable to open video file: {video_path}")
+
+    frame_idx = 0
+    try:
+        while True:
+            success, frame = capture.read()
+            if not success:
+                break
+            output_path = output_dir / f"{frame_idx:05d}.jpg"
+            if not cv2.imwrite(str(output_path), frame):
+                raise RuntimeError(f"Failed to write extracted frame: {output_path}")
+            frame_idx += 1
+    finally:
+        capture.release()
+
+    if frame_idx == 0:
+        shutil.rmtree(output_dir, ignore_errors=True)
+        raise ValueError(f"No frames could be extracted from video: {video_path}")
+
+    return output_dir

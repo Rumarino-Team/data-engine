@@ -1,4 +1,4 @@
-import { Component, ElementRef, ViewChild, signal, effect, computed } from '@angular/core';
+import { Component, ElementRef, ViewChild, signal, effect } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { firstValueFrom } from 'rxjs';
@@ -55,18 +55,25 @@ export class VideoMaskerComponent {
 	}
 
 	async initVideo() {
-		if (!this.videoDir()) return;
+		const enteredPath = this.videoDir().trim().replace(/^['\"]|['\"]$/g, '');
+		if (!enteredPath) {
+			alert('Please enter a valid video frames directory path.');
+			return;
+		}
+
+		this.videoDir.set(enteredPath);
 		this.isLoading.set(true);
 		try {
-			const res = await firstValueFrom(this.backend.initVideoState(this.videoDir()));
+			const res = await firstValueFrom(this.backend.initVideoState(enteredPath));
 			this.numFrames.set(res.num_frames);
 			this.isInitialized.set(true);
 			this.currentFrameIdx.set(0);
 			this.objects.set([{ id: 1, name: 'Object 1', color: this.getRandomColor() }]);
 			this.selectedObjectId.set(1);
-		} catch (err) {
+		} catch (err: any) {
 			console.error(err);
-			alert('Failed to initialize video');
+			const errorMessage = err?.error?.detail || err?.error?.error || 'Failed to initialize video';
+			alert(errorMessage);
 		} finally {
 			this.isLoading.set(false);
 		}

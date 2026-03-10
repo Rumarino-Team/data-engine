@@ -1,5 +1,5 @@
 from typing import Optional
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import numpy as np
@@ -31,6 +31,48 @@ video_dir: Optional[str] = None
 video_frame_files: list[str] = []
 tracking_video: Optional[np.ndarray] = None
 tracking_video_path: Optional[str] = None
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
+GENERATED_FRAMES_ROOT = PROJECT_ROOT / ".data_engine_frames"
+
+
+def _normalize_input_path(path_value: str) -> str:
+    return path_value.strip().strip('"').strip("'")
+
+
+def _resolve_input_path(path_value: str, expect_dir: Optional[bool] = None) -> Path:
+    normalized = _normalize_input_path(path_value)
+    if not normalized:
+        raise HTTPException(status_code=400, detail="Path cannot be empty.")
+
+    expanded = Path(os.path.expandvars(os.path.expanduser(normalized)))
+
+    if expanded.is_absolute():
+        candidate_paths = [expanded.resolve()]
+    else:
+        cwd_candidate = (Path.cwd() / expanded).resolve()
+        project_candidate = (PROJECT_ROOT / expanded).resolve()
+        candidate_paths = [cwd_candidate]
+        if project_candidate != cwd_candidate:
+            candidate_paths.append(project_candidate)
+
+    resolved_path = next((path for path in candidate_paths if path.exists()), candidate_paths[0])
+
+    if not resolved_path.exists():
+        tried_paths = ", ".join(str(path) for path in candidate_paths)
+        raise HTTPException(
+            status_code=404,
+            detail=f"Path not found: '{normalized}'. Tried: {tried_paths}"
+        )
+
+    if expect_dir is True and not resolved_path.is_dir():
+        raise HTTPException(status_code=400, detail=f"Expected a directory path, got file: {resolved_path}")
+
+    if expect_dir is False and not resolved_path.is_file():
+        raise HTTPException(status_code=400, detail=f"Expected a file path, got directory: {resolved_path}")
+
+    return resolved_path
 
 
 class VideoInitStateRequest(BaseModel):
@@ -108,19 +150,59 @@ async def init_video_state(request: VideoInitStateRequest):
     if video_masker is None:
         video_masker = svm.SAM2VideoMasker()
     
-    video_dir = request.video_frames_dir
+    resolved_input_path = _resolve_input_path(request.video_frames_dir)
+
+    source_video_path = None
+    if resolved_input_path.is_file():
+        suffix = resolved_input_path.suffix.lower()
+        if suffix in VIDEO_EXTENSIONS:
+            try:
+                resolved_video_dir = extract_video_to_frames(
+                    resolved_input_path,
+                    output_root=GENERATED_FRAMES_ROOT,
+                    image_extensions=IMAGE_EXTENSIONS,
+                )
+            except ValueError as error:
+                raise HTTPException(status_code=400, detail=str(error)) from error
+            except Exception as error:
+                raise HTTPException(status_code=500, detail=str(error)) from error
+            source_video_path = str(resolved_input_path)
+        else:
+            if suffix in IMAGE_EXTENSIONS:
+                detail = (
+                    f"Expected a frames directory or video file, got a single image file: {resolved_input_path}. "
+                    "Provide a directory containing image frames."
+                )
+            else:
+                detail = (
+                    f"Unsupported input file type: {resolved_input_path.suffix or '<none>'}. "
+                    "Provide a directory of image frames or a video file (.mp4, .mov, .avi, .mkv, .webm, .m4v)."
+                )
+            raise HTTPException(status_code=400, detail=detail)
+    else:
+        resolved_video_dir = resolved_input_path
+
+    video_dir = str(resolved_video_dir)
     video_masker.init_state(video_dir)
     
     # Scan for image files
-    valid_extensions = {".jpg", ".jpeg", ".png", ".bmp"}
     video_frame_files = sorted([
-        f for f in os.listdir(video_dir)
-        if os.path.splitext(f)[1].lower() in valid_extensions
+        frame_path.name
+        for frame_path in resolved_video_dir.iterdir()
+        if frame_path.is_file() and frame_path.suffix.lower() in IMAGE_EXTENSIONS
     ])
+
+    if not video_frame_files:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No image frames found in directory: {resolved_video_dir}"
+        )
     
     return {
         "message": "Video state initialized successfully",
-        "num_frames": len(video_frame_files)
+        "num_frames": len(video_frame_files),
+        "resolved_video_frames_dir": video_dir,
+        "source_video_path": source_video_path
     }
 
 @app.post("/video/reset_state")
@@ -232,15 +314,17 @@ async def load_tracking_video(request: TrackingLoadVideoRequest):
     if tracker is None:
         tracker = cot.CoTracker()
     
-    tracking_video_path = request.video_path
+    resolved_video_path = _resolve_input_path(request.video_path, expect_dir=False)
+    tracking_video_path = str(resolved_video_path)
     
     # Load video using mediapy
-    tracking_video = mediapy.read_video(request.video_path)
+    tracking_video = mediapy.read_video(tracking_video_path)
     
     return {
         "message": "Video loaded successfully",
         "shape": tracking_video.shape,
-        "num_frames": tracking_video.shape[0]
+        "num_frames": tracking_video.shape[0],
+        "resolved_video_path": tracking_video_path
     }
 
 
@@ -360,5 +444,7 @@ async def get_video_frame(frame_idx: int):
     if frame_idx < 0 or frame_idx >= len(video_frame_files):
         return {"error": "Frame index out of bounds"}
         
-    file_path = os.path.join(video_dir, video_frame_files[frame_idx])
-    return FileResponse(file_path)
+    file_path = Path(video_dir) / video_frame_files[frame_idx]
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"Frame file not found: {file_path}")
+    return FileResponse(str(file_path))

@@ -1,8 +1,8 @@
 <div class="video-masker-container">
 	<div class="top-bar">
-		<input type="text" [(ngModel)]="videoDir" placeholder="Enter video frames directory path"
+		<input type="text" [ngModel]="videoDir()" (ngModelChange)="videoDir.set($event)" placeholder="Enter video frames directory or video file path (.mp4, .mov, .avi)"
 			[disabled]="isInitialized()">
-		<button (click)="initVideo()" [disabled]="isInitialized() || isLoading()">Load Video</button>
+		<button (click)="initVideo()" [disabled]="isInitialized() || isLoading() || !videoDir().trim()">Load Video</button>
 	</div>
 
 	<div class="main-area">
