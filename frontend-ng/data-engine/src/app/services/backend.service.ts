@@ -41,12 +41,55 @@ export interface VideoPropagateResponse {
 	providedIn: 'root'
 })
 export class BackendService {
-	private apiUrl = 'http://localhost:8000';
+	private readonly apiUrl = this.resolveApiUrl();
 
 	constructor(private http: HttpClient) { }
 
+	private resolveApiUrl(): string {
+		const globalConfig = (globalThis as { __DATA_ENGINE_API_URL__?: string }).__DATA_ENGINE_API_URL__;
+		const localStorageConfig = typeof localStorage !== 'undefined'
+			? localStorage.getItem('dataEngineApiUrl')
+			: null;
+
+		const browserHost = typeof window !== 'undefined' && window.location.hostname
+			? window.location.hostname
+			: '127.0.0.1';
+		const fallback = `http://${browserHost}:8000`;
+		return (globalConfig || localStorageConfig || fallback).replace(/\/+$/, '');
+	}
+
+	private safeDecodeURIComponent(value: string): string {
+		try {
+			return decodeURIComponent(value);
+		} catch {
+			return value;
+		}
+	}
+
 	private normalizePath(path: string): string {
-		return path.trim().replace(/^['\"]|['\"]$/g, '');
+		let normalized = path.trim().replace(/^['\"]|['\"]$/g, '');
+		if (!normalized) {
+			return normalized;
+		}
+
+		if (normalized.startsWith('file://')) {
+			try {
+				const parsed = new URL(normalized);
+				normalized = parsed.pathname || '';
+				if (parsed.host && parsed.host !== 'localhost') {
+					normalized = `//${parsed.host}${normalized}`;
+				}
+				if (/^\/[A-Za-z]:\//.test(normalized)) {
+					normalized = normalized.slice(1);
+				}
+			} catch {
+				// keep the original input if URL parsing fails
+			}
+		}
+
+		normalized = this.safeDecodeURIComponent(normalized);
+		normalized = normalized.replace(/\\ /g, ' ');
+		return normalized;
 	}
 
 	initVideoState(dir: string): Observable<any> {

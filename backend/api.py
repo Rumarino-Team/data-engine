@@ -11,6 +11,7 @@ from datetime import datetime
 import mediapy
 from fastapi.responses import FileResponse
 import os
+from urllib.parse import unquote, urlparse
 
 app = FastAPI()
 
@@ -38,7 +39,23 @@ GENERATED_FRAMES_ROOT = PROJECT_ROOT / "backend/.data_engine_frames"
 
 
 def _normalize_input_path(path_value: str) -> str:
-    return path_value.strip().strip('"').strip("'")
+    normalized = str(path_value).strip().strip('"').strip("'")
+    if not normalized:
+        return normalized
+
+    if normalized.startswith("file://"):
+        parsed = urlparse(normalized)
+        if parsed.scheme == "file":
+            normalized = parsed.path or ""
+            if parsed.netloc and parsed.netloc != "localhost":
+                normalized = f"//{parsed.netloc}{normalized}"
+
+            if os.name == "nt" and normalized.startswith("/") and len(normalized) > 2 and normalized[2] == ":":
+                normalized = normalized[1:]
+
+    normalized = unquote(normalized)
+    normalized = normalized.replace("\\ ", " ")
+    return normalized
 
 
 def _resolve_input_path(path_value: str, expect_dir: Optional[bool] = None) -> Path:
