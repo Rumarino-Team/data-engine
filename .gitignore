@@ -5,3 +5,4 @@ bedroom/
 build/
 apple_*
 *.log
+/backend/.data_engine_frames/*

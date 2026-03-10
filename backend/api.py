@@ -34,7 +34,7 @@ tracking_video_path: Optional[str] = None
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
-GENERATED_FRAMES_ROOT = PROJECT_ROOT / ".data_engine_frames"
+GENERATED_FRAMES_ROOT = PROJECT_ROOT / "backend/.data_engine_frames"
 
 
 def _normalize_input_path(path_value: str) -> str:
