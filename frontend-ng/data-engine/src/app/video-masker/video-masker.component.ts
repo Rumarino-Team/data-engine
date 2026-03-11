@@ -43,6 +43,7 @@ export class VideoMaskerComponent {
 
 	// frameIdx -> objId -> points
 	points = signal<Map<number, Map<number, Point[]>>>(new Map());
+	useSavedMaskFrames = signal<boolean>(false);
 
 	isLoading = signal<boolean>(false);
 
@@ -68,6 +69,7 @@ export class VideoMaskerComponent {
 			this.numFrames.set(res.num_frames);
 			this.isInitialized.set(true);
 			this.currentFrameIdx.set(0);
+			this.useSavedMaskFrames.set(false);
 			this.objects.set([{ id: 1, name: 'Object 1', color: this.getRandomColor() }]);
 			this.selectedObjectId.set(1);
 		} catch (err: any) {
@@ -84,12 +86,24 @@ export class VideoMaskerComponent {
 		if (!ctx) return;
 
 		const img = new Image();
-		img.src = this.backend.getVideoFrameUrl(frameIdx);
+		const frameUrl = this.backend.getVideoFrameUrl(frameIdx);
+		const maskFrameUrl = this.backend.getVideoMaskFrameUrl(frameIdx);
+		let triedFallbackToRawFrame = false;
+
+		img.onerror = () => {
+			if (this.useSavedMaskFrames() && !triedFallbackToRawFrame) {
+				triedFallbackToRawFrame = true;
+				img.src = frameUrl;
+			}
+		};
+
 		img.onload = () => {
 			this.canvasRef.nativeElement.width = img.width;
 			this.canvasRef.nativeElement.height = img.height;
 			this.draw(img);
 		};
+
+		img.src = this.useSavedMaskFrames() ? maskFrameUrl : frameUrl;
 	}
 
 	draw(img: HTMLImageElement) {
@@ -282,12 +296,15 @@ export class VideoMaskerComponent {
 	async propagate() {
 		this.isLoading.set(true);
 		try {
-			const res = await firstValueFrom(this.backend.propagateInVideo({}));
+			const res = await firstValueFrom(this.backend.propagateInVideo({
+				include_masks_in_response: false
+			}));
 			if (res && res.video_segments) {
 				// Update all masks
 				const currentMasksMap = this.masks();
+				const entries = Object.entries(res.video_segments);
 
-				for (const [frameIdxStr, objMasks] of Object.entries(res.video_segments)) {
+				for (const [frameIdxStr, objMasks] of entries) {
 					const frameIdx = parseInt(frameIdxStr);
 					let frameMasksMap = currentMasksMap.get(frameIdx);
 					if (!frameMasksMap) {
@@ -300,7 +317,17 @@ export class VideoMaskerComponent {
 						frameMasksMap.set(objId, mask as boolean[][]);
 					}
 				}
-				this.masks.set(new Map(currentMasksMap));
+
+				const hasSavedMaskFrames = Object.keys(res.saved_mask_paths || {}).length > 0;
+				const useSavedFrames = hasSavedMaskFrames && entries.length === 0;
+				this.useSavedMaskFrames.set(useSavedFrames);
+
+				if (useSavedFrames) {
+					this.masks.set(new Map());
+				} else {
+					this.masks.set(new Map(currentMasksMap));
+				}
+
 				this.loadFrame(this.currentFrameIdx()); // Redraw current frame
 			}
 		} catch (err) {
@@ -314,6 +341,7 @@ export class VideoMaskerComponent {
 	clearMasks() {
 		// This should probably call reset_state on backend
 		this.backend.resetVideoState().subscribe(() => {
+			this.useSavedMaskFrames.set(false);
 			this.masks.set(new Map());
 			this.points.set(new Map());
 			this.loadFrame(this.currentFrameIdx());

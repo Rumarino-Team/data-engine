@@ -3,6 +3,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import numpy as np
+import gc
+import logging
 import co_tracker as cot
 import sam2_video_masker as svm
 from utils import *
@@ -11,6 +13,7 @@ from datetime import datetime
 import mediapy
 from fastapi.responses import FileResponse
 import os
+import torch
 from urllib.parse import unquote, urlparse
 
 app = FastAPI()
@@ -36,6 +39,16 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
 GENERATED_FRAMES_ROOT = PROJECT_ROOT / "backend/.data_engine_frames"
+DEFAULT_MAX_MASK_FRAMES_IN_RESPONSE = int(os.getenv("VIDEO_PROPAGATE_MAX_MASK_FRAMES", "0"))
+DEFAULT_MAX_MASK_VALUES_IN_RESPONSE = int(os.getenv("VIDEO_PROPAGATE_MAX_MASK_VALUES", "0"))
+
+logger = logging.getLogger(__name__)
+
+
+def _cleanup_cuda_memory():
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 def _normalize_input_path(path_value: str) -> str:
@@ -92,8 +105,49 @@ def _resolve_input_path(path_value: str, expect_dir: Optional[bool] = None) -> P
     return resolved_path
 
 
+def _serialize_video_segments_for_response(
+    video_segments: dict,
+    *,
+    max_frames: int,
+    max_mask_values: int,
+) -> tuple[dict, bool, int, int]:
+    """Serialize masks to JSON-safe payload with optional size limits."""
+    serialized: dict[int, dict[int, list]] = {}
+    total_mask_values = 0
+    returned_frames = 0
+
+    for frame_idx, obj_dict in sorted(video_segments.items(), key=lambda item: int(item[0])):
+        if max_frames >= 0 and returned_frames >= max_frames:
+            break
+
+        frame_masks: dict[int, np.ndarray] = {}
+        frame_mask_values = 0
+        for obj_id, mask in obj_dict.items():
+            mask_array = np.asarray(mask)
+            frame_mask_values += int(mask_array.size)
+            frame_masks[int(obj_id)] = mask_array
+
+        if max_mask_values >= 0 and (total_mask_values + frame_mask_values) > max_mask_values:
+            break
+
+        serialized[int(frame_idx)] = {
+            obj_id: mask_array.tolist()
+            for obj_id, mask_array in frame_masks.items()
+        }
+        total_mask_values += frame_mask_values
+        returned_frames += 1
+
+    truncated = returned_frames < len(video_segments)
+    return serialized, truncated, returned_frames, total_mask_values
+
+
 class VideoInitStateRequest(BaseModel):
     video_frames_dir: str
+    online_mode: bool = True
+    batch_size: Optional[int] = None
+    offload_video_to_cpu: Optional[bool] = None
+    offload_state_to_cpu: Optional[bool] = None
+    async_loading_frames: bool = False
 
 class VideoAddPointsOrBoxRequest(BaseModel):
     frame_idx: int
@@ -107,6 +161,11 @@ class VideoPropagateRequest(BaseModel):
     start_frame_idx: Optional[int] = None
     max_frame_num_to_track: Optional[int] = None
     reverse: bool = False
+    batch_size: Optional[int] = None
+    online_mode: Optional[bool] = None
+    include_masks_in_response: bool = False
+    max_frames_in_response: Optional[int] = None
+    max_mask_values_in_response: Optional[int] = None
 
 
 class VideoAddMaskRequest(BaseModel):
@@ -162,6 +221,7 @@ async def init_video_state(request: VideoInitStateRequest):
         tracker = None
         tracking_video = None
         tracking_video_path = None
+        _cleanup_cuda_memory()
     
     # Initialize video masker if not already created
     if video_masker is None:
@@ -200,7 +260,17 @@ async def init_video_state(request: VideoInitStateRequest):
         resolved_video_dir = resolved_input_path
 
     video_dir = str(resolved_video_dir)
-    video_masker.init_state(video_dir)
+    try:
+        video_masker.init_state(
+            video_dir,
+            online_mode=request.online_mode,
+            batch_size=request.batch_size,
+            offload_video_to_cpu=request.offload_video_to_cpu,
+            offload_state_to_cpu=request.offload_state_to_cpu,
+            async_loading_frames=request.async_loading_frames,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     
     # Scan for image files
     video_frame_files = sorted([
@@ -219,7 +289,11 @@ async def init_video_state(request: VideoInitStateRequest):
         "message": "Video state initialized successfully",
         "num_frames": len(video_frame_files),
         "resolved_video_frames_dir": video_dir,
-        "source_video_path": source_video_path
+        "source_video_path": source_video_path,
+        "online_mode": video_masker.online_mode,
+        "batch_size": video_masker.default_batch_size,
+        "offload_video_to_cpu": video_masker.offload_video_to_cpu,
+        "offload_state_to_cpu": video_masker.offload_state_to_cpu,
     }
 
 @app.post("/video/reset_state")
@@ -279,24 +353,65 @@ async def propagate_in_video(request: VideoPropagateRequest):
     if video_dir is None:
         return {"error": "Video directory not set. Call /video/init_state first."}
     
-    video_segments = video_masker.propagate_in_video(
-        start_frame_idx=request.start_frame_idx,
-        max_frame_num_to_track=request.max_frame_num_to_track,
-        reverse=request.reverse
-    )
+    try:
+        video_segments = video_masker.propagate_in_video(
+            start_frame_idx=request.start_frame_idx,
+            max_frame_num_to_track=request.max_frame_num_to_track,
+            reverse=request.reverse,
+            batch_size=request.batch_size,
+            online_mode=request.online_mode,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     
-    # Save masks for each frame
-    saved_mask_paths = save_video_masks(video_dir, video_segments)
-    
-    # Convert masks to lists for JSON serialization
-    video_segments_serializable = {}
-    for frame_idx, obj_dict in video_segments.items():
-        video_segments_serializable[frame_idx] = {
-            obj_id: mask.tolist() for obj_id, mask in obj_dict.items()
-        }
+    try:
+        saved_mask_paths = save_video_masks(video_dir, video_segments)
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Failed to save propagated masks: {error}") from error
+
+    saved_mask_paths_serializable = {
+        int(frame_idx): [str(path) for path in paths]
+        for frame_idx, paths in saved_mask_paths.items()
+    }
+
+    max_frames_in_response = request.max_frames_in_response
+    if max_frames_in_response is None:
+        max_frames_in_response = DEFAULT_MAX_MASK_FRAMES_IN_RESPONSE
+
+    max_mask_values_in_response = request.max_mask_values_in_response
+    if max_mask_values_in_response is None:
+        max_mask_values_in_response = DEFAULT_MAX_MASK_VALUES_IN_RESPONSE
+
+    video_segments_serializable: dict[int, dict[int, list]] = {}
+    video_segments_truncated = False
+    video_segments_returned_frames = 0
+    video_segments_returned_mask_values = 0
+
+    if request.include_masks_in_response:
+        try:
+            video_segments_serializable, video_segments_truncated, video_segments_returned_frames, video_segments_returned_mask_values = _serialize_video_segments_for_response(
+                video_segments,
+                max_frames=max_frames_in_response,
+                max_mask_values=max_mask_values_in_response,
+            )
+        except MemoryError:
+            logger.warning("Mask serialization skipped due to memory pressure.")
+            video_segments_serializable = {}
+            video_segments_truncated = len(video_segments) > 0
+        except Exception:
+            logger.exception("Mask serialization failed; returning saved mask paths only.")
+            video_segments_serializable = {}
+            video_segments_truncated = len(video_segments) > 0
+
     return {
         "video_segments": video_segments_serializable,
-        "saved_mask_paths": saved_mask_paths
+        "video_segments_total_frames": len(video_segments),
+        "video_segments_returned_frames": video_segments_returned_frames,
+        "video_segments_returned_mask_values": video_segments_returned_mask_values,
+        "video_segments_truncated": video_segments_truncated,
+        "saved_mask_paths": saved_mask_paths_serializable,
+        "online_mode": video_masker.online_mode if request.online_mode is None else bool(request.online_mode),
+        "batch_size": video_masker.default_batch_size if request.batch_size is None else int(request.batch_size),
     }
 
 @app.post("/video/clear_all_prompts_in_frame")
@@ -326,6 +441,7 @@ async def load_tracking_video(request: TrackingLoadVideoRequest):
         del video_masker
         video_masker = None
         video_dir = None
+        _cleanup_cuda_memory()
     
     # Initialize tracker if not already created
     if tracker is None:
@@ -357,12 +473,27 @@ async def track_grid(request: TrackingGridRequest):
         return {"error": "No video loaded. Call /tracking/load_video first."}
     
     # Run tracking
-    tracks, visibility = tracker.track(
-        tracking_video, 
-        queries=None, 
-        grid_size=request.grid_size,
-        add_support_grid=request.add_support_grid
-    )
+    try:
+        tracks, visibility = tracker.track(
+            tracking_video,
+            queries=None,
+            grid_size=request.grid_size,
+            add_support_grid=request.add_support_grid
+        )
+    except torch.OutOfMemoryError as error:
+        _cleanup_cuda_memory()
+        raise HTTPException(
+            status_code=507,
+            detail="CUDA out of memory during tracking. Try a smaller tracking workload and rerun.",
+        ) from error
+    except RuntimeError as error:
+        if "out of memory" in str(error).lower():
+            _cleanup_cuda_memory()
+            raise HTTPException(
+                status_code=507,
+                detail="CUDA out of memory during tracking. Try a smaller tracking workload and rerun.",
+            ) from error
+        raise
     
     # Save visualization
     painted_video = cot.paint_point_track(tracking_video, tracks, visibility)
@@ -383,6 +514,8 @@ async def track_grid(request: TrackingGridRequest):
         pass
     
     mediapy.write_video(str(output_path), painted_video, fps=fps)
+
+    _cleanup_cuda_memory()
     
     return {
         "message": "Grid tracking completed",
@@ -409,11 +542,26 @@ async def track_points(request: TrackingPointsRequest):
     queries = np.array(request.queries)
     
     # Run tracking
-    tracks, visibility = tracker.track(
-        tracking_video,
-        queries=queries,
-        add_support_grid=request.add_support_grid
-    )
+    try:
+        tracks, visibility = tracker.track(
+            tracking_video,
+            queries=queries,
+            add_support_grid=request.add_support_grid
+        )
+    except torch.OutOfMemoryError as error:
+        _cleanup_cuda_memory()
+        raise HTTPException(
+            status_code=507,
+            detail="CUDA out of memory during tracking. Try a smaller tracking workload and rerun.",
+        ) from error
+    except RuntimeError as error:
+        if "out of memory" in str(error).lower():
+            _cleanup_cuda_memory()
+            raise HTTPException(
+                status_code=507,
+                detail="CUDA out of memory during tracking. Try a smaller tracking workload and rerun.",
+            ) from error
+        raise
     
     # Save visualization
     painted_video = cot.paint_point_track(tracking_video, tracks, visibility)
@@ -434,6 +582,8 @@ async def track_points(request: TrackingPointsRequest):
         pass
     
     mediapy.write_video(str(output_path), painted_video, fps=fps)
+
+    _cleanup_cuda_memory()
     
     return {
         "message": "Point tracking completed",
@@ -464,4 +614,19 @@ async def get_video_frame(frame_idx: int):
     file_path = Path(video_dir) / video_frame_files[frame_idx]
     if not file_path.exists():
         raise HTTPException(status_code=404, detail=f"Frame file not found: {file_path}")
+    return FileResponse(str(file_path))
+
+
+@app.get("/video/mask_frame/{frame_idx}")
+async def get_video_mask_frame(frame_idx: int):
+    global video_dir
+    if video_dir is None:
+        return {"error": "Video not initialized"}
+
+    if frame_idx < 0:
+        return {"error": "Frame index out of bounds"}
+
+    file_path = Path(video_dir) / "masks" / f"frame_{frame_idx:05d}_masks.png"
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"Mask frame not found: {file_path}")
     return FileResponse(str(file_path))

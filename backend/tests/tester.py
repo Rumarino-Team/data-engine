@@ -1,6 +1,8 @@
 import base64
 import os
+import signal
 import subprocess
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -11,24 +13,59 @@ import requests
 import numpy as np
 
 # Configuration
-BASE_URL = "http://127.0.0.1:8000"
+BASE_URL = os.getenv("DATA_ENGINE_BASE_URL", "http://127.0.0.1:8000")
 BEDROOM_ZIP_URL = "https://dl.fbaipublicfiles.com/segment_anything_2/assets/bedroom.zip"
-BEDROOM_DIR = "bedroom"
-VIDEO_DIR = "bedroom"  # Will use bedroom frames for video tests
-TRACKING_VIDEO_PATH = "../../apple.mp4"
-API_FILE = "../api.py"
+SCRIPT_DIR = Path(__file__).resolve().parent
+BACKEND_DIR = SCRIPT_DIR.parent
+PROJECT_ROOT = BACKEND_DIR.parent
+
+BEDROOM_DIR = Path(
+    os.path.expandvars(
+        os.path.expanduser(
+            os.getenv("DATA_ENGINE_BEDROOM_DIR", str(PROJECT_ROOT / "bedroom"))
+        )
+    )
+)
+VIDEO_DIR = BEDROOM_DIR  # Will use bedroom frames for video tests
+TRACKING_VIDEO_PATH = Path(
+    os.path.expandvars(
+        os.path.expanduser(
+            os.getenv("DATA_ENGINE_TRACKING_VIDEO", str(PROJECT_ROOT / "apple.mp4"))
+        )
+    )
+)
+API_FILE = Path(
+    os.path.expandvars(
+        os.path.expanduser(
+            os.getenv("DATA_ENGINE_API_FILE", str(BACKEND_DIR / "api.py"))
+        )
+    )
+)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+ONLINE_MODE = _env_bool("DATA_ENGINE_ONLINE_MODE", True)
+ONLINE_BATCH_SIZE = int(os.getenv("DATA_ENGINE_BATCH_SIZE", "32"))
+OFFLOAD_VIDEO_TO_CPU = _env_bool("DATA_ENGINE_OFFLOAD_VIDEO_TO_CPU", True)
+OFFLOAD_STATE_TO_CPU = _env_bool("DATA_ENGINE_OFFLOAD_STATE_TO_CPU", False)
 
 
 def download_and_extract_bedroom():
     """Downloads and extracts the bedroom video frames if not already present."""
-    if os.path.exists(BEDROOM_DIR) and os.path.isdir(BEDROOM_DIR):
+    if BEDROOM_DIR.exists() and BEDROOM_DIR.is_dir():
         # Check if directory has files
-        if os.listdir(BEDROOM_DIR):
+        if any(BEDROOM_DIR.iterdir()):
             print(f"Bedroom directory already exists with files. Skipping download.")
             return True
     
     print(f"Downloading bedroom.zip from {BEDROOM_ZIP_URL}...")
-    zip_path = "bedroom.zip"
+    zip_path = PROJECT_ROOT / "bedroom.zip"
     
     try:
         # Download the file with progress indication
@@ -38,7 +75,7 @@ def download_and_extract_bedroom():
         total_size = int(response.headers.get('content-length', 0))
         downloaded_size = 0
         
-        with open(zip_path, 'wb') as f:
+        with zip_path.open('wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
                 if chunk:
                     f.write(chunk)
@@ -52,12 +89,12 @@ def download_and_extract_bedroom():
         # Extract the zip file
         print(f"Extracting {zip_path}...")
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall('.')
+            zip_ref.extractall(PROJECT_ROOT)
         
         print(f"Extraction complete!")
         
         # Clean up the zip file
-        os.remove(zip_path)
+        zip_path.unlink(missing_ok=True)
         print(f"Cleaned up {zip_path}")
         
         return True
@@ -65,8 +102,7 @@ def download_and_extract_bedroom():
     except Exception as e:
         print(f"\nError downloading or extracting bedroom.zip: {e}")
         # Clean up partial downloads
-        if os.path.exists(zip_path):
-            os.remove(zip_path)
+        zip_path.unlink(missing_ok=True)
         return False
 
 
@@ -88,7 +124,13 @@ def wait_for_server(url, timeout=30):
 def init_video_state(video_dir):
     """Calls the /video/init_state endpoint."""
     url = f"{BASE_URL}/video/init_state"
-    payload = {"video_frames_dir": video_dir}
+    payload = {
+        "video_frames_dir": str(video_dir),
+        "online_mode": ONLINE_MODE,
+        "batch_size": ONLINE_BATCH_SIZE,
+        "offload_video_to_cpu": OFFLOAD_VIDEO_TO_CPU,
+        "offload_state_to_cpu": OFFLOAD_STATE_TO_CPU,
+    }
     response = requests.post(url, json=payload)
     if response.status_code == 200:
         print(f"Video state initialized successfully for '{video_dir}'.")
@@ -138,20 +180,73 @@ def propagate_in_video(start_frame_idx=None, max_frame_num_to_track=None, revers
     payload = {
         "start_frame_idx": start_frame_idx,
         "max_frame_num_to_track": max_frame_num_to_track,
-        "reverse": reverse
+        "reverse": reverse,
+        "online_mode": ONLINE_MODE,
+        "batch_size": ONLINE_BATCH_SIZE,
+        "include_masks_in_response": False,
     }
     response = requests.post(url, json=payload)
     if response.status_code == 200:
         response_data = response.json()
-        num_frames = len(response_data.get("video_segments", {}))
+        online_mode = response_data.get("online_mode")
+        batch_size = response_data.get("batch_size")
+        if online_mode is not None:
+            print(f"Online batching: {'enabled' if online_mode else 'disabled'} (batch_size={batch_size})")
+        num_frames = response_data.get("video_segments_total_frames", len(response_data.get("video_segments", {})))
         saved_paths = response_data.get("saved_mask_paths", {})
         print(f"Propagation successful! Processed {num_frames} frames.")
+        returned_frames = response_data.get("video_segments_returned_frames", len(response_data.get("video_segments", {})))
+        if returned_frames:
+            print(f"Returned {returned_frames} frame masks in API response.")
         print(f"Saved masks for {len(saved_paths)} frames.")
         for frame_idx, paths in saved_paths.items():
             print(f"  Frame {frame_idx}: {paths}")
     else:
         print(f"Failed to propagate. Status: {response.status_code}, Response: {response.text}")
     return response.status_code == 200, response.json() if response.status_code == 200 else None
+
+
+def stop_server_process(server_process):
+    """Stops FastAPI server process and its child processes reliably."""
+    if server_process is None:
+        return
+
+    if server_process.poll() is not None:
+        print("Server already stopped.")
+        return
+
+    try:
+        if os.name != "nt":
+            os.killpg(server_process.pid, signal.SIGTERM)
+        else:
+            server_process.terminate()
+    except ProcessLookupError:
+        print("Server process not found during shutdown.")
+        return
+
+    try:
+        server_process.wait(timeout=10)
+        print("Server shut down successfully.")
+        return
+    except subprocess.TimeoutExpired:
+        print("Server did not terminate in time, forcing kill.")
+    except KeyboardInterrupt:
+        print("Interrupted during shutdown, forcing kill.")
+
+    try:
+        if os.name != "nt":
+            os.killpg(server_process.pid, signal.SIGKILL)
+        else:
+            server_process.kill()
+    except ProcessLookupError:
+        pass
+
+    try:
+        server_process.wait(timeout=5)
+    except Exception:
+        pass
+
+    print("Server killed.")
 
 
 def run_video_tests():
@@ -161,7 +256,7 @@ def run_video_tests():
     print("=" * 60)
     
     # Check if video directory exists
-    if not os.path.exists(VIDEO_DIR):
+    if not VIDEO_DIR.exists():
         print(f"\nVideo directory '{VIDEO_DIR}' not found. Skipping video tests.")
         return
     
@@ -229,7 +324,7 @@ def run_video_tests():
 def load_tracking_video(video_path):
     """Calls the /tracking/load_video endpoint."""
     url = f"{BASE_URL}/tracking/load_video"
-    response = requests.post(url, json={"video_path": video_path})
+    response = requests.post(url, json={"video_path": str(video_path)})
     if response.status_code == 200:
         response_data = response.json()
         print(f"Video loaded successfully: {video_path}")
@@ -285,7 +380,7 @@ def run_tracking_tests():
     print("=" * 60)
     
     # Check if tracking video exists
-    if not os.path.exists(TRACKING_VIDEO_PATH):
+    if not TRACKING_VIDEO_PATH.exists():
         print(f"\nTracking video '{TRACKING_VIDEO_PATH}' not found. Skipping tracking tests.")
         return
     
@@ -354,9 +449,17 @@ if __name__ == "__main__":
     if not download_and_extract_bedroom():
         print("Failed to download bedroom data. Exiting.")
         exit(1)
+
+    if not API_FILE.exists():
+        print(f"API file not found: {API_FILE}")
+        exit(1)
     
     # Start the FastAPI server as a background process
-    server_process = subprocess.Popen(["fastapi", "dev", API_FILE])
+    server_process = subprocess.Popen(
+        [sys.executable, "-m", "fastapi", "dev", str(API_FILE)],
+        cwd=str(BACKEND_DIR),
+        start_new_session=(os.name != "nt"),
+    )
     print(f"\nStarting FastAPI server with PID: {server_process.pid}...")
 
     try:
@@ -378,12 +481,4 @@ if __name__ == "__main__":
     finally:
         # Stop the server
         print("\nShutting down the server...")
-        server_process.terminate()
-        try:
-            # Wait for the process to terminate
-            server_process.wait(timeout=10)
-            print("Server shut down successfully.")
-        except subprocess.TimeoutExpired:
-            print("Server did not terminate in time, killing it.")
-            server_process.kill()
-            print("Server killed.")
+        stop_server_process(server_process)

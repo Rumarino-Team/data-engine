@@ -4,6 +4,11 @@ import { Observable } from 'rxjs';
 
 export interface VideoInitStateRequest {
 	video_frames_dir: string;
+	online_mode?: boolean;
+	batch_size?: number;
+	offload_video_to_cpu?: boolean;
+	offload_state_to_cpu?: boolean;
+	async_loading_frames?: boolean;
 }
 
 export interface VideoAddPointsOrBoxRequest {
@@ -19,6 +24,11 @@ export interface VideoPropagateRequest {
 	start_frame_idx?: number;
 	max_frame_num_to_track?: number;
 	reverse?: boolean;
+	batch_size?: number;
+	online_mode?: boolean;
+	include_masks_in_response?: boolean;
+	max_frames_in_response?: number;
+	max_mask_values_in_response?: number;
 }
 
 export interface VideoAddMaskRequest {
@@ -34,7 +44,11 @@ export interface VideoAddPointsResponse {
 
 export interface VideoPropagateResponse {
 	video_segments: { [frame_idx: string]: { [obj_id: string]: boolean[][] } };
-	saved_mask_paths: { [frame_idx: string]: { [obj_id: string]: string } };
+	saved_mask_paths: { [frame_idx: string]: string[] };
+	video_segments_total_frames?: number;
+	video_segments_returned_frames?: number;
+	video_segments_returned_mask_values?: number;
+	video_segments_truncated?: boolean;
 }
 
 @Injectable({
@@ -92,8 +106,15 @@ export class BackendService {
 		return normalized;
 	}
 
-	initVideoState(dir: string): Observable<any> {
-		return this.http.post(`${this.apiUrl}/video/init_state`, { video_frames_dir: this.normalizePath(dir) });
+	initVideoState(
+		dir: string,
+		options?: Omit<VideoInitStateRequest, 'video_frames_dir'>
+	): Observable<any> {
+		const payload: VideoInitStateRequest = {
+			video_frames_dir: this.normalizePath(dir),
+			...options
+		};
+		return this.http.post(`${this.apiUrl}/video/init_state`, payload);
 	}
 
 	resetVideoState(): Observable<any> {
@@ -126,5 +147,9 @@ export class BackendService {
 
 	getVideoFrameUrl(frameIdx: number): string {
 		return `${this.apiUrl}/video/frame/${frameIdx}`;
+	}
+
+	getVideoMaskFrameUrl(frameIdx: number): string {
+		return `${this.apiUrl}/video/mask_frame/${frameIdx}`;
 	}
 }
