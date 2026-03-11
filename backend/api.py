@@ -105,6 +105,98 @@ def _resolve_input_path(path_value: str, expect_dir: Optional[bool] = None) -> P
     return resolved_path
 
 
+def _prepare_video_masker_for_video_init():
+    global video_masker, tracker, tracking_video, tracking_video_path, video_dir
+
+    if tracker is not None:
+        del tracker
+        tracker = None
+        tracking_video = None
+        tracking_video_path = None
+        _cleanup_cuda_memory()
+
+    if video_masker is None:
+        video_masker = svm.SAM2VideoMasker()
+
+
+def _initialize_video_state_from_resolved_input(
+    resolved_input_path: Path,
+    *,
+    online_mode: bool,
+    batch_size: Optional[int],
+    offload_video_to_cpu: Optional[bool],
+    offload_state_to_cpu: Optional[bool],
+    async_loading_frames: bool,
+):
+    global video_masker, video_dir, video_frame_files
+
+    source_video_path = None
+    if resolved_input_path.is_file():
+        suffix = resolved_input_path.suffix.lower()
+        if suffix in VIDEO_EXTENSIONS:
+            try:
+                resolved_video_dir = extract_video_to_frames(
+                    resolved_input_path,
+                    output_root=GENERATED_FRAMES_ROOT,
+                    image_extensions=IMAGE_EXTENSIONS,
+                )
+            except ValueError as error:
+                raise HTTPException(status_code=400, detail=str(error)) from error
+            except Exception as error:
+                raise HTTPException(status_code=500, detail=str(error)) from error
+            source_video_path = str(resolved_input_path)
+        else:
+            if suffix in IMAGE_EXTENSIONS:
+                detail = (
+                    f"Expected a frames directory or video file, got a single image file: {resolved_input_path}. "
+                    "Provide a directory containing image frames."
+                )
+            else:
+                detail = (
+                    f"Unsupported input file type: {resolved_input_path.suffix or '<none>'}. "
+                    "Provide a directory of image frames or a video file (.mp4, .mov, .avi, .mkv, .webm, .m4v)."
+                )
+            raise HTTPException(status_code=400, detail=detail)
+    else:
+        resolved_video_dir = resolved_input_path
+
+    video_dir = str(resolved_video_dir)
+    try:
+        video_masker.init_state(
+            video_dir,
+            online_mode=online_mode,
+            batch_size=batch_size,
+            offload_video_to_cpu=offload_video_to_cpu,
+            offload_state_to_cpu=offload_state_to_cpu,
+            async_loading_frames=async_loading_frames,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    video_frame_files = sorted([
+        frame_path.name
+        for frame_path in resolved_video_dir.iterdir()
+        if frame_path.is_file() and frame_path.suffix.lower() in IMAGE_EXTENSIONS
+    ])
+
+    if not video_frame_files:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No image frames found in directory: {resolved_video_dir}"
+        )
+
+    return {
+        "message": "Video state initialized successfully",
+        "num_frames": len(video_frame_files),
+        "resolved_video_frames_dir": video_dir,
+        "source_video_path": source_video_path,
+        "online_mode": video_masker.online_mode,
+        "batch_size": video_masker.default_batch_size,
+        "offload_video_to_cpu": video_masker.offload_video_to_cpu,
+        "offload_state_to_cpu": video_masker.offload_state_to_cpu,
+    }
+
+
 def _serialize_video_segments_for_response(
     video_segments: dict,
     *,
@@ -176,6 +268,7 @@ class VideoAddMaskRequest(BaseModel):
 
 class TrackingLoadVideoRequest(BaseModel):
     video_path: str
+    model_name: str = "cotracker3_offline"  # "cotracker3_offline" or "cotracker3_online"
 
 
 class TrackingGridRequest(BaseModel):
@@ -213,88 +306,16 @@ async def status():
 
 @app.post("/video/init_state")
 async def init_video_state(request: VideoInitStateRequest):
-    global video_masker, video_dir, tracker, tracking_video, tracking_video_path, video_frame_files
-    
-    # Unload tracker if it's currently loaded
-    if tracker is not None:
-        del tracker
-        tracker = None
-        tracking_video = None
-        tracking_video_path = None
-        _cleanup_cuda_memory()
-    
-    # Initialize video masker if not already created
-    if video_masker is None:
-        video_masker = svm.SAM2VideoMasker()
-    
+    _prepare_video_masker_for_video_init()
     resolved_input_path = _resolve_input_path(request.video_frames_dir)
-
-    source_video_path = None
-    if resolved_input_path.is_file():
-        suffix = resolved_input_path.suffix.lower()
-        if suffix in VIDEO_EXTENSIONS:
-            try:
-                resolved_video_dir = extract_video_to_frames(
-                    resolved_input_path,
-                    output_root=GENERATED_FRAMES_ROOT,
-                    image_extensions=IMAGE_EXTENSIONS,
-                )
-            except ValueError as error:
-                raise HTTPException(status_code=400, detail=str(error)) from error
-            except Exception as error:
-                raise HTTPException(status_code=500, detail=str(error)) from error
-            source_video_path = str(resolved_input_path)
-        else:
-            if suffix in IMAGE_EXTENSIONS:
-                detail = (
-                    f"Expected a frames directory or video file, got a single image file: {resolved_input_path}. "
-                    "Provide a directory containing image frames."
-                )
-            else:
-                detail = (
-                    f"Unsupported input file type: {resolved_input_path.suffix or '<none>'}. "
-                    "Provide a directory of image frames or a video file (.mp4, .mov, .avi, .mkv, .webm, .m4v)."
-                )
-            raise HTTPException(status_code=400, detail=detail)
-    else:
-        resolved_video_dir = resolved_input_path
-
-    video_dir = str(resolved_video_dir)
-    try:
-        video_masker.init_state(
-            video_dir,
-            online_mode=request.online_mode,
-            batch_size=request.batch_size,
-            offload_video_to_cpu=request.offload_video_to_cpu,
-            offload_state_to_cpu=request.offload_state_to_cpu,
-            async_loading_frames=request.async_loading_frames,
-        )
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-    
-    # Scan for image files
-    video_frame_files = sorted([
-        frame_path.name
-        for frame_path in resolved_video_dir.iterdir()
-        if frame_path.is_file() and frame_path.suffix.lower() in IMAGE_EXTENSIONS
-    ])
-
-    if not video_frame_files:
-        raise HTTPException(
-            status_code=400,
-            detail=f"No image frames found in directory: {resolved_video_dir}"
-        )
-    
-    return {
-        "message": "Video state initialized successfully",
-        "num_frames": len(video_frame_files),
-        "resolved_video_frames_dir": video_dir,
-        "source_video_path": source_video_path,
-        "online_mode": video_masker.online_mode,
-        "batch_size": video_masker.default_batch_size,
-        "offload_video_to_cpu": video_masker.offload_video_to_cpu,
-        "offload_state_to_cpu": video_masker.offload_state_to_cpu,
-    }
+    return _initialize_video_state_from_resolved_input(
+        resolved_input_path,
+        online_mode=request.online_mode,
+        batch_size=request.batch_size,
+        offload_video_to_cpu=request.offload_video_to_cpu,
+        offload_state_to_cpu=request.offload_state_to_cpu,
+        async_loading_frames=request.async_loading_frames,
+    )
 
 @app.post("/video/reset_state")
 async def reset_video_state():
@@ -443,9 +464,14 @@ async def load_tracking_video(request: TrackingLoadVideoRequest):
         video_dir = None
         _cleanup_cuda_memory()
     
-    # Initialize tracker if not already created
-    if tracker is None:
-        tracker = cot.CoTracker()
+    # (Re-)initialise tracker with the requested model variant.
+    # A new tracker is created if the model_name changed or no tracker exists.
+    requested_model = getattr(request, "model_name", "cotracker3_offline")
+    if tracker is None or getattr(tracker, "model_name", None) != requested_model:
+        if tracker is not None:
+            del tracker
+            _cleanup_cuda_memory()
+        tracker = cot.CoTracker(model_name=requested_model)
     
     resolved_video_path = _resolve_input_path(request.video_path, expect_dir=False)
     tracking_video_path = str(resolved_video_path)
@@ -455,6 +481,7 @@ async def load_tracking_video(request: TrackingLoadVideoRequest):
     
     return {
         "message": "Video loaded successfully",
+        "model_name": tracker.model_name,
         "shape": tracking_video.shape,
         "num_frames": tracking_video.shape[0],
         "resolved_video_path": tracking_video_path
@@ -570,7 +597,8 @@ async def track_points(request: TrackingPointsRequest):
     video_name = Path(tracking_video_path).stem
     output_dir = Path(tracking_video_path).parent
     timestamp = int(datetime.now().timestamp())
-    output_filename = f"{video_name}_tracked_points_{timestamp}.mp4"
+    output_tag = "tracked_points_support" if request.add_support_grid else "tracked_points"
+    output_filename = f"{video_name}_{output_tag}_{timestamp}.mp4"
     output_path = output_dir / output_filename
     
     fps = 30  # Default fps
