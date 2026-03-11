@@ -529,7 +529,8 @@ async def track_grid(request: TrackingGridRequest):
     video_name = Path(tracking_video_path).stem
     output_dir = Path(tracking_video_path).parent
     timestamp = int(datetime.now().timestamp())
-    output_filename = f"{video_name}_tracked_grid_{timestamp}.mp4"
+    mode_label = "online" if tracker.is_online else "offline"
+    output_filename = f"{video_name}_tracked_grid_{mode_label}_{timestamp}.mp4"
     output_path = output_dir / output_filename
     
     fps = 30  # Default fps
@@ -597,8 +598,9 @@ async def track_points(request: TrackingPointsRequest):
     video_name = Path(tracking_video_path).stem
     output_dir = Path(tracking_video_path).parent
     timestamp = int(datetime.now().timestamp())
+    mode_label = "online" if tracker.is_online else "offline"
     output_tag = "tracked_points_support" if request.add_support_grid else "tracked_points"
-    output_filename = f"{video_name}_{output_tag}_{timestamp}.mp4"
+    output_filename = f"{video_name}_{output_tag}_{mode_label}_{timestamp}.mp4"
     output_path = output_dir / output_filename
     
     fps = 30  # Default fps

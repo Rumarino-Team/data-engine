@@ -321,13 +321,14 @@ def run_video_tests():
     reset_video_state()
 
 
-def load_tracking_video(video_path):
+def load_tracking_video(video_path, model_name="cotracker3_offline"):
     """Calls the /tracking/load_video endpoint."""
     url = f"{BASE_URL}/tracking/load_video"
-    response = requests.post(url, json={"video_path": str(video_path)})
+    response = requests.post(url, json={"video_path": str(video_path), "model_name": model_name})
     if response.status_code == 200:
         response_data = response.json()
         print(f"Video loaded successfully: {video_path}")
+        print(f"  Model: {response_data.get('model_name', 'N/A')}")
         print(f"  Shape: {response_data.get('shape', [])}")
         print(f"  Num frames: {response_data.get('num_frames', 0)}")
     else:
@@ -335,7 +336,51 @@ def load_tracking_video(video_path):
     return response.status_code == 200, response.json() if response.status_code == 200 else None
 
 
-def track_grid(grid_size=15, add_support_grid=True):
+def _ensure_mode_labeled_output_path(output_video_path: str, expected_mode: str) -> str:
+    """Ensures the output filename includes the expected mode label.
+
+    If the backend already labels outputs (preferred), this is a no-op.
+    If the backend returns legacy unlabeled filenames, this renames the file
+    to include `_offline_` / `_online_` before the timestamp.
+    """
+    if not output_video_path:
+        return output_video_path
+
+    output_path = Path(output_video_path)
+    name = output_path.name
+    opposite_mode = "online" if expected_mode == "offline" else "offline"
+
+    if f"_{expected_mode}_" in name:
+        return output_video_path
+
+    if f"_{opposite_mode}_" in name:
+        print(
+            f"Warning: Output file appears labeled as {opposite_mode}: {output_video_path}. "
+            f"Leaving filename unchanged."
+        )
+        return output_video_path
+
+    stem = output_path.stem
+    suffix = output_path.suffix
+
+    # Insert mode before trailing timestamp if present: ..._<ts>.mp4
+    prefix, sep, maybe_ts = stem.rpartition("_")
+    if sep and maybe_ts.isdigit() and prefix:
+        new_stem = f"{prefix}_{expected_mode}_{maybe_ts}"
+    else:
+        new_stem = f"{stem}_{expected_mode}"
+
+    new_path = output_path.with_name(f"{new_stem}{suffix}")
+
+    if output_path.exists() and new_path != output_path:
+        output_path.rename(new_path)
+        print(f"Renamed output file to include mode label: {new_path}")
+        return str(new_path)
+
+    return output_video_path
+
+
+def track_grid(grid_size=15, add_support_grid=True, expected_mode=None):
     """Calls the /tracking/track_grid endpoint."""
     url = f"{BASE_URL}/tracking/track_grid"
     payload = {
@@ -345,6 +390,10 @@ def track_grid(grid_size=15, add_support_grid=True):
     response = requests.post(url, json=payload)
     if response.status_code == 200:
         response_data = response.json()
+        if expected_mode:
+            response_data["output_video_path"] = _ensure_mode_labeled_output_path(
+                response_data.get("output_video_path", ""), expected_mode
+            )
         print(f"Grid tracking completed successfully!")
         print(f"  Num points: {response_data.get('num_points', 0)}")
         print(f"  Num frames: {response_data.get('num_frames', 0)}")
@@ -354,7 +403,7 @@ def track_grid(grid_size=15, add_support_grid=True):
     return response.status_code == 200, response.json() if response.status_code == 200 else None
 
 
-def track_points(queries, add_support_grid=True):
+def track_points(queries, add_support_grid=True, expected_mode=None):
     """Calls the /tracking/track_points endpoint."""
     url = f"{BASE_URL}/tracking/track_points"
     payload = {
@@ -364,6 +413,10 @@ def track_points(queries, add_support_grid=True):
     response = requests.post(url, json=payload)
     if response.status_code == 200:
         response_data = response.json()
+        if expected_mode:
+            response_data["output_video_path"] = _ensure_mode_labeled_output_path(
+                response_data.get("output_video_path", ""), expected_mode
+            )
         print(f"Point tracking completed successfully!")
         print(f"  Num points: {response_data.get('num_points', 0)}")
         print(f"  Num frames: {response_data.get('num_frames', 0)}")
@@ -373,69 +426,117 @@ def track_points(queries, add_support_grid=True):
     return response.status_code == 200, response.json() if response.status_code == 200 else None
 
 
+def _run_tracking_suite(model_name: str):
+    """Runs the tracking test suite for a specific CoTracker model variant.
+
+    Args:
+        model_name: "cotracker3_offline" or "cotracker3_online".
+    """
+    label = model_name.upper().replace("COTRACKER3_", "")
+    mode_key = "online" if "online" in model_name else "offline"
+    generated_outputs = []
+
+    print(f"\n{'─' * 50}")
+    print(f"  CoTracker mode: {label}  ({model_name})")
+    print(f"{'─' * 50}")
+
+    # Check if tracking video exists
+    if not TRACKING_VIDEO_PATH.exists():
+        print(f"\nTracking video '{TRACKING_VIDEO_PATH}' not found. Skipping {label} tracking tests.")
+        return
+
+    # Test 1: Load video with the requested model
+    print(f"\n--- {label} Test 1: Load tracking video ---")
+    success, result = load_tracking_video(TRACKING_VIDEO_PATH, model_name=model_name)
+
+    if not success:
+        print(f"Failed to load tracking video for {label}. Skipping remaining tests.")
+        return
+
+    # Verify the server loaded the correct model
+    if result and result.get("model_name") != model_name:
+        print(f"✗ Server loaded '{result.get('model_name')}' instead of '{model_name}'!")
+        return
+
+    time.sleep(1)
+
+    # Test 2: Track grid
+    print(f"\n--- {label} Test 2: Track grid of points ---")
+    success, result = track_grid(grid_size=10, add_support_grid=True, expected_mode=mode_key)
+
+    if success:
+        num_points = result.get("num_points", 0)
+        num_frames = result.get("num_frames", 0)
+        if result.get("output_video_path"):
+            generated_outputs.append(result.get("output_video_path"))
+        print(f"\n✓ {label} grid tracking test passed  ({num_points} pts × {num_frames} frames)")
+    else:
+        print(f"\n✗ {label} grid tracking test failed.")
+
+    time.sleep(1)
+
+    # Test 3: Track specific query points (no support grid)
+    print(f"\n--- {label} Test 3: Track specific query points ---")
+    queries = [
+        [0, 400, 350],
+        [10, 600, 500],
+        [20, 750, 600],
+        [30, 900, 200],
+    ]
+    success, result = track_points(queries, add_support_grid=False, expected_mode=mode_key)
+
+    if success:
+        num_points = result.get("num_points", 0)
+        num_frames = result.get("num_frames", 0)
+        if result.get("output_video_path"):
+            generated_outputs.append(result.get("output_video_path"))
+        print(f"\n✓ {label} point tracking test passed  ({num_points} pts × {num_frames} frames)")
+    else:
+        print(f"\n✗ {label} point tracking test failed.")
+
+    time.sleep(1)
+
+    # Test 4: Track points with support grid
+    print(f"\n--- {label} Test 4: Track points with support grid ---")
+    queries = [
+        [0, 320, 240],
+    ]
+    success, result = track_points(queries, add_support_grid=True, expected_mode=mode_key)
+
+    if success:
+        num_points = result.get("num_points", 0)
+        num_frames = result.get("num_frames", 0)
+        if result.get("output_video_path"):
+            generated_outputs.append(result.get("output_video_path"))
+        print(f"\n✓ {label} point tracking (+ support grid) test passed  ({num_points} pts × {num_frames} frames)")
+    else:
+        print(f"\n✗ {label} point tracking (+ support grid) test failed.")
+
+    if generated_outputs:
+        print(f"\n{label} generated outputs:")
+        for output_path in generated_outputs:
+            print(f"  - {output_path}")
+
+
+def run_tracking_tests_offline():
+    """Runs tracking tests using the offline CoTracker model."""
+    _run_tracking_suite("cotracker3_offline")
+
+
+def run_tracking_tests_online():
+    """Runs tracking tests using the online CoTracker model."""
+    _run_tracking_suite("cotracker3_online")
+
+
 def run_tracking_tests():
-    """Runs the tracking test suite."""
+    """Runs the full tracking test suite (both offline and online)."""
     print("\n" + "=" * 60)
     print("RUNNING TRACKING TESTS")
     print("=" * 60)
-    
-    # Check if tracking video exists
-    if not TRACKING_VIDEO_PATH.exists():
-        print(f"\nTracking video '{TRACKING_VIDEO_PATH}' not found. Skipping tracking tests.")
-        return
-    
-    # Test 1: Load video
-    print(f"\n--- Test 1: Load tracking video ---")
-    success, result = load_tracking_video(TRACKING_VIDEO_PATH)
-    
-    if not success:
-        print("Failed to load tracking video. Skipping remaining tracking tests.")
-        return
-    
-    time.sleep(1)
-    
-    # Test 2: Track grid
-    print(f"\n--- Test 2: Track grid of points ---")
-    success, result = track_grid(grid_size=10, add_support_grid=True)
-    
-    if success:
-        print("\n✓ Grid tracking test completed successfully!")
-    else:
-        print("\n✗ Grid tracking test failed.")
-    
-    time.sleep(1)
-    
-    # Test 3: Track specific points
-    print(f"\n--- Test 3: Track specific query points ---")
-    # Define some query points: [frame, x, y]
-    # Let's track a few points starting from frame 0
-    queries = [
-        [0, 400, 350],  # Center point
-        [10, 600, 500],  # Upper-left area
-        [20, 750, 600],  # Lower-right area
-        [30, 900, 200]
-    ]
-    success, result = track_points(queries, add_support_grid=False)
-    
-    if success:
-        print("\n✓ Point tracking test completed successfully!")
-    else:
-        print("\n✗ Point tracking test failed.")
-    
-    time.sleep(1)
-    
-    # Test 4: Track points with support grid
-    print(f"\n--- Test 4: Track points with support grid ---")
-    queries = [
-        [0, 320, 240],  # Single point with support grid
-    ]
-    success, result = track_points(queries, add_support_grid=True)
-    
-    if success:
-        print("\n✓ Point tracking with support grid completed successfully!")
-    else:
-        print("\n✗ Point tracking with support grid failed.")
-    
+
+    run_tracking_tests_offline()
+    run_tracking_tests_online()
+
     print("\n" + "=" * 60)
     print("TRACKING TESTS COMPLETED")
     print("=" * 60)
