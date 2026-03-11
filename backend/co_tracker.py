@@ -164,7 +164,7 @@ def paint_point_track(
 class CoTracker:
     def __init__(self, model_name="cotracker3_online"):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.dtype = torch.float32 if self.device == "cuda" else torch.float32
+        self.dtype = torch.float32
         
         self.model = torch.hub.load("facebookresearch/co-tracker", model_name)
         self.model = self.model.to(self.device)
@@ -186,12 +186,18 @@ class CoTracker:
                 - visibility (np.ndarray): The predicted visibility of each point of shape (T, N).
         """
         
-        # Preprocess video
-        video_torch = torch.from_numpy(video).permute(0, 3, 1, 2)[None].to(self.device, dtype=self.dtype) # B, T, C, H, W
-        
-        # Resize for model input
-        video_torch_resized = torch.nn.functional.interpolate(video_torch[0], size=VIDEO_INPUT_RESO, mode='bilinear', align_corners=False)
-        video_torch_resized = video_torch_resized[None]
+        # Preprocess video on CPU first to avoid holding full-resolution frames on GPU.
+        # Shape: B, T, C, H, W
+        video_torch = torch.from_numpy(video).permute(0, 3, 1, 2)[None].float()
+
+        # Resize for model input on CPU, then move the smaller tensor to GPU.
+        video_torch_resized = torch.nn.functional.interpolate(
+            video_torch[0],
+            size=VIDEO_INPUT_RESO,
+            mode='bilinear',
+            align_corners=False,
+        )
+        video_torch_resized = video_torch_resized[None].to(self.device, dtype=self.dtype)
 
         if queries is None:
             # Grid tracking
@@ -218,14 +224,15 @@ class CoTracker:
         # For online models, we need to initialize the video processing first
         actual_model.init_video_online_processing()
         
-        pred_tracks, pred_visibility = actual_model(
-            video=video_torch_resized,
-            queries=queries_torch,
-            iters=4,
-            is_train=False,
-            add_space_attn=add_support_grid,
-            is_online=False  # We process the whole video at once, not in online mode
-        )[:2]  # Get only tracks and visibility, ignore confidence and train_data
+        with torch.inference_mode():
+            pred_tracks, pred_visibility = actual_model(
+                video=video_torch_resized,
+                queries=queries_torch,
+                iters=4,
+                is_train=False,
+                add_space_attn=add_support_grid,
+                is_online=False  # We process the whole video at once, not in online mode
+            )[:2]  # Get only tracks and visibility, ignore confidence and train_data
 
         # Scale tracks back to original video resolution
         H, W = video.shape[1:3]
