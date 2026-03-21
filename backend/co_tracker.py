@@ -216,7 +216,7 @@ class CoTracker:
                 )
             else:
                 pred_tracks, pred_visibility = self._track_offline(
-                    video_torch, queries_torch, grid_size, add_support_grid
+                    video_torch, queries_torch, grid_size
                 )
 
         # pred_tracks: (B, T, N, 2),  pred_visibility: (B, T, N)
@@ -231,12 +231,11 @@ class CoTracker:
     # Offline tracking — single global attention pass over all T frames.
     # Supports backward_tracking for forward+backward track merging.
     # ------------------------------------------------------------------
-    def _track_offline(self, video_torch, queries_torch, grid_size, add_support_grid):
+    def _track_offline(self, video_torch, queries_torch, grid_size):
         if queries_torch is not None:
             return self.model(
                 video_torch,
                 queries=queries_torch,
-                add_support_grid=add_support_grid,
                 backward_tracking=True,
             )
         else:
