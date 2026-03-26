@@ -256,6 +256,7 @@ class VideoPropagateRequest(BaseModel):
     batch_size: Optional[int] = None
     online_mode: Optional[bool] = None
     include_masks_in_response: bool = False
+    include_saved_mask_paths: bool = False
     max_frames_in_response: Optional[int] = None
     max_mask_values_in_response: Optional[int] = None
 
@@ -375,25 +376,55 @@ async def propagate_in_video(request: VideoPropagateRequest):
         return {"error": "Video directory not set. Call /video/init_state first."}
     
     try:
+        frame_files, masks_dir = prepare_video_masks_output(video_dir)
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Failed to prepare mask output directory: {error}") from error
+
+    saved_mask_paths_serializable: dict[int, list[str]] = {}
+    saved_mask_frame_count = 0
+    save_failures = 0
+
+    def _on_propagated_frame(out_frame_idx: int, frame_masks: dict[int, np.ndarray]):
+        nonlocal saved_mask_frame_count, save_failures
+        try:
+            saved_path = save_single_video_mask_frame(frame_files, masks_dir, int(out_frame_idx), frame_masks)
+            if saved_path is None:
+                return
+            saved_mask_frame_count += 1
+            if request.include_saved_mask_paths:
+                saved_mask_paths_serializable.setdefault(int(out_frame_idx), []).append(saved_path)
+        except Exception:
+            save_failures += 1
+            logger.exception("Failed to save propagated mask frame %s", out_frame_idx)
+
+    try:
         video_segments = video_masker.propagate_in_video(
             start_frame_idx=request.start_frame_idx,
             max_frame_num_to_track=request.max_frame_num_to_track,
             reverse=request.reverse,
             batch_size=request.batch_size,
             online_mode=request.online_mode,
+            collect_segments=request.include_masks_in_response,
+            frame_callback=_on_propagated_frame,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    
-    try:
-        saved_mask_paths = save_video_masks(video_dir, video_segments)
+    except torch.OutOfMemoryError as error:
+        _cleanup_cuda_memory()
+        raise HTTPException(
+            status_code=507,
+            detail="CUDA out of memory during propagation. Try lowering batch_size or enabling CPU offload.",
+        ) from error
+    except RuntimeError as error:
+        if "out of memory" in str(error).lower():
+            _cleanup_cuda_memory()
+            raise HTTPException(
+                status_code=507,
+                detail="CUDA out of memory during propagation. Try lowering batch_size or enabling CPU offload.",
+            ) from error
+        raise HTTPException(status_code=500, detail=f"Failed to propagate video masks: {error}") from error
     except Exception as error:
-        raise HTTPException(status_code=500, detail=f"Failed to save propagated masks: {error}") from error
-
-    saved_mask_paths_serializable = {
-        int(frame_idx): [str(path) for path in paths]
-        for frame_idx, paths in saved_mask_paths.items()
-    }
+        raise HTTPException(status_code=500, detail=f"Failed to propagate video masks: {error}") from error
 
     max_frames_in_response = request.max_frames_in_response
     if max_frames_in_response is None:
@@ -430,6 +461,8 @@ async def propagate_in_video(request: VideoPropagateRequest):
         "video_segments_returned_frames": video_segments_returned_frames,
         "video_segments_returned_mask_values": video_segments_returned_mask_values,
         "video_segments_truncated": video_segments_truncated,
+        "saved_mask_frame_count": saved_mask_frame_count,
+        "saved_mask_save_failures": save_failures,
         "saved_mask_paths": saved_mask_paths_serializable,
         "online_mode": video_masker.online_mode if request.online_mode is None else bool(request.online_mode),
         "batch_size": video_masker.default_batch_size if request.batch_size is None else int(request.batch_size),
