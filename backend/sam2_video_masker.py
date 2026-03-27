@@ -27,11 +27,35 @@ class SAM2VideoMasker:
         print(f"Utilizing device: {self.device}")
 
         if self.device.type == "cuda":
-            torch.autocast("cuda", dtype=torch.bfloat16).__enter__()
-            # enable tf32 for new GPUs
-            if torch.cuda.get_device_properties(0).major >= 8:
-                torch.backends.cuda.matmul.allow_tf32 = True
-                torch.backends.cudnn.allow_tf32 = True
+            device_props = torch.cuda.get_device_properties(0)
+            gpu_name = device_props.name
+            compute_capability = (int(device_props.major), int(device_props.minor))
+
+            # Ampere (RTX 30 series) and newer support TF32 and practical bf16 inference.
+            is_ampere_or_newer = compute_capability[0] >= 8
+            supports_bf16 = bool(getattr(torch.cuda, "is_bf16_supported", lambda: False)())
+            use_bf16 = is_ampere_or_newer and supports_bf16
+
+            autocast_dtype = torch.bfloat16 if use_bf16 else torch.float16
+            torch.autocast("cuda", dtype=autocast_dtype).__enter__()
+
+            torch.backends.cuda.matmul.allow_tf32 = is_ampere_or_newer
+            torch.backends.cudnn.allow_tf32 = is_ampere_or_newer
+
+            if is_ampere_or_newer:
+                gpu_family = "RTX 30-series+ / Ampere+"
+            elif compute_capability[0] == 7:
+                gpu_family = "RTX 20-series / Turing"
+            else:
+                gpu_family = "pre-RTX 30 architecture"
+
+            print(
+                "CUDA precision config | "
+                f"GPU: {gpu_name} (cc {compute_capability[0]}.{compute_capability[1]}) | "
+                f"family: {gpu_family} | "
+                f"autocast: {autocast_dtype} | "
+                f"tf32: {is_ampere_or_newer}"
+            )
         elif self.device.type == "mps":
             print(
                 "\nSupport for MPS devices is preliminary. SAM 2 is trained with CUDA and might "
