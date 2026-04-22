@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Any
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -15,6 +15,9 @@ from fastapi.responses import FileResponse
 import os
 import torch
 from urllib.parse import unquote, urlparse
+import cv2
+import shutil
+import uuid
 
 app = FastAPI()
 
@@ -35,12 +38,18 @@ video_dir: Optional[str] = None
 video_frame_files: list[str] = []
 tracking_video: Optional[np.ndarray] = None
 tracking_video_path: Optional[str] = None
+video_source_path: Optional[str] = None
+video_prompt_events: list[dict[str, Any]] = []
+mask_manifest_path: Optional[str] = None
+video_state_epoch: int = 0
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
 GENERATED_FRAMES_ROOT = PROJECT_ROOT / "backend/.data_engine_frames"
+WINDOW_FRAMES_ROOT = PROJECT_ROOT / "backend/.data_engine_windows"
 DEFAULT_MAX_MASK_FRAMES_IN_RESPONSE = int(os.getenv("VIDEO_PROPAGATE_MAX_MASK_FRAMES", "0"))
 DEFAULT_MAX_MASK_VALUES_IN_RESPONSE = int(os.getenv("VIDEO_PROPAGATE_MAX_MASK_VALUES", "0"))
+DEFAULT_PROMPT_TRACK_BATCH_SIZE = int(os.getenv("TRACK_PROMPT_BATCH_SIZE", "32"))
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +58,159 @@ def _cleanup_cuda_memory():
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+
+
+def _bump_video_state_epoch() -> int:
+    global video_state_epoch
+    video_state_epoch += 1
+    return video_state_epoch
+
+
+def _reset_video_session_state():
+    global video_prompt_events, mask_manifest_path, video_source_path
+    video_prompt_events = []
+    mask_manifest_path = None
+    video_source_path = None
+
+
+def _record_prompt_event(request: "VideoAddPointsOrBoxRequest"):
+    global video_prompt_events
+
+    if request.clear_old_points:
+        video_prompt_events = [
+            event
+            for event in video_prompt_events
+            if not (event["frame_idx"] == request.frame_idx and event["obj_id"] == request.obj_id)
+        ]
+
+    event = {
+        "frame_idx": int(request.frame_idx),
+        "obj_id": int(request.obj_id),
+        "points": [list(map(float, point)) for point in (request.points or [])],
+        "labels": [int(label) for label in (request.labels or [])],
+        "box": [float(v) for v in request.box] if request.box is not None else None,
+        "clear_old_points": bool(request.clear_old_points),
+    }
+    video_prompt_events.append(event)
+
+
+def _load_video_frames_as_numpy(video_dir_path: Path, frame_file_names: list[str]) -> np.ndarray:
+    frames_rgb: list[np.ndarray] = []
+    for name in frame_file_names:
+        frame_bgr = cv2.imread(str(video_dir_path / name))
+        if frame_bgr is None:
+            continue
+        frames_rgb.append(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
+
+    if not frames_rgb:
+        raise ValueError(f"No readable frames found under {video_dir_path}")
+
+    return np.stack(frames_rgb, axis=0)
+
+
+def _build_window_dir(frame_paths: list[Path], run_root: Path, window_name: str) -> Path:
+    window_dir = run_root / window_name
+    window_dir.mkdir(parents=True, exist_ok=True)
+
+    for local_idx, source_path in enumerate(frame_paths):
+        target_name = f"{local_idx:05d}{source_path.suffix.lower()}"
+        target_path = window_dir / target_name
+        try:
+            os.symlink(source_path, target_path)
+        except OSError:
+            try:
+                os.link(source_path, target_path)
+            except OSError:
+                shutil.copy2(source_path, target_path)
+
+    return window_dir
+
+
+def _manifest_frame_payload(frame_masks: dict[int, np.ndarray]) -> dict[str, Any]:
+    objects: dict[str, Any] = {}
+    for obj_id, mask in frame_masks.items():
+        mask_array = np.asarray(mask).astype(bool)
+        if mask_array.ndim != 2:
+            mask_array = np.squeeze(mask_array)
+        if mask_array.ndim != 2:
+            continue
+        objects[str(int(obj_id))] = {
+            "size": [int(mask_array.shape[0]), int(mask_array.shape[1])],
+            "rle": encode_mask_to_rle(mask_array),
+            "bbox": mask_bbox_xywh(mask_array),
+        }
+    return {"objects": objects}
+
+
+def _mask_logits_to_2d_bool(mask_logits: Any) -> np.ndarray:
+    mask_array = (mask_logits > 0.0).detach().cpu().numpy()
+    mask_array = np.squeeze(mask_array).astype(bool)
+    if mask_array.ndim == 3 and mask_array.shape[0] == 1:
+        mask_array = np.squeeze(mask_array, axis=0)
+    if mask_array.ndim != 2:
+        raise ValueError(f"Expected 2D mask after squeeze, got shape {mask_array.shape}")
+    return mask_array
+
+
+def _ensure_tracker_model(model_name: str):
+    global tracker
+    if tracker is None or getattr(tracker, "model_name", None) != model_name:
+        if tracker is not None:
+            del tracker
+            _cleanup_cuda_memory()
+        tracker = cot.CoTracker(model_name=model_name)
+
+
+def _restore_video_masker_from_prompt_events(
+    *,
+    online_mode: bool,
+    batch_size: Optional[int],
+    offload_video_to_cpu: Optional[bool],
+    offload_state_to_cpu: Optional[bool],
+    increment_epoch: bool = True,
+) -> None:
+    global video_masker, video_dir, video_prompt_events
+
+    if video_dir is None:
+        return
+
+    if video_masker is None:
+        video_masker = svm.SAM2VideoMasker()
+
+    video_masker.init_state(
+        video_dir,
+        online_mode=online_mode,
+        batch_size=batch_size,
+        offload_video_to_cpu=offload_video_to_cpu,
+        offload_state_to_cpu=offload_state_to_cpu,
+        async_loading_frames=False,
+    )
+
+    for event in video_prompt_events:
+        points = event["points"] if event["points"] else None
+        labels = event["labels"] if event["labels"] else None
+        video_masker.add_new_points_or_box(
+            frame_idx=int(event["frame_idx"]),
+            obj_id=int(event["obj_id"]),
+            points=points,
+            labels=labels,
+            clear_old_points=bool(event.get("clear_old_points", True)),
+            box=event.get("box"),
+        )
+
+    if increment_epoch:
+        _bump_video_state_epoch()
+
+
+def _load_tracking_video_from_current_video_state() -> tuple[np.ndarray, str]:
+    global video_dir, video_frame_files
+    if video_dir is None or not video_frame_files:
+        raise ValueError("Video is not initialized for tracking.")
+
+    # Keep tracking frame indices aligned with the exact frame sequence used by masking/frontend.
+    # Decoding directly from source_video_path can introduce index drift across different decoders.
+    frame_video = _load_video_frames_as_numpy(Path(video_dir), video_frame_files)
+    return frame_video, str(video_dir)
 
 
 def _normalize_input_path(path_value: str) -> str:
@@ -118,6 +280,8 @@ def _prepare_video_masker_for_video_init():
     if video_masker is None:
         video_masker = svm.SAM2VideoMasker()
 
+    _reset_video_session_state()
+
 
 def _initialize_video_state_from_resolved_input(
     resolved_input_path: Path,
@@ -128,7 +292,7 @@ def _initialize_video_state_from_resolved_input(
     offload_state_to_cpu: Optional[bool],
     async_loading_frames: bool,
 ):
-    global video_masker, video_dir, video_frame_files
+    global video_masker, video_dir, video_frame_files, video_source_path
 
     source_video_path = None
     if resolved_input_path.is_file():
@@ -185,6 +349,9 @@ def _initialize_video_state_from_resolved_input(
             detail=f"No image frames found in directory: {resolved_video_dir}"
         )
 
+    video_source_path = source_video_path
+    state_epoch = _bump_video_state_epoch()
+
     return {
         "message": "Video state initialized successfully",
         "num_frames": len(video_frame_files),
@@ -194,6 +361,7 @@ def _initialize_video_state_from_resolved_input(
         "batch_size": video_masker.default_batch_size,
         "offload_video_to_cpu": video_masker.offload_video_to_cpu,
         "offload_state_to_cpu": video_masker.offload_state_to_cpu,
+        "state_epoch": state_epoch,
     }
 
 
@@ -282,6 +450,11 @@ class TrackingPointsRequest(BaseModel):
     add_support_grid: bool = True
 
 
+class TrackingPromptPointsRequest(BaseModel):
+    model_name: str = "cotracker3_online"
+    add_support_grid: bool = True
+
+
 @app.get("/")
 async def root():
     return {"message": "Data Engine Backend"}
@@ -324,14 +497,27 @@ async def reset_video_state():
     if video_masker is None:
         return {"error": "Video masker not active."}
     video_masker.reset_state()
-    return {"message": "Video state reset successfully"}
+    _reset_video_session_state()
+    return {
+        "message": "Video state reset successfully",
+        "state_epoch": _bump_video_state_epoch(),
+    }
 
 @app.post("/video/add_new_points_or_box")
 async def add_new_points_or_box(request: VideoAddPointsOrBoxRequest):
-    global video_masker
+    global video_masker, video_frame_files, video_state_epoch
     if video_masker is None:
         return {"error": "Video masker not active."}
-    out_obj_ids, out_mask_logits = video_masker.add_new_points_or_box(
+
+    if not video_frame_files:
+        raise HTTPException(status_code=400, detail="No video frames available. Call /video/init_state first.")
+    if request.frame_idx < 0 or request.frame_idx >= len(video_frame_files):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Frame index out of bounds: {request.frame_idx}. Expected 0..{len(video_frame_files) - 1}.",
+        )
+
+    out_frame_idx, out_obj_ids, out_mask_logits = video_masker.add_new_points_or_box(
         frame_idx=request.frame_idx,
         obj_id=request.obj_id,
         points=request.points,
@@ -339,10 +525,91 @@ async def add_new_points_or_box(request: VideoAddPointsOrBoxRequest):
         clear_old_points=request.clear_old_points,
         box=request.box
     )
-    masks_list = [(out_mask_logits[i] > 0.0).squeeze(0).cpu().numpy().tolist() for i in range(len(out_obj_ids))]
+    returned_frame_idx = int(out_frame_idx)
+    if returned_frame_idx != int(request.frame_idx):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Frame mismatch in SAM2 response: "
+                f"request_frame_idx={int(request.frame_idx)} response_frame_idx={returned_frame_idx}"
+            ),
+        )
+
+    normalized_obj_ids = [int(obj_id) for obj_id in out_obj_ids]
+    if len(normalized_obj_ids) != len(out_mask_logits):
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Invalid SAM2 response: "
+                f"{len(normalized_obj_ids)} object IDs but {len(out_mask_logits)} mask tensors."
+            ),
+        )
+
+    masks_list: list[list[list[bool]]] = []
+    mask_pixel_counts: dict[int, int] = {}
+    mask_shapes: dict[int, list[int]] = {}
+    for index, obj_id in enumerate(normalized_obj_ids):
+        mask_2d = _mask_logits_to_2d_bool(out_mask_logits[index])
+        masks_list.append(mask_2d.tolist())
+        mask_pixel_counts[int(obj_id)] = int(np.count_nonzero(mask_2d))
+        mask_shapes[int(obj_id)] = [int(mask_2d.shape[0]), int(mask_2d.shape[1])]
+
+    selected_obj_id = int(request.obj_id)
+    selected_obj_index = normalized_obj_ids.index(selected_obj_id) if selected_obj_id in normalized_obj_ids else None
+    selected_obj_pixels = int(mask_pixel_counts.get(selected_obj_id, 0))
+    has_positive_prompt = any(int(label) == 1 for label in (request.labels or []))
+    used_single_frame_fallback = False
+
+    # Some interactive clicks return an empty mask before memory preflight/consolidation.
+    # If the selected object mask is empty, run a 1-frame propagate pass as a bounded fallback.
+    if selected_obj_index is not None and selected_obj_pixels == 0 and has_positive_prompt:
+        try:
+            fallback_segments = video_masker.propagate_in_video(
+                start_frame_idx=int(request.frame_idx),
+                max_frame_num_to_track=1,
+                reverse=False,
+                batch_size=1,
+                online_mode=video_masker.online_mode,
+                collect_segments=True,
+            )
+            fallback_frame_masks = fallback_segments.get(int(request.frame_idx), {})
+            fallback_mask = fallback_frame_masks.get(selected_obj_id)
+            if fallback_mask is not None:
+                fallback_mask_2d = np.asarray(fallback_mask).astype(bool)
+                fallback_mask_2d = np.squeeze(fallback_mask_2d)
+                if fallback_mask_2d.ndim == 2:
+                    fallback_pixels = int(np.count_nonzero(fallback_mask_2d))
+                    if fallback_pixels > 0:
+                        masks_list[selected_obj_index] = fallback_mask_2d.tolist()
+                        mask_pixel_counts[selected_obj_id] = fallback_pixels
+                        mask_shapes[selected_obj_id] = [int(fallback_mask_2d.shape[0]), int(fallback_mask_2d.shape[1])]
+                        used_single_frame_fallback = True
+        except Exception:
+            logger.exception(
+                "Single-frame interactive fallback failed for frame=%s obj=%s",
+                int(request.frame_idx),
+                selected_obj_id,
+            )
+
+    _record_prompt_event(request)
+    logger.info(
+        "Interactive mask response frame=%s obj=%s pixels=%s fallback=%s",
+        int(request.frame_idx),
+        selected_obj_id,
+        int(mask_pixel_counts.get(selected_obj_id, 0)),
+        used_single_frame_fallback,
+    )
+
     return {
-        "out_obj_ids": out_obj_ids,
-        "out_masks": masks_list
+        "request_frame_idx": int(request.frame_idx),
+        "frame_idx": returned_frame_idx,
+        "frame_file": video_frame_files[returned_frame_idx],
+        "out_obj_ids": normalized_obj_ids,
+        "out_masks": masks_list,
+        "mask_pixel_counts": mask_pixel_counts,
+        "mask_shapes": mask_shapes,
+        "single_frame_fallback_used": used_single_frame_fallback,
+        "state_epoch": int(video_state_epoch),
     }
 
 @app.post("/video/add_new_mask")
@@ -360,7 +627,7 @@ async def add_new_mask(request: VideoAddMaskRequest):
         mask=mask
     )
     
-    masks_list = [(out_mask_logits[i] > 0.0).squeeze(0).cpu().numpy().tolist() for i in range(len(out_obj_ids))]
+    masks_list = [_mask_logits_to_2d_bool(out_mask_logits[i]).tolist() for i in range(len(out_obj_ids))]
     return {
         "frame_idx": frame_idx,
         "out_obj_ids": out_obj_ids,
@@ -369,44 +636,196 @@ async def add_new_mask(request: VideoAddMaskRequest):
 
 @app.post("/video/propagate_in_video")
 async def propagate_in_video(request: VideoPropagateRequest):
-    global video_masker, video_dir
+    global video_masker, video_dir, video_frame_files, mask_manifest_path, video_state_epoch
     if video_masker is None:
         return {"error": "Video masker not active."}
     if video_dir is None:
         return {"error": "Video directory not set. Call /video/init_state first."}
-    
-    try:
-        frame_files, masks_dir = prepare_video_masks_output(video_dir)
-    except Exception as error:
-        raise HTTPException(status_code=500, detail=f"Failed to prepare mask output directory: {error}") from error
+
+    if request.reverse:
+        raise HTTPException(
+            status_code=400,
+            detail="Reverse propagation is not supported in half-window mode.",
+        )
+
+    if not video_frame_files:
+        raise HTTPException(status_code=400, detail="No video frames available. Call /video/init_state first.")
+
+    if not video_prompt_events:
+        raise HTTPException(status_code=400, detail="No prompts available for propagation.")
+
+    effective_online_mode = video_masker.online_mode if request.online_mode is None else bool(request.online_mode)
+    effective_batch_size = video_masker.default_batch_size if request.batch_size is None else int(request.batch_size)
+    effective_offload_video_to_cpu = video_masker.offload_video_to_cpu
+    effective_offload_state_to_cpu = video_masker.offload_state_to_cpu
+    if effective_batch_size <= 0:
+        raise HTTPException(status_code=400, detail="batch_size must be a positive integer.")
+
+    num_frames = len(video_frame_files)
+    if request.start_frame_idx is not None:
+        start_frame_idx = int(request.start_frame_idx)
+    else:
+        start_frame_idx = min(int(event["frame_idx"]) for event in video_prompt_events)
+    start_frame_idx = min(max(start_frame_idx, 0), num_frames - 1)
+
+    if request.max_frame_num_to_track is None:
+        end_frame_idx = num_frames - 1
+    else:
+        requested = int(request.max_frame_num_to_track)
+        if requested <= 0:
+            return {
+                "video_segments": {},
+                "video_segments_total_frames": 0,
+                "video_segments_returned_frames": 0,
+                "video_segments_returned_mask_values": 0,
+                "video_segments_truncated": False,
+                "saved_mask_frame_count": 0,
+                "saved_mask_save_failures": 0,
+                "saved_mask_paths": {},
+                "online_mode": effective_online_mode,
+                "batch_size": effective_batch_size,
+                "mask_manifest_path": mask_manifest_path,
+                "state_epoch": int(video_state_epoch),
+            }
+        end_frame_idx = min(num_frames - 1, start_frame_idx + requested - 1)
+
+    if end_frame_idx < start_frame_idx:
+        raise HTTPException(status_code=400, detail="Invalid propagation frame range.")
+
+    frame_files, masks_dir = prepare_video_masks_output(video_dir)
+    manifest_file_path = masks_dir / "manifest.json"
+
+    first_frame = cv2.imread(str(Path(video_dir) / video_frame_files[start_frame_idx]))
+    if first_frame is None:
+        raise HTTPException(status_code=500, detail="Unable to read first frame for manifest metadata.")
+
+    manifest = build_empty_mask_manifest(
+        source_video_path=video_source_path,
+        resolved_video_frames_dir=str(video_dir),
+        num_frames=num_frames,
+        frame_height=int(first_frame.shape[0]),
+        frame_width=int(first_frame.shape[1]),
+    )
+    manifest_frames: dict[str, Any] = manifest["frames"]
+
+    split_frame_idx = (start_frame_idx + end_frame_idx) // 2
+    windows: list[tuple[int, int]] = [(start_frame_idx, split_frame_idx)]
+    if split_frame_idx < end_frame_idx:
+        windows.append((split_frame_idx, end_frame_idx))
+
+    run_root = WINDOW_FRAMES_ROOT / f"run_{uuid.uuid4().hex[:12]}"
+    run_root.mkdir(parents=True, exist_ok=True)
 
     saved_mask_paths_serializable: dict[int, list[str]] = {}
     saved_mask_frame_count = 0
     save_failures = 0
+    processed_frames: set[int] = set()
+    boundary_masks: dict[int, np.ndarray] = {}
+    boundary_frame_idx: Optional[int] = None
 
-    def _on_propagated_frame(out_frame_idx: int, frame_masks: dict[int, np.ndarray]):
-        nonlocal saved_mask_frame_count, save_failures
-        try:
-            saved_path = save_single_video_mask_frame(frame_files, masks_dir, int(out_frame_idx), frame_masks)
-            if saved_path is None:
-                return
-            saved_mask_frame_count += 1
-            if request.include_saved_mask_paths:
-                saved_mask_paths_serializable.setdefault(int(out_frame_idx), []).append(saved_path)
-        except Exception:
-            save_failures += 1
-            logger.exception("Failed to save propagated mask frame %s", out_frame_idx)
+    video_segments_serializable: dict[int, dict[int, list]] = {}
 
     try:
-        video_segments = video_masker.propagate_in_video(
-            start_frame_idx=request.start_frame_idx,
-            max_frame_num_to_track=request.max_frame_num_to_track,
-            reverse=request.reverse,
-            batch_size=request.batch_size,
-            online_mode=request.online_mode,
-            collect_segments=request.include_masks_in_response,
-            frame_callback=_on_propagated_frame,
-        )
+        for window_index, (window_start, window_end) in enumerate(windows):
+            window_frame_paths = [Path(video_dir) / video_frame_files[idx] for idx in range(window_start, window_end + 1)]
+            window_name = f"window_{window_index}_{window_start}_{window_end}"
+            window_dir = _build_window_dir(window_frame_paths, run_root, window_name)
+
+            video_masker.init_state(
+                str(window_dir),
+                online_mode=effective_online_mode,
+                batch_size=effective_batch_size,
+                offload_video_to_cpu=effective_offload_video_to_cpu,
+                offload_state_to_cpu=effective_offload_state_to_cpu,
+                async_loading_frames=False,
+            )
+
+            if window_index > 0 and boundary_masks and boundary_frame_idx is not None:
+                local_boundary_idx = int(boundary_frame_idx - window_start)
+                for obj_id, obj_mask in boundary_masks.items():
+                    video_masker.add_new_mask(
+                        frame_idx=local_boundary_idx,
+                        obj_id=int(obj_id),
+                        mask=np.asarray(obj_mask).astype(bool),
+                    )
+
+            for event in video_prompt_events:
+                event_frame_idx = int(event["frame_idx"])
+                if event_frame_idx < window_start or event_frame_idx > window_end:
+                    continue
+                local_event_frame_idx = event_frame_idx - window_start
+                points = event["points"] if event["points"] else None
+                labels = event["labels"] if event["labels"] else None
+                video_masker.add_new_points_or_box(
+                    frame_idx=local_event_frame_idx,
+                    obj_id=int(event["obj_id"]),
+                    points=points,
+                    labels=labels,
+                    clear_old_points=bool(event.get("clear_old_points", True)),
+                    box=event.get("box"),
+                )
+
+            local_start_frame = max(start_frame_idx, window_start) - window_start
+            local_max_frames = (window_end - window_start + 1) - local_start_frame
+
+            def _on_window_frame(local_frame_idx: int, frame_masks: dict[int, np.ndarray]):
+                nonlocal saved_mask_frame_count, save_failures, boundary_masks, boundary_frame_idx
+                global_frame_idx = int(window_start + local_frame_idx)
+                if global_frame_idx < start_frame_idx or global_frame_idx > end_frame_idx:
+                    return
+
+                is_overlap_duplicate = (
+                    window_index > 0
+                    and global_frame_idx == window_start
+                    and global_frame_idx in processed_frames
+                )
+                if is_overlap_duplicate:
+                    boundary_masks = {
+                        int(obj_id): np.asarray(mask).astype(bool)
+                        for obj_id, mask in frame_masks.items()
+                    }
+                    boundary_frame_idx = global_frame_idx
+                    return
+
+                processed_frames.add(global_frame_idx)
+                manifest_frames[str(global_frame_idx)] = _manifest_frame_payload(frame_masks)
+                if request.include_masks_in_response:
+                    video_segments_serializable[global_frame_idx] = {
+                        int(obj_id): np.asarray(mask).astype(bool).tolist()
+                        for obj_id, mask in frame_masks.items()
+                    }
+
+                try:
+                    saved_path = save_single_video_mask_frame(
+                        frame_files,
+                        masks_dir,
+                        global_frame_idx,
+                        frame_masks,
+                    )
+                    if saved_path is not None:
+                        saved_mask_frame_count += 1
+                        if request.include_saved_mask_paths:
+                            saved_mask_paths_serializable.setdefault(global_frame_idx, []).append(saved_path)
+                except Exception:
+                    save_failures += 1
+                    logger.exception("Failed to save propagated mask frame %s", global_frame_idx)
+
+                if global_frame_idx == window_end:
+                    boundary_masks = {
+                        int(obj_id): np.asarray(mask).astype(bool)
+                        for obj_id, mask in frame_masks.items()
+                    }
+                    boundary_frame_idx = global_frame_idx
+
+            video_masker.propagate_in_video(
+                start_frame_idx=local_start_frame,
+                max_frame_num_to_track=local_max_frames,
+                reverse=False,
+                batch_size=effective_batch_size,
+                online_mode=effective_online_mode,
+                collect_segments=False,
+                frame_callback=_on_window_frame,
+            )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except torch.OutOfMemoryError as error:
@@ -425,63 +844,65 @@ async def propagate_in_video(request: VideoPropagateRequest):
         raise HTTPException(status_code=500, detail=f"Failed to propagate video masks: {error}") from error
     except Exception as error:
         raise HTTPException(status_code=500, detail=f"Failed to propagate video masks: {error}") from error
+    finally:
+        shutil.rmtree(run_root, ignore_errors=True)
 
-    max_frames_in_response = request.max_frames_in_response
-    if max_frames_in_response is None:
-        max_frames_in_response = DEFAULT_MAX_MASK_FRAMES_IN_RESPONSE
+    write_mask_manifest(manifest_file_path, manifest)
+    mask_manifest_path = str(manifest_file_path)
 
-    max_mask_values_in_response = request.max_mask_values_in_response
-    if max_mask_values_in_response is None:
-        max_mask_values_in_response = DEFAULT_MAX_MASK_VALUES_IN_RESPONSE
-
-    video_segments_serializable: dict[int, dict[int, list]] = {}
-    video_segments_truncated = False
-    video_segments_returned_frames = 0
-    video_segments_returned_mask_values = 0
-
-    if request.include_masks_in_response:
-        try:
-            video_segments_serializable, video_segments_truncated, video_segments_returned_frames, video_segments_returned_mask_values = _serialize_video_segments_for_response(
-                video_segments,
-                max_frames=max_frames_in_response,
-                max_mask_values=max_mask_values_in_response,
-            )
-        except MemoryError:
-            logger.warning("Mask serialization skipped due to memory pressure.")
-            video_segments_serializable = {}
-            video_segments_truncated = len(video_segments) > 0
-        except Exception:
-            logger.exception("Mask serialization failed; returning saved mask paths only.")
-            video_segments_serializable = {}
-            video_segments_truncated = len(video_segments) > 0
+    try:
+        # Rebind interactive state to the original full video frame index space.
+        _restore_video_masker_from_prompt_events(
+            online_mode=effective_online_mode,
+            batch_size=effective_batch_size,
+            offload_video_to_cpu=effective_offload_video_to_cpu,
+            offload_state_to_cpu=effective_offload_state_to_cpu,
+        )
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Propagation completed but failed to restore interactive masking state: {error}",
+        ) from error
 
     return {
-        "video_segments": video_segments_serializable,
-        "video_segments_total_frames": len(video_segments),
-        "video_segments_returned_frames": video_segments_returned_frames,
-        "video_segments_returned_mask_values": video_segments_returned_mask_values,
-        "video_segments_truncated": video_segments_truncated,
+        "video_segments": video_segments_serializable if request.include_masks_in_response else {},
+        "video_segments_total_frames": len(processed_frames),
+        "video_segments_returned_frames": len(video_segments_serializable),
+        "video_segments_returned_mask_values": 0,
+        "video_segments_truncated": False,
         "saved_mask_frame_count": saved_mask_frame_count,
         "saved_mask_save_failures": save_failures,
         "saved_mask_paths": saved_mask_paths_serializable,
-        "online_mode": video_masker.online_mode if request.online_mode is None else bool(request.online_mode),
-        "batch_size": video_masker.default_batch_size if request.batch_size is None else int(request.batch_size),
+        "online_mode": effective_online_mode,
+        "batch_size": effective_batch_size,
+        "mask_manifest_path": mask_manifest_path,
+        "state_epoch": int(video_state_epoch),
     }
 
 @app.post("/video/clear_all_prompts_in_frame")
 async def clear_all_prompts_in_frame(frame_idx: int, obj_id: int):
-    global video_masker
+    global video_masker, video_prompt_events
     if video_masker is None:
         return {"error": "Video masker not active."}
     video_masker.clear_all_prompts_in_frame(frame_idx, obj_id)
+    video_prompt_events = [
+        event
+        for event in video_prompt_events
+        if not (int(event["frame_idx"]) == int(frame_idx) and int(event["obj_id"]) == int(obj_id))
+    ]
     return {"message": "Cleared all prompts in frame successfully"}
 
 @app.post("/video/remove_object")
 async def remove_object(obj_id: int):
-    global video_masker
+    global video_masker, video_prompt_events
     if video_masker is None:
         return {"error": "Video masker not active."}
     video_masker.remove_object(obj_id)
+    video_prompt_events = [
+        event
+        for event in video_prompt_events
+        if int(event["obj_id"]) != int(obj_id)
+    ]
     return {"message": "Object removed successfully"}
 
 
@@ -495,6 +916,7 @@ async def load_tracking_video(request: TrackingLoadVideoRequest):
         del video_masker
         video_masker = None
         video_dir = None
+        _bump_video_state_epoch()
         _cleanup_cuda_memory()
     
     # (Re-)initialise tracker with the requested model variant.
@@ -518,6 +940,197 @@ async def load_tracking_video(request: TrackingLoadVideoRequest):
         "shape": tracking_video.shape,
         "num_frames": tracking_video.shape[0],
         "resolved_video_path": tracking_video_path
+    }
+
+
+@app.post("/tracking/track_prompt_points")
+async def track_prompt_points(request: TrackingPromptPointsRequest):
+    global tracker, tracking_video, tracking_video_path, video_masker, video_prompt_events, video_dir, video_state_epoch
+
+    if not video_prompt_events:
+        raise HTTPException(status_code=400, detail="No annotation prompts available for tracking.")
+
+    positive_queries: list[list[float]] = []
+    point_metadata: list[dict[str, Any]] = []
+
+    for event_idx, event in enumerate(video_prompt_events):
+        points = event.get("points", []) or []
+        labels = event.get("labels", []) or [1] * len(points)
+        frame_idx = int(event.get("frame_idx", 0))
+        obj_id = int(event.get("obj_id", 0))
+        for point_idx, point in enumerate(points):
+            if point_idx >= len(labels) or int(labels[point_idx]) != 1:
+                continue
+            if len(point) < 2:
+                continue
+            x_coord = float(point[0])
+            y_coord = float(point[1])
+            positive_queries.append([float(frame_idx), x_coord, y_coord])
+            point_metadata.append(
+                {
+                    "point_id": f"p{event_idx}_{point_idx}",
+                    "obj_id": obj_id,
+                    "source_frame_idx": frame_idx,
+                    "source_x": x_coord,
+                    "source_y": y_coord,
+                }
+            )
+
+    if not positive_queries:
+        raise HTTPException(status_code=400, detail="No positive prompt points available for tracking.")
+
+    should_restore_video_masker = video_masker is not None and video_dir is not None
+    restore_online_mode = video_masker.online_mode if video_masker is not None else True
+    restore_batch_size = video_masker.default_batch_size if video_masker is not None else None
+    restore_offload_video_to_cpu = video_masker.offload_video_to_cpu if video_masker is not None else None
+    restore_offload_state_to_cpu = video_masker.offload_state_to_cpu if video_masker is not None else None
+
+    def _restore_masker_state(*, raise_on_error: bool) -> None:
+        if not should_restore_video_masker:
+            return
+        try:
+            _restore_video_masker_from_prompt_events(
+                online_mode=restore_online_mode,
+                batch_size=restore_batch_size,
+                offload_video_to_cpu=restore_offload_video_to_cpu,
+                offload_state_to_cpu=restore_offload_state_to_cpu,
+            )
+        except Exception as error:
+            logger.exception("Failed to restore interactive video masker state after prompt tracking")
+            if raise_on_error:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Prompt-point tracking finished but failed to restore interactive masking state: {error}",
+                ) from error
+
+    if video_masker is not None:
+        del video_masker
+        video_masker = None
+        _bump_video_state_epoch()
+        _cleanup_cuda_memory()
+
+    _ensure_tracker_model(request.model_name)
+
+    def _is_oom_runtime_error(error: RuntimeError) -> bool:
+        return "out of memory" in str(error).lower()
+
+    def _track_queries_batched(
+        video: np.ndarray,
+        query_array: np.ndarray,
+        *,
+        add_support_grid: bool,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        if query_array.size == 0:
+            raise ValueError("No query points provided for tracking.")
+
+        initial_batch_size = int(DEFAULT_PROMPT_TRACK_BATCH_SIZE)
+        if initial_batch_size <= 0:
+            initial_batch_size = query_array.shape[0]
+        batch_size = max(1, min(initial_batch_size, int(query_array.shape[0])))
+
+        tracks_batches: list[np.ndarray] = []
+        visibility_batches: list[np.ndarray] = []
+        index = 0
+
+        while index < query_array.shape[0]:
+            end_index = min(query_array.shape[0], index + batch_size)
+            query_batch = query_array[index:end_index]
+
+            try:
+                batch_tracks, batch_visibility = tracker.track(
+                    video,
+                    queries=query_batch,
+                    add_support_grid=add_support_grid,
+                )
+            except torch.OutOfMemoryError as error:
+                _cleanup_cuda_memory()
+                if batch_size <= 1:
+                    raise error
+                batch_size = max(1, batch_size // 2)
+                continue
+            except RuntimeError as error:
+                if _is_oom_runtime_error(error):
+                    _cleanup_cuda_memory()
+                    if batch_size <= 1:
+                        raise error
+                    batch_size = max(1, batch_size // 2)
+                    continue
+                raise
+
+            tracks_batches.append(batch_tracks)
+            visibility_batches.append(batch_visibility)
+            index = end_index
+
+        tracks = np.concatenate(tracks_batches, axis=0)
+        visibility = np.concatenate(visibility_batches, axis=0)
+        return tracks, visibility
+
+    try:
+        tracking_video, tracking_video_path = _load_tracking_video_from_current_video_state()
+        query_array = np.asarray(positive_queries, dtype=np.float32)
+        support_grid_used = bool(request.add_support_grid)
+
+        try:
+            tracks, visibility = _track_queries_batched(
+                tracking_video,
+                query_array,
+                add_support_grid=support_grid_used,
+            )
+        except torch.OutOfMemoryError:
+            if not support_grid_used:
+                raise
+            support_grid_used = False
+            tracks, visibility = _track_queries_batched(
+                tracking_video,
+                query_array,
+                add_support_grid=False,
+            )
+        except RuntimeError as error:
+            if not _is_oom_runtime_error(error) or not support_grid_used:
+                raise
+            support_grid_used = False
+            tracks, visibility = _track_queries_batched(
+                tracking_video,
+                query_array,
+                add_support_grid=False,
+            )
+    except ValueError as error:
+        _restore_masker_state(raise_on_error=False)
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except torch.OutOfMemoryError as error:
+        _cleanup_cuda_memory()
+        _restore_masker_state(raise_on_error=False)
+        raise HTTPException(
+            status_code=507,
+            detail="CUDA out of memory during tracking. Try online mode or fewer prompt points.",
+        ) from error
+    except RuntimeError as error:
+        if "out of memory" in str(error).lower():
+            _cleanup_cuda_memory()
+            _restore_masker_state(raise_on_error=False)
+            raise HTTPException(
+                status_code=507,
+                detail="CUDA out of memory during tracking. Try online mode or fewer prompt points.",
+            ) from error
+        _restore_masker_state(raise_on_error=False)
+        raise HTTPException(status_code=500, detail=f"Prompt-point tracking failed: {error}") from error
+    except Exception as error:
+        _restore_masker_state(raise_on_error=False)
+        raise HTTPException(status_code=500, detail=f"Prompt-point tracking failed: {error}") from error
+
+    _cleanup_cuda_memory()
+    _restore_masker_state(raise_on_error=True)
+
+    return {
+        "message": "Prompt-point tracking completed",
+        "model_name": tracker.model_name,
+        "num_points": int(tracks.shape[0]),
+        "num_frames": int(tracks.shape[1]),
+        "add_support_grid_used": support_grid_used,
+        "tracks": tracks.tolist(),
+        "visibility": visibility.tolist(),
+        "points": point_metadata,
+        "state_epoch": int(video_state_epoch),
     }
 
 
@@ -663,6 +1276,53 @@ async def get_video_info():
     return {
         "num_frames": len(video_frame_files),
         "frame_files": video_frame_files
+    }
+
+
+@app.get("/video/mask_manifest")
+async def get_mask_manifest():
+    global video_dir, mask_manifest_path
+    if video_dir is None:
+        return {"error": "Video not initialized"}
+
+    manifest_path = Path(mask_manifest_path) if mask_manifest_path else Path(video_dir) / "masks" / "manifest.json"
+    if not manifest_path.exists():
+        return {"error": "Mask manifest not found. Run /video/propagate_in_video first."}
+
+    manifest = load_mask_manifest(manifest_path)
+    return {
+        "version": manifest.get("version"),
+        "source_video_path": manifest.get("source_video_path"),
+        "resolved_video_frames_dir": manifest.get("resolved_video_frames_dir"),
+        "num_frames": manifest.get("num_frames", 0),
+        "frame_height": manifest.get("frame_height"),
+        "frame_width": manifest.get("frame_width"),
+        "mask_manifest_path": str(manifest_path),
+    }
+
+
+@app.get("/video/mask_data/{frame_idx}")
+async def get_mask_data(frame_idx: int):
+    global video_dir, mask_manifest_path
+    if video_dir is None:
+        return {"error": "Video not initialized"}
+    if frame_idx < 0:
+        return {"error": "Frame index out of bounds"}
+
+    manifest_path = Path(mask_manifest_path) if mask_manifest_path else Path(video_dir) / "masks" / "manifest.json"
+    if not manifest_path.exists():
+        return {"frame_idx": frame_idx, "objects": {}}
+
+    manifest = load_mask_manifest(manifest_path)
+    num_frames = int(manifest.get("num_frames", 0))
+    if frame_idx >= num_frames:
+        return {"error": "Frame index out of bounds"}
+
+    frame_payload = manifest.get("frames", {}).get(str(frame_idx), {"objects": {}})
+    objects_payload = frame_payload.get("objects", {})
+    return {
+        "frame_idx": int(frame_idx),
+        "objects": objects_payload,
     }
 
 @app.get("/video/frame/{frame_idx}")

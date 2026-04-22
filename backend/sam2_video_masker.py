@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import os
+import gc
 from pathlib import Path
 from sam2.sam2_video_predictor import SAM2VideoPredictor
 from utils import extract_video_to_frames
@@ -90,7 +91,7 @@ class SAM2VideoMasker:
         if offload_video_to_cpu is None:
             offload_video_to_cpu = self.online_mode
         if offload_state_to_cpu is None:
-            offload_state_to_cpu = False
+            offload_state_to_cpu = self.online_mode
 
         self.offload_video_to_cpu = bool(offload_video_to_cpu)
         self.offload_state_to_cpu = bool(offload_state_to_cpu)
@@ -135,7 +136,7 @@ class SAM2VideoMasker:
         self.predictor.reset_state(self.inference_state)
 
     def add_new_points_or_box(self, frame_idx, obj_id, points=None, labels=None, clear_old_points=True, box=None):
-        _, out_obj_ids, out_mask_logits = self.predictor.add_new_points_or_box(
+        out_frame_idx, out_obj_ids, out_mask_logits = self.predictor.add_new_points_or_box(
             inference_state=self.inference_state,
             frame_idx=frame_idx,
             obj_id=obj_id,
@@ -145,7 +146,7 @@ class SAM2VideoMasker:
             box=box,
         )
 
-        return out_obj_ids, out_mask_logits
+        return out_frame_idx, out_obj_ids, out_mask_logits
 
     def add_new_mask(self, frame_idx, obj_id, mask):
         """Add new mask to a frame."""
@@ -181,23 +182,28 @@ class SAM2VideoMasker:
         lower_bound = anchor_frame_idx - keep_window
         upper_bound = anchor_frame_idx + keep_window
 
-        output_dict_per_obj = self.inference_state.get("output_dict_per_obj", {})
-        for obj_output_dict in output_dict_per_obj.values():
-            non_cond_outputs = obj_output_dict.get("non_cond_frame_outputs", {})
-            if reverse:
-                stale_keys = [
-                    frame_idx
-                    for frame_idx in list(non_cond_outputs.keys())
-                    if frame_idx < anchor_frame_idx or frame_idx > upper_bound
-                ]
-            else:
-                stale_keys = [
-                    frame_idx
-                    for frame_idx in list(non_cond_outputs.keys())
-                    if frame_idx > anchor_frame_idx or frame_idx < lower_bound
-                ]
-            for frame_idx in stale_keys:
-                non_cond_outputs.pop(frame_idx, None)
+        def _purge_non_cond_dict(per_obj_dict):
+            for obj_output_dict in per_obj_dict.values():
+                non_cond_outputs = obj_output_dict.get("non_cond_frame_outputs", {})
+                if reverse:
+                    stale_keys = [
+                        frame_idx
+                        for frame_idx in list(non_cond_outputs.keys())
+                        if frame_idx < anchor_frame_idx or frame_idx > upper_bound
+                    ]
+                else:
+                    stale_keys = [
+                        frame_idx
+                        for frame_idx in list(non_cond_outputs.keys())
+                        if frame_idx > anchor_frame_idx or frame_idx < lower_bound
+                    ]
+                for frame_idx in stale_keys:
+                    non_cond_outputs.pop(frame_idx, None)
+
+        _purge_non_cond_dict(self.inference_state.get("output_dict_per_obj", {}))
+        _purge_non_cond_dict(self.inference_state.get("temp_output_dict_per_obj", {}))
+
+        gc.collect()
 
         if self.device.type == "cuda":
             torch.cuda.empty_cache()
@@ -244,6 +250,8 @@ class SAM2VideoMasker:
         max_frame_num_to_track=None,
         reverse=False,
         batch_size=None,
+        collect_segments=True,
+        frame_callback=None,
     ):
         if self.inference_state is None:
             return {}
@@ -265,7 +273,7 @@ class SAM2VideoMasker:
             return {}
 
         total_remaining = total_frames_to_process
-        video_segments = {}
+        video_segments = {} if collect_segments else None
         global_last_processed_frame_idx = None
 
         while True:
@@ -282,20 +290,47 @@ class SAM2VideoMasker:
             last_processed_frame_idx = None
             processed_before_batch = total_frames_to_process - total_remaining
 
-            for out_frame_idx, out_obj_ids, out_mask_logits in self.predictor.propagate_in_video(
-                self.inference_state,
-                start_frame_idx=current_start,
-                max_frame_num_to_track=predictor_max_frames,
-                reverse=reverse,
-                progress_total=total_frames_to_process,
-                progress_initial=processed_before_batch,
-            ):
-                if out_frame_idx not in video_segments:
+            propagate_kwargs = {
+                "start_frame_idx": current_start,
+                "max_frame_num_to_track": predictor_max_frames,
+                "reverse": reverse,
+            }
+
+            def _iter_with_progress_fallback():
+                try:
+                    yield from self.predictor.propagate_in_video(
+                        self.inference_state,
+                        progress_total=total_frames_to_process,
+                        progress_initial=processed_before_batch,
+                        **propagate_kwargs,
+                    )
+                    return
+                except TypeError as error:
+                    # Backward compatibility with SAM2 predictor builds that do
+                    # not support progress_* kwargs.
+                    error_message = str(error)
+                    if "progress_total" not in error_message and "progress_initial" not in error_message:
+                        raise
+
+                yield from self.predictor.propagate_in_video(
+                    self.inference_state,
+                    **propagate_kwargs,
+                )
+
+            for out_frame_idx, out_obj_ids, out_mask_logits in _iter_with_progress_fallback():
+                if collect_segments:
+                    if out_frame_idx not in video_segments:
+                        processed_in_batch += 1
+                else:
                     processed_in_batch += 1
-                video_segments[out_frame_idx] = {
+                frame_masks = {
                     out_obj_id: (out_mask_logits[i] > 0.0).squeeze(0).cpu().numpy()
                     for i, out_obj_id in enumerate(out_obj_ids)
                 }
+                if collect_segments:
+                    video_segments[out_frame_idx] = frame_masks
+                if frame_callback is not None:
+                    frame_callback(out_frame_idx, frame_masks)
                 last_processed_frame_idx = out_frame_idx
 
             if processed_in_batch == 0 or last_processed_frame_idx is None:
@@ -323,7 +358,7 @@ class SAM2VideoMasker:
 
             current_start = next_start
 
-        return video_segments
+        return video_segments if collect_segments else {}
 
     def propagate_in_video(
         self,
@@ -332,6 +367,8 @@ class SAM2VideoMasker:
         reverse=False,
         batch_size=None,
         online_mode=None,
+        collect_segments=True,
+        frame_callback=None,
     ):
         use_online_mode = self.online_mode if online_mode is None else bool(online_mode)
         if use_online_mode:
@@ -340,21 +377,27 @@ class SAM2VideoMasker:
                 max_frame_num_to_track=max_frame_num_to_track,
                 reverse=reverse,
                 batch_size=batch_size,
+                collect_segments=collect_segments,
+                frame_callback=frame_callback,
             )
 
-        video_segments = {}
+        video_segments = {} if collect_segments else None
         for out_frame_idx, out_obj_ids, out_mask_logits in self.predictor.propagate_in_video(
             self.inference_state,
             start_frame_idx,
             max_frame_num_to_track,
             reverse,
         ):
-            video_segments[out_frame_idx] = {
+            frame_masks = {
                 out_obj_id: (out_mask_logits[i] > 0.0).squeeze(0).cpu().numpy()
                 for i, out_obj_id in enumerate(out_obj_ids)
             }
+            if collect_segments:
+                video_segments[out_frame_idx] = frame_masks
+            if frame_callback is not None:
+                frame_callback(out_frame_idx, frame_masks)
 
-        return video_segments
+        return video_segments if collect_segments else {}
 
     def clear_all_prompts_in_frame(self, frame_idx, obj_id):
         self.predictor.clear_all_prompts_in_frame(

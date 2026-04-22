@@ -3,6 +3,8 @@ import cv2
 from pathlib import Path
 import shutil
 import hashlib
+import json
+from typing import Any
 
 
 def _color_from_obj_id(obj_id):
@@ -301,3 +303,93 @@ def extract_video_to_frames(video_path: Path, output_root: Path, image_extension
         raise ValueError(f"No frames could be extracted from video: {video_path}")
 
     return output_dir
+
+
+def encode_mask_to_rle(mask: np.ndarray) -> list[list[int]]:
+    """
+    Encode a 2D boolean mask into row-major run-length encoding.
+
+    Returns:
+    - list of [start_index, run_length] for foreground pixels.
+    """
+    mask_array = np.asarray(mask).astype(bool)
+    if mask_array.ndim != 2:
+        raise ValueError(f"encode_mask_to_rle expects 2D mask, got shape {mask_array.shape}")
+
+    flat = mask_array.reshape(-1)
+    if flat.size == 0:
+        return []
+
+    rle: list[list[int]] = []
+    in_run = False
+    run_start = 0
+
+    for idx, value in enumerate(flat):
+        if value and not in_run:
+            in_run = True
+            run_start = idx
+        elif not value and in_run:
+            rle.append([int(run_start), int(idx - run_start)])
+            in_run = False
+
+    if in_run:
+        rle.append([int(run_start), int(flat.size - run_start)])
+
+    return rle
+
+
+def mask_bbox_xywh(mask: np.ndarray) -> list[int]:
+    """
+    Compute [x, y, width, height] bbox for foreground pixels in a 2D mask.
+    Returns [0, 0, 0, 0] for empty masks.
+    """
+    mask_array = np.asarray(mask).astype(bool)
+    if mask_array.ndim != 2:
+        raise ValueError(f"mask_bbox_xywh expects 2D mask, got shape {mask_array.shape}")
+
+    ys, xs = np.nonzero(mask_array)
+    if ys.size == 0 or xs.size == 0:
+        return [0, 0, 0, 0]
+
+    x_min = int(xs.min())
+    x_max = int(xs.max())
+    y_min = int(ys.min())
+    y_max = int(ys.max())
+    return [x_min, y_min, x_max - x_min + 1, y_max - y_min + 1]
+
+
+def ensure_masks_dir(video_dir: str | Path) -> Path:
+    video_path = Path(video_dir)
+    masks_dir = video_path / "masks"
+    masks_dir.mkdir(parents=True, exist_ok=True)
+    return masks_dir
+
+
+def build_empty_mask_manifest(
+    *,
+    source_video_path: str | None,
+    resolved_video_frames_dir: str,
+    num_frames: int,
+    frame_height: int | None,
+    frame_width: int | None,
+) -> dict[str, Any]:
+    return {
+        "version": 1,
+        "source_video_path": source_video_path,
+        "resolved_video_frames_dir": resolved_video_frames_dir,
+        "num_frames": int(num_frames),
+        "frame_height": int(frame_height) if frame_height is not None else None,
+        "frame_width": int(frame_width) if frame_width is not None else None,
+        "frames": {},
+    }
+
+
+def write_mask_manifest(manifest_path: Path, manifest: dict[str, Any]) -> None:
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    with manifest_path.open("w", encoding="utf-8") as handle:
+        json.dump(manifest, handle, ensure_ascii=True, separators=(",", ":"))
+
+
+def load_mask_manifest(manifest_path: Path) -> dict[str, Any]:
+    with manifest_path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
