@@ -1,8 +1,29 @@
 <div class="video-masker-container">
 	<div class="top-bar">
-		<input type="text" [ngModel]="videoDir()" (ngModelChange)="videoDir.set($event)" placeholder="Enter video frames directory or video file path (.mp4, .mov, .avi)"
+		<input type="text" [ngModel]="videoDir()" (ngModelChange)="onVideoDirChange($event)" placeholder="Enter video frames directory or video file path (.mp4, .mov, .avi)"
 			[disabled]="isInitialized()">
+		<button (click)="openFramesDirPicker()" [disabled]="isInitialized() || isLoading()">Browse Frames</button>
+		<button (click)="openVideoFilePicker()" [disabled]="isInitialized() || isLoading()">Browse Video</button>
 		<button (click)="initVideo()" [disabled]="isInitialized() || isLoading() || !videoDir().trim()">Load Video</button>
+
+		<input
+			#framesDirInput
+			type="file"
+			webkitdirectory
+			directory
+			multiple
+			hidden
+			(change)="onFramesDirSelected($event)"
+			[disabled]="isInitialized() || isLoading()"
+		>
+		<input
+			#videoFileInput
+			type="file"
+			accept=".mp4,.mov,.avi,.mkv,.webm,.m4v"
+			hidden
+			(change)="onVideoFileSelected($event)"
+			[disabled]="isInitialized() || isLoading()"
+		>
 	</div>
 
 	<div class="main-area">
@@ -42,22 +63,66 @@
 				</div>
 			</div>
 
-			<div class="section">
-				<h3>Actions</h3>
-				<button (click)="propagate()" [disabled]="!isInitialized() || isLoading()">Propagate Masks</button>
-				<button (click)="clearMasks()" [disabled]="!isInitialized() || isLoading()">Clear All Masks</button>
-				<button (click)="save()" [disabled]="!isInitialized()">Save (Placeholder)</button>
+				<div class="section">
+					<h3>Actions</h3>
+					<button (click)="propagate()" [disabled]="!isInitialized() || isLoading()">Propagate Masks</button>
+				<label>
+					Tracking Model
+					<select [ngModel]="trackingModel()" (ngModelChange)="trackingModel.set($event)" [disabled]="isLoading()">
+						<option value="cotracker3_online">CoTracker Online</option>
+						<option value="cotracker3_offline">CoTracker Offline</option>
+					</select>
+				</label>
+					<label>
+						Tracking Overlay
+						<select [ngModel]="trackingOverlayStyle()" (ngModelChange)="trackingOverlayStyle.set($event)" [disabled]="isLoading()">
+							<option value="point">Point Only</option>
+							<option value="short">Short Trail</option>
+							<option value="full">Full Trail</option>
+						</select>
+					</label>
+					<label>
+						<input
+							type="checkbox"
+							[checked]="trackingUseSupportGrid()"
+							(change)="trackingUseSupportGrid.set($any($event.target).checked)"
+							[disabled]="isLoading()"
+						>
+						Use Support Grid
+					</label>
+					<button (click)="runTracking()" [disabled]="!isInitialized() || isLoading()">Run CoTracker</button>
+					<button (click)="clearMasks()" [disabled]="!isInitialized() || isLoading()">Clear All Masks</button>
+					<button (click)="save()" [disabled]="!isInitialized()">Save (Placeholder)</button>
+				</div>
+
+				<div class="section debug-section" *ngIf="isInitialized()">
+					<h3>Sync Debug</h3>
+					<div class="debug-grid">
+						<span>Target frame</span><strong>{{ targetFrameIdx() }}</strong>
+						<span>Displayed frame</span><strong>{{ displayedFrameIdx() }}</strong>
+						<span>Last request frame</span><strong>{{ lastClickRequestFrameIdx() ?? 'n/a' }}</strong>
+						<span>Last response frame</span><strong>{{ lastBackendResponseFrameIdx() ?? 'n/a' }}</strong>
+						<span>Response frame file</span><strong>{{ lastBackendResponseFrameFile() }}</strong>
+						<span>State epoch</span><strong>{{ stateEpoch() }}</strong>
+						<span>Response epoch</span><strong>{{ lastBackendResponseStateEpoch() ?? 'n/a' }}</strong>
+						<span>Last object</span><strong>{{ lastDebugObjectId() ?? 'n/a' }}</strong>
+						<span>Last pixel count</span><strong>{{ lastMaskPixelCount() ?? 'n/a' }}</strong>
+						<span>Fallback used</span><strong>{{ lastFallbackUsed() ? 'yes' : 'no' }}</strong>
+						<span>Last mask source</span><strong>{{ lastMaskSource() }}</strong>
+					</div>
+					<p class="debug-discard" *ngIf="lastDiscardReason()">{{ lastDiscardReason() }}</p>
+				</div>
 			</div>
 		</div>
-	</div>
 
-	<div class="bottom-bar" *ngIf="isInitialized()">
-		<div class="scrubber">
-			<span>Frame: {{ currentFrameIdx() }} / {{ numFrames() - 1 }}</span>
-			<input type="range" [min]="0" [max]="numFrames() - 1" [ngModel]="currentFrameIdx()"
-				(ngModelChange)="currentFrameIdx.set($event); loadFrame($event)">
-		</div>
-	</div>
+		<div class="bottom-bar" *ngIf="isInitialized()">
+				<div class="scrubber">
+					<span>Target: {{ targetFrameIdx() }} | Displayed: {{ displayedFrameIdx() }} / {{ numFrames() - 1 }}</span>
+					<input type="range" [min]="0" [max]="numFrames() - 1" [ngModel]="targetFrameIdx()"
+						(ngModelChange)="onScrubberFrameChange($event)"
+						[disabled]="isLoading() || isFrameLoading() || isPointRequestInFlight()">
+				</div>
+			</div>
 
 	<div class="loading-overlay" *ngIf="isLoading()">
 		<div class="loading-spinner"></div>

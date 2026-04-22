@@ -27,6 +27,7 @@ export interface VideoPropagateRequest {
 	batch_size?: number;
 	online_mode?: boolean;
 	include_masks_in_response?: boolean;
+	include_saved_mask_paths?: boolean;
 	max_frames_in_response?: number;
 	max_mask_values_in_response?: number;
 }
@@ -38,17 +39,74 @@ export interface VideoAddMaskRequest {
 }
 
 export interface VideoAddPointsResponse {
+	request_frame_idx: number;
+	frame_idx: number;
+	frame_file: string;
 	out_obj_ids: number[];
 	out_masks: boolean[][][]; // List of masks (which are 2D boolean arrays)
+	mask_pixel_counts: Record<number, number>;
+	mask_shapes: Record<number, [number, number]>;
+	single_frame_fallback_used?: boolean;
+	state_epoch: number;
+}
+
+export interface VideoInitStateResponse {
+	message: string;
+	num_frames: number;
+	resolved_video_frames_dir: string;
+	source_video_path?: string | null;
+	online_mode: boolean;
+	batch_size: number;
+	offload_video_to_cpu: boolean;
+	offload_state_to_cpu: boolean;
+	state_epoch: number;
 }
 
 export interface VideoPropagateResponse {
 	video_segments: { [frame_idx: string]: { [obj_id: string]: boolean[][] } };
 	saved_mask_paths: { [frame_idx: string]: string[] };
+	saved_mask_frame_count?: number;
 	video_segments_total_frames?: number;
 	video_segments_returned_frames?: number;
 	video_segments_returned_mask_values?: number;
 	video_segments_truncated?: boolean;
+	mask_manifest_path?: string;
+	state_epoch?: number;
+}
+
+export interface VideoMaskObjectData {
+	size: [number, number];
+	rle: number[][];
+	bbox: [number, number, number, number];
+}
+
+export interface VideoMaskDataResponse {
+	frame_idx: number;
+	objects: { [obj_id: string]: VideoMaskObjectData };
+}
+
+export interface TrackPromptPointsRequest {
+	model_name: 'cotracker3_online' | 'cotracker3_offline';
+	add_support_grid?: boolean;
+}
+
+export interface TrackPromptPointMetadata {
+	point_id: string;
+	obj_id: number;
+	source_frame_idx: number;
+	source_x: number;
+	source_y: number;
+}
+
+export interface TrackPromptPointsResponse {
+	message: string;
+	model_name: string;
+	num_points: number;
+	num_frames: number;
+	tracks: number[][][];
+	visibility: boolean[][];
+	points: TrackPromptPointMetadata[];
+	state_epoch?: number;
 }
 
 @Injectable({
@@ -109,12 +167,12 @@ export class BackendService {
 	initVideoState(
 		dir: string,
 		options?: Omit<VideoInitStateRequest, 'video_frames_dir'>
-	): Observable<any> {
+	): Observable<VideoInitStateResponse> {
 		const payload: VideoInitStateRequest = {
 			video_frames_dir: this.normalizePath(dir),
 			...options
 		};
-		return this.http.post(`${this.apiUrl}/video/init_state`, payload);
+		return this.http.post<VideoInitStateResponse>(`${this.apiUrl}/video/init_state`, payload);
 	}
 
 	resetVideoState(): Observable<any> {
@@ -151,5 +209,13 @@ export class BackendService {
 
 	getVideoMaskFrameUrl(frameIdx: number): string {
 		return `${this.apiUrl}/video/mask_frame/${frameIdx}`;
+	}
+
+	getVideoMaskData(frameIdx: number): Observable<VideoMaskDataResponse> {
+		return this.http.get<VideoMaskDataResponse>(`${this.apiUrl}/video/mask_data/${frameIdx}`);
+	}
+
+	trackPromptPoints(request: TrackPromptPointsRequest): Observable<TrackPromptPointsResponse> {
+		return this.http.post<TrackPromptPointsResponse>(`${this.apiUrl}/tracking/track_prompt_points`, request);
 	}
 }

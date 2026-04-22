@@ -10,12 +10,14 @@
 	background-color: #f0f0f0;
 	border-bottom: 1px solid #ccc;
 	display: flex;
+	flex-wrap: wrap;
 	gap: 10px;
 	align-items: center;
 }
 
 .top-bar input {
 	flex-grow: 1;
+	min-width: 260px;
 	padding: 5px;
 }
 
@@ -102,6 +104,50 @@ canvas {
 	display: flex;
 	flex-direction: column;
 	gap: 5px;
+}
+
+.section label {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	font-size: 0.9rem;
+	margin-bottom: 8px;
+}
+
+.section select {
+	padding: 4px 6px;
+}
+
+.debug-section {
+	font-size: 0.85rem;
+}
+
+.debug-grid {
+	display: grid;
+	grid-template-columns: minmax(96px, 1fr) minmax(84px, auto);
+	gap: 4px 8px;
+	align-items: start;
+}
+
+.debug-grid span {
+	color: #555;
+}
+
+.debug-grid strong {
+	justify-self: end;
+	text-align: right;
+	word-break: break-word;
+}
+
+.debug-discard {
+	margin: 8px 0 0;
+	padding: 6px 8px;
+	border-radius: 4px;
+	background: #fff2f2;
+	color: #b42318;
+	font-size: 0.8rem;
+	line-height: 1.3;
+	word-break: break-word;
 }
 
 .bottom-bar {
