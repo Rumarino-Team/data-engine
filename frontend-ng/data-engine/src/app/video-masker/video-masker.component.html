@@ -6,6 +6,9 @@
 		<button (click)="browseVideo()" [disabled]="isInitialized() || isLoading()">Browse Video</button>
 		<button (click)="initVideo()" [disabled]="isInitialized() || isLoading() || !videoDir().trim()">Load Video</button>
 		<div class="api-url-controls">
+			<span class="api-status-pill" [class.online]="apiHealthStatus() === 'online'" [class.offline]="apiHealthStatus() === 'offline'" [class.checking]="apiHealthStatus() === 'checking'">
+				{{ apiHealthStatus() === 'online' ? 'Online' : apiHealthStatus() === 'offline' ? 'Offline' : 'Checking' }}
+			</span>
 			<input
 				type="text"
 				class="api-url-input"
@@ -137,7 +140,35 @@
 			</div>
 
 	<div class="loading-overlay" *ngIf="isLoading()">
-		<div class="loading-spinner"></div>
-		<div class="loading-text">Processing...</div>
+		<div class="progress-panel">
+			<div class="progress-title">{{ activeJobTitle() || 'Processing' }}</div>
+			<div class="progress-stage">{{ activeJob()?.stage_label || 'Starting operation' }}</div>
+			<div class="progress-context" *ngIf="activeJob()?.window_count || activeJob()?.frame_idx !== null && activeJob()?.frame_idx !== undefined">
+				<span *ngIf="activeJob()?.window_count">Window {{ activeJob()?.window_index }} of {{ activeJob()?.window_count }}</span>
+				<span *ngIf="activeJob()?.frame_idx !== null && activeJob()?.frame_idx !== undefined">Frame {{ activeJob()?.frame_idx }}</span>
+			</div>
+			<div class="progress-track" [class.indeterminate]="activeJob()?.progress === null || activeJob()?.progress === undefined">
+				<div class="progress-fill" [style.width.%]="activeJob()?.progress !== null && activeJob()?.progress !== undefined ? ((activeJob()?.progress || 0) * 100) : 35"></div>
+			</div>
+			<div class="progress-meta">
+				<span *ngIf="activeJob()?.progress !== null && activeJob()?.progress !== undefined">{{ ((activeJob()?.progress || 0) * 100) | number:'1.0-0' }}%</span>
+				<span *ngIf="activeJob()?.current !== null && activeJob()?.current !== undefined && activeJob()?.total">{{ activeJob()?.current }} / {{ activeJob()?.total }}</span>
+			</div>
+			<div class="progress-message">{{ activeJob()?.message || 'Waiting for backend job status...' }}</div>
+			<div class="progress-history" *ngIf="recentJobHistory().length">
+				<div class="progress-history-title">Recent activity</div>
+				<div *ngFor="let entry of recentJobHistory()">{{ entry.message }}</div>
+			</div>
+		</div>
+	</div>
+
+	<div class="toast-stack" *ngIf="toasts().length">
+		<div *ngFor="let toast of toasts()" class="toast" [class.error]="toast.severity === 'error'" [class.warning]="toast.severity === 'warning'" [class.info]="toast.severity === 'info'" [class.success]="toast.severity === 'success'">
+			<div>
+				<strong>{{ toast.title }}</strong>
+				<p>{{ toast.message }}</p>
+			</div>
+			<button type="button" (click)="dismissToast(toast.id)" aria-label="Dismiss message">x</button>
+		</div>
 	</div>
 </div>

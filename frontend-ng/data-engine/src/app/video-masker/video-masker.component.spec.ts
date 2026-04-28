@@ -9,6 +9,9 @@ describe('VideoMaskerComponent sync contract', () => {
 	let component: VideoMaskerComponent;
 	let backendMock: {
 		addNewPointsOrBox: ReturnType<typeof vi.fn>;
+		health: ReturnType<typeof vi.fn>;
+		initVideoState: ReturnType<typeof vi.fn>;
+		getJob: ReturnType<typeof vi.fn>;
 		getApiUrl: ReturnType<typeof vi.fn>;
 		setApiUrl: ReturnType<typeof vi.fn>;
 		resetApiUrl: ReturnType<typeof vi.fn>;
@@ -34,6 +37,9 @@ describe('VideoMaskerComponent sync contract', () => {
 	beforeEach(async () => {
 		backendMock = {
 			addNewPointsOrBox: vi.fn(),
+			health: vi.fn(() => of({ status: 'ok' })),
+			initVideoState: vi.fn(),
+			getJob: vi.fn(),
 			getApiUrl: vi.fn(() => 'http://127.0.0.1:8000'),
 			setApiUrl: vi.fn((value: string) => value),
 			resetApiUrl: vi.fn(() => 'http://127.0.0.1:8000'),
@@ -51,6 +57,9 @@ describe('VideoMaskerComponent sync contract', () => {
 					provide: BackendService,
 					useValue: {
 						addNewPointsOrBox: backendMock.addNewPointsOrBox,
+						health: backendMock.health,
+						initVideoState: backendMock.initVideoState,
+						getJob: backendMock.getJob,
 						getApiUrl: backendMock.getApiUrl,
 						setApiUrl: backendMock.setApiUrl,
 						resetApiUrl: backendMock.resetApiUrl,
@@ -143,5 +152,93 @@ describe('VideoMaskerComponent sync contract', () => {
 		await component.browseVideo();
 
 		expect(pickerSpy).toHaveBeenCalled();
+	});
+
+	it('starts a video init job, polls completion, and applies the result', async () => {
+		backendMock.initVideoState.mockReturnValue(of({
+			job_id: 'job-1',
+			status: 'queued',
+			operation: 'video_init',
+			message: 'queued',
+		}));
+		backendMock.getJob.mockReturnValue(of({
+			job: {
+				job_id: 'job-1',
+				operation: 'video_init',
+				status: 'completed',
+				stage: 'completed',
+				stage_label: 'Completed',
+				progress: 1,
+				current: 12,
+				total: 12,
+				window_index: null,
+				window_count: null,
+				frame_idx: null,
+				stage_history: [],
+				message: 'done',
+				error: null,
+				started_at: 'now',
+				updated_at: 'now',
+				completed_at: 'now',
+				result: {
+					message: 'Video state initialized successfully',
+					num_frames: 12,
+					resolved_video_frames_dir: 'C:/frames',
+					source_video_path: null,
+					online_mode: true,
+					batch_size: 32,
+					offload_video_to_cpu: true,
+					offload_state_to_cpu: true,
+					state_epoch: 7,
+				},
+			},
+		}));
+		component.videoDir.set('C:/frames');
+
+		await component.initVideo();
+
+		expect(backendMock.initVideoState).toHaveBeenCalledWith('C:/frames');
+		expect(backendMock.getJob).toHaveBeenCalledWith('job-1');
+		expect(component.isInitialized()).toBe(true);
+		expect(component.numFrames()).toBe(12);
+		expect(component.stateEpoch()).toBe(7);
+	});
+
+	it('creates an error toast when a job fails', async () => {
+		backendMock.initVideoState.mockReturnValue(of({
+			job_id: 'job-2',
+			status: 'queued',
+			operation: 'video_init',
+			message: 'queued',
+		}));
+		backendMock.getJob.mockReturnValue(of({
+			job: {
+				job_id: 'job-2',
+				operation: 'video_init',
+				status: 'failed',
+				stage: 'initializing_state',
+				stage_label: 'Initializing video state',
+				progress: 0.5,
+				current: null,
+				total: null,
+				window_index: null,
+				window_count: null,
+				frame_idx: null,
+				stage_history: [],
+				message: 'failed',
+				error: { code: 'validation_error', message: 'Path not found', detail: null },
+				started_at: 'now',
+				updated_at: 'now',
+				completed_at: 'now',
+				result: null,
+			},
+		}));
+		component.videoDir.set('C:/missing');
+
+		await component.initVideo();
+
+		expect(component.isInitialized()).toBe(false);
+		expect(component.toasts()[0].title).toBe('Loading video');
+		expect(component.toasts()[0].message).toBe('Path not found');
 	});
 });

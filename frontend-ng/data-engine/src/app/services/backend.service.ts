@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { Observable } from 'rxjs';
+import { Observable, timeout } from 'rxjs';
 
 const API_URL_STORAGE_KEY = 'dataEngineApiUrl';
 const DEFAULT_API_URL = 'http://127.0.0.1:8000';
@@ -112,6 +112,64 @@ export interface TrackPromptPointsResponse {
 	state_epoch?: number;
 }
 
+export type ApiHealthStatus = 'checking' | 'online' | 'offline';
+export type JobStatus = 'queued' | 'running' | 'completed' | 'failed';
+export type JobOperation = 'video_init' | 'mask_propagation' | 'prompt_tracking';
+
+export interface HealthResponse {
+	status: string;
+}
+
+export interface JobStartResponse {
+	job_id: string;
+	status: JobStatus;
+	operation: JobOperation;
+	message: string;
+}
+
+export interface JobError {
+	code: string;
+	message: string;
+	detail?: string | null;
+}
+
+export interface JobStageHistoryEntry {
+	stage: string;
+	stage_label: string;
+	message: string;
+	progress: number | null;
+	updated_at: string;
+}
+
+export interface BackendJob<T = unknown> {
+	job_id: string;
+	operation: JobOperation;
+	status: JobStatus;
+	stage: string;
+	stage_label: string;
+	progress: number | null;
+	current: number | null;
+	total: number | null;
+	window_index: number | null;
+	window_count: number | null;
+	frame_idx: number | null;
+	stage_history?: JobStageHistoryEntry[];
+	message: string;
+	result: T | null;
+	error: JobError | null;
+	started_at: string;
+	updated_at: string;
+	completed_at: string | null;
+}
+
+export interface JobResponse<T = unknown> {
+	job: BackendJob<T>;
+}
+
+export interface CurrentJobResponse {
+	job: BackendJob | null;
+}
+
 @Injectable({
 	providedIn: 'root'
 })
@@ -172,6 +230,18 @@ export class BackendService {
 		return this.apiUrl;
 	}
 
+	health(): Observable<HealthResponse> {
+		return this.http.get<HealthResponse>(this.endpoint('/health')).pipe(timeout(2000));
+	}
+
+	getCurrentJob(): Observable<CurrentJobResponse> {
+		return this.http.get<CurrentJobResponse>(this.endpoint('/jobs/current'));
+	}
+
+	getJob<T = unknown>(jobId: string): Observable<JobResponse<T>> {
+		return this.http.get<JobResponse<T>>(this.endpoint(`/jobs/${jobId}`));
+	}
+
 	private safeDecodeURIComponent(value: string): string {
 		try {
 			return decodeURIComponent(value);
@@ -209,12 +279,12 @@ export class BackendService {
 	initVideoState(
 		dir: string,
 		options?: Omit<VideoInitStateRequest, 'video_frames_dir'>
-	): Observable<VideoInitStateResponse> {
+	): Observable<JobStartResponse> {
 		const payload: VideoInitStateRequest = {
 			video_frames_dir: this.normalizePath(dir),
 			...options
 		};
-		return this.http.post<VideoInitStateResponse>(this.endpoint('/video/init_state'), payload);
+		return this.http.post<JobStartResponse>(this.endpoint('/video/init_state'), payload);
 	}
 
 	resetVideoState(): Observable<any> {
@@ -225,8 +295,8 @@ export class BackendService {
 		return this.http.post<VideoAddPointsResponse>(this.endpoint('/video/add_new_points_or_box'), request);
 	}
 
-	propagateInVideo(request: VideoPropagateRequest): Observable<VideoPropagateResponse> {
-		return this.http.post<VideoPropagateResponse>(this.endpoint('/video/propagate_in_video'), request);
+	propagateInVideo(request: VideoPropagateRequest): Observable<JobStartResponse> {
+		return this.http.post<JobStartResponse>(this.endpoint('/video/propagate_in_video'), request);
 	}
 
 	clearAllPromptsInFrame(frameIdx: number, objId: number): Observable<any> {
@@ -257,7 +327,7 @@ export class BackendService {
 		return this.http.get<VideoMaskDataResponse>(this.endpoint(`/video/mask_data/${frameIdx}`));
 	}
 
-	trackPromptPoints(request: TrackPromptPointsRequest): Observable<TrackPromptPointsResponse> {
-		return this.http.post<TrackPromptPointsResponse>(this.endpoint('/tracking/track_prompt_points'), request);
+	trackPromptPoints(request: TrackPromptPointsRequest): Observable<JobStartResponse> {
+		return this.http.post<JobStartResponse>(this.endpoint('/tracking/track_prompt_points'), request);
 	}
 }

@@ -63,4 +63,28 @@ describe('BackendService', () => {
 		expect(service.getApiUrl()).toBe('http://127.0.0.1:8000');
 		expect(localStorage.getItem('dataEngineApiUrl')).toBeNull();
 	});
+
+	it('calls the health endpoint', () => {
+		const http = {
+			post: vi.fn(),
+			get: vi.fn(() => of({ status: 'ok' })),
+		} as unknown as HttpClient;
+		const service = new BackendService(http);
+
+		service.health().subscribe();
+
+		expect((http.get as any).mock.calls[0][0]).toBe('http://127.0.0.1:8000/health');
+	});
+
+	it('fetches job status by id', () => {
+		const http = {
+			post: vi.fn(),
+			get: vi.fn(() => of({ job: null })),
+		} as unknown as HttpClient;
+		const service = new BackendService(http);
+
+		service.getJob('abc123').subscribe();
+
+		expect((http.get as any).mock.calls[0][0]).toBe('http://127.0.0.1:8000/jobs/abc123');
+	});
 });

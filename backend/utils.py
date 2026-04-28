@@ -4,7 +4,7 @@ from pathlib import Path
 import shutil
 import hashlib
 import json
-from typing import Any
+from typing import Any, Callable, Optional
 
 
 def _color_from_obj_id(obj_id):
@@ -248,7 +248,12 @@ def save_single_video_mask_frame(frame_files, masks_dir, frame_idx, obj_masks):
     return str(output_path)
 
 
-def extract_video_to_frames(video_path: Path, output_root: Path, image_extensions: set[str] | None = None) -> Path:
+def extract_video_to_frames(
+    video_path: Path,
+    output_root: Path,
+    image_extensions: set[str] | None = None,
+    progress_callback: Optional[Callable[[int, Optional[int]], None]] = None,
+) -> Path:
     """
     Extract a video into a cached frame directory.
 
@@ -256,6 +261,7 @@ def extract_video_to_frames(video_path: Path, output_root: Path, image_extension
     - video_path: path to the source video file
     - output_root: root directory where extracted frame folders are stored
     - image_extensions: frame extensions considered valid for cache checks
+    - progress_callback: optional callback receiving extracted count and total frames when known
 
     Returns: Path to directory containing extracted frame images
     """
@@ -285,6 +291,8 @@ def extract_video_to_frames(video_path: Path, output_root: Path, image_extension
     if not capture.isOpened():
         raise ValueError(f"Unable to open video file: {video_path}")
 
+    raw_total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    total_frames: Optional[int] = raw_total_frames if raw_total_frames > 0 else None
     frame_idx = 0
     try:
         while True:
@@ -295,6 +303,8 @@ def extract_video_to_frames(video_path: Path, output_root: Path, image_extension
             if not cv2.imwrite(str(output_path), frame):
                 raise RuntimeError(f"Failed to write extracted frame: {output_path}")
             frame_idx += 1
+            if progress_callback is not None:
+                progress_callback(frame_idx, total_frames)
     finally:
         capture.release()
 

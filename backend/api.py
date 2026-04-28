@@ -1,4 +1,4 @@
-from typing import Optional, Any
+from typing import Optional, Any, Callable
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -18,6 +18,7 @@ from urllib.parse import unquote, urlparse
 import cv2
 import shutil
 import uuid
+import threading
 
 app = FastAPI()
 
@@ -52,6 +53,196 @@ DEFAULT_MAX_MASK_VALUES_IN_RESPONSE = int(os.getenv("VIDEO_PROPAGATE_MAX_MASK_VA
 DEFAULT_PROMPT_TRACK_BATCH_SIZE = int(os.getenv("TRACK_PROMPT_BATCH_SIZE", "32"))
 
 logger = logging.getLogger(__name__)
+current_job: Optional[dict[str, Any]] = None
+current_job_lock = threading.Lock()
+_UNSET = object()
+
+
+def _utc_now_iso() -> str:
+    return datetime.utcnow().isoformat(timespec="seconds") + "Z"
+
+
+def _serialize_job(job: Optional[dict[str, Any]] = None) -> Optional[dict[str, Any]]:
+    with current_job_lock:
+        source = current_job if job is None else job
+        return dict(source) if source is not None else None
+
+
+def _active_job_exists() -> bool:
+    return current_job is not None and current_job.get("status") in {"queued", "running"}
+
+
+def _start_job(operation: str, *, stage: str, stage_label: str, message: str) -> dict[str, Any]:
+    global current_job
+    with current_job_lock:
+        if _active_job_exists():
+            raise HTTPException(status_code=409, detail="Another operation is already running.")
+
+        now = _utc_now_iso()
+        current_job = {
+            "job_id": uuid.uuid4().hex,
+            "operation": operation,
+            "status": "queued",
+            "stage": stage,
+            "stage_label": stage_label,
+            "progress": 0.0,
+            "current": None,
+            "total": None,
+            "window_index": None,
+            "window_count": None,
+            "frame_idx": None,
+            "stage_history": [],
+            "message": message,
+            "result": None,
+            "error": None,
+            "started_at": now,
+            "updated_at": now,
+            "completed_at": None,
+        }
+        return dict(current_job)
+
+
+def _update_job(
+    *,
+    status: Optional[str] = None,
+    stage: Optional[str] = None,
+    stage_label: Optional[str] = None,
+    progress: Any = _UNSET,
+    current: Any = _UNSET,
+    total: Any = _UNSET,
+    window_index: Any = _UNSET,
+    window_count: Any = _UNSET,
+    frame_idx: Any = _UNSET,
+    message: Optional[str] = None,
+    append_history: bool = True,
+) -> None:
+    with current_job_lock:
+        if current_job is None:
+            return
+        if status is not None:
+            current_job["status"] = status
+        if stage is not None:
+            current_job["stage"] = stage
+        if stage_label is not None:
+            current_job["stage_label"] = stage_label
+        if progress is not _UNSET:
+            current_job["progress"] = None if progress is None else min(max(float(progress), 0.0), 1.0)
+        if current is not _UNSET:
+            current_job["current"] = None if current is None else int(current)
+        if total is not _UNSET:
+            current_job["total"] = None if total is None else int(total)
+        if window_index is not _UNSET:
+            current_job["window_index"] = None if window_index is None else int(window_index)
+        if window_count is not _UNSET:
+            current_job["window_count"] = None if window_count is None else int(window_count)
+        if frame_idx is not _UNSET:
+            current_job["frame_idx"] = None if frame_idx is None else int(frame_idx)
+        if message is not None:
+            current_job["message"] = message
+        now = _utc_now_iso()
+        current_job["updated_at"] = now
+        if append_history and (stage is not None or stage_label is not None or message is not None):
+            history = current_job.setdefault("stage_history", [])
+            history.append(
+                {
+                    "stage": current_job.get("stage"),
+                    "stage_label": current_job.get("stage_label"),
+                    "message": current_job.get("message"),
+                    "progress": current_job.get("progress"),
+                    "updated_at": now,
+                }
+            )
+            del history[:-8]
+
+
+def _complete_job(result: dict[str, Any]) -> None:
+    with current_job_lock:
+        if current_job is None:
+            return
+        now = _utc_now_iso()
+        current_job.update(
+            {
+                "status": "completed",
+                "stage": "completed",
+                "stage_label": "Completed",
+                "progress": 1.0,
+                "current": current_job.get("total") or current_job.get("current"),
+                "window_index": None,
+                "window_count": None,
+                "frame_idx": None,
+                "message": "Operation completed",
+                "result": result,
+                "error": None,
+                "updated_at": now,
+                "completed_at": now,
+            }
+        )
+
+
+def _fail_job(error_code: str, message: str, detail: Optional[str] = None) -> None:
+    with current_job_lock:
+        if current_job is None:
+            return
+        now = _utc_now_iso()
+        current_job.update(
+            {
+                "status": "failed",
+                "error": {"code": error_code, "message": message, "detail": detail},
+                "message": message,
+                "updated_at": now,
+                "completed_at": now,
+            }
+        )
+
+
+def _job_error_from_exception(error: Exception) -> tuple[str, str, Optional[str]]:
+    if isinstance(error, HTTPException):
+        message = str(error.detail)
+        if error.status_code == 507:
+            return "cuda_out_of_memory", message, None
+        if error.status_code in {400, 404, 409}:
+            return "validation_error", message, None
+        return "backend_error", message, None
+    if isinstance(error, torch.OutOfMemoryError):
+        return "cuda_out_of_memory", "CUDA out of memory during operation.", str(error)
+    if isinstance(error, RuntimeError) and "out of memory" in str(error).lower():
+        return "cuda_out_of_memory", "CUDA out of memory during operation.", str(error)
+    return "backend_error", "Backend operation failed.", str(error)
+
+
+def _run_job(job_id: str, worker: Callable[[], dict[str, Any]]) -> None:
+    with current_job_lock:
+        if current_job is None or current_job.get("job_id") != job_id:
+            return
+        current_job["status"] = "running"
+        current_job["updated_at"] = _utc_now_iso()
+
+    try:
+        result = worker()
+        _complete_job(result)
+    except Exception as error:
+        logger.exception("Background job failed")
+        error_code, message, detail = _job_error_from_exception(error)
+        _fail_job(error_code, message, detail)
+
+
+def _queue_long_job(
+    *,
+    operation: str,
+    stage: str,
+    stage_label: str,
+    message: str,
+    worker: Callable[[], dict[str, Any]],
+) -> dict[str, Any]:
+    job = _start_job(operation, stage=stage, stage_label=stage_label, message=message)
+    thread = threading.Thread(target=_run_job, args=(job["job_id"], worker), daemon=True)
+    thread.start()
+    return {
+        "job_id": job["job_id"],
+        "status": job["status"],
+        "operation": job["operation"],
+        "message": message,
+    }
 
 
 def _cleanup_cuda_memory():
@@ -108,9 +299,15 @@ def _load_video_frames_as_numpy(video_dir_path: Path, frame_file_names: list[str
     return np.stack(frames_rgb, axis=0)
 
 
-def _build_window_dir(frame_paths: list[Path], run_root: Path, window_name: str) -> Path:
+def _build_window_dir(
+    frame_paths: list[Path],
+    run_root: Path,
+    window_name: str,
+    progress_callback: Optional[Callable[[int, int, Path], None]] = None,
+) -> Path:
     window_dir = run_root / window_name
     window_dir.mkdir(parents=True, exist_ok=True)
+    total = len(frame_paths)
 
     for local_idx, source_path in enumerate(frame_paths):
         target_name = f"{local_idx:05d}{source_path.suffix.lower()}"
@@ -122,6 +319,8 @@ def _build_window_dir(frame_paths: list[Path], run_root: Path, window_name: str)
                 os.link(source_path, target_path)
             except OSError:
                 shutil.copy2(source_path, target_path)
+        if progress_callback is not None:
+            progress_callback(local_idx + 1, total, source_path)
 
     return window_dir
 
@@ -295,20 +494,52 @@ def _initialize_video_state_from_resolved_input(
     global video_masker, video_dir, video_frame_files, video_source_path
 
     source_video_path = None
+    extraction_reported = False
     if resolved_input_path.is_file():
         suffix = resolved_input_path.suffix.lower()
         if suffix in VIDEO_EXTENSIONS:
+            def _on_extract_progress(current: int, total: Optional[int]) -> None:
+                nonlocal extraction_reported
+                extraction_reported = True
+                if total:
+                    progress = min(0.7, 0.15 + (0.5 * (current / total)))
+                    message = f"Extracted {current} of {total} frames"
+                else:
+                    progress = None
+                    message = f"Extracted {current} frames"
+                _update_job(
+                    stage="extracting_frames",
+                    stage_label="Extracting video frames",
+                    progress=progress,
+                    current=current,
+                    total=total,
+                    frame_idx=max(0, current - 1),
+                    message=message,
+                    append_history=current == 1 or (bool(total) and current == total),
+                )
+
             try:
                 resolved_video_dir = extract_video_to_frames(
                     resolved_input_path,
                     output_root=GENERATED_FRAMES_ROOT,
                     image_extensions=IMAGE_EXTENSIONS,
+                    progress_callback=_on_extract_progress,
                 )
             except ValueError as error:
                 raise HTTPException(status_code=400, detail=str(error)) from error
             except Exception as error:
                 raise HTTPException(status_code=500, detail=str(error)) from error
             source_video_path = str(resolved_input_path)
+            if not extraction_reported:
+                _update_job(
+                    stage="indexing_frames",
+                    stage_label="Indexing video frames",
+                    progress=0.7,
+                    current=None,
+                    total=None,
+                    frame_idx=None,
+                    message="Found cached frame directory",
+                )
         else:
             if suffix in IMAGE_EXTENSIONS:
                 detail = (
@@ -325,6 +556,15 @@ def _initialize_video_state_from_resolved_input(
         resolved_video_dir = resolved_input_path
 
     video_dir = str(resolved_video_dir)
+    _update_job(
+        stage="initializing_state",
+        stage_label="Initializing video state",
+        progress=0.75,
+        current=None,
+        total=None,
+        frame_idx=None,
+        message="Initializing SAM2 state",
+    )
     try:
         video_masker.init_state(
             video_dir,
@@ -337,11 +577,42 @@ def _initialize_video_state_from_resolved_input(
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
-    video_frame_files = sorted([
-        frame_path.name
+    _update_job(
+        stage="indexing_frames",
+        stage_label="Indexing video frames",
+        progress=0.85,
+        message="SAM2 state initialized; indexing frame files",
+    )
+
+    candidate_paths = sorted([
+        frame_path
         for frame_path in resolved_video_dir.iterdir()
-        if frame_path.is_file() and frame_path.suffix.lower() in IMAGE_EXTENSIONS
+        if frame_path.is_file()
     ])
+    total_candidates = len(candidate_paths)
+    report_every = max(1, total_candidates // 100) if total_candidates else 1
+    indexed_frame_files: list[str] = []
+    for candidate_idx, frame_path in enumerate(candidate_paths, start=1):
+        if frame_path.suffix.lower() in IMAGE_EXTENSIONS:
+            indexed_frame_files.append(frame_path.name)
+        should_report = (
+            candidate_idx == 1
+            or candidate_idx == total_candidates
+            or candidate_idx % report_every == 0
+        )
+        if should_report:
+            _update_job(
+                stage="indexing_frames",
+                stage_label="Indexing video frames",
+                progress=0.85 + (0.1 * (candidate_idx / total_candidates)) if total_candidates else 0.95,
+                current=len(indexed_frame_files),
+                total=total_candidates,
+                frame_idx=len(indexed_frame_files) - 1 if indexed_frame_files else None,
+                message=f"Indexed {len(indexed_frame_files)} of {total_candidates} frame files",
+                append_history=candidate_idx == 1 or candidate_idx == total_candidates,
+            )
+
+    video_frame_files = indexed_frame_files
 
     if not video_frame_files:
         raise HTTPException(
@@ -466,6 +737,19 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/jobs/current")
+async def get_current_job():
+    return {"job": _serialize_job()}
+
+
+@app.get("/jobs/{job_id}")
+async def get_job(job_id: str):
+    job = _serialize_job()
+    if job is None or job.get("job_id") != job_id:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    return {"job": job}
+
+
 @app.get("/status")
 async def status():
     global video_masker, tracker
@@ -480,9 +764,39 @@ async def status():
 
 @app.post("/video/init_state")
 async def init_video_state(request: VideoInitStateRequest):
+    return _queue_long_job(
+        operation="video_init",
+        stage="resolving_input",
+        stage_label="Resolving input",
+        message="Video initialization queued",
+        worker=lambda: _run_video_init_job(request),
+    )
+
+
+def _run_video_init_job(request: VideoInitStateRequest) -> dict[str, Any]:
+    _update_job(
+        status="running",
+        stage="resolving_input",
+        stage_label="Resolving input",
+        progress=0.1,
+        message="Resolving video path",
+    )
     _prepare_video_masker_for_video_init()
     resolved_input_path = _resolve_input_path(request.video_frames_dir)
-    return _initialize_video_state_from_resolved_input(
+    _update_job(
+        stage="loading_sam2",
+        stage_label="Loading SAM2",
+        progress=0.35,
+        message="Preparing video masker",
+    )
+    if resolved_input_path.is_file() and resolved_input_path.suffix.lower() in VIDEO_EXTENSIONS:
+        _update_job(
+            stage="extracting_frames",
+            stage_label="Extracting frames",
+            progress=0.45,
+            message="Extracting video frames",
+        )
+    result = _initialize_video_state_from_resolved_input(
         resolved_input_path,
         online_mode=request.online_mode,
         batch_size=request.batch_size,
@@ -490,6 +804,15 @@ async def init_video_state(request: VideoInitStateRequest):
         offload_state_to_cpu=request.offload_state_to_cpu,
         async_loading_frames=request.async_loading_frames,
     )
+    _update_job(
+        stage="indexing_frames",
+        stage_label="Indexing video frames",
+        progress=0.95,
+        current=int(result.get("num_frames", 0)),
+        total=int(result.get("num_frames", 0)),
+        message=f"Indexed {int(result.get('num_frames', 0))} frames",
+    )
+    return result
 
 @app.post("/video/reset_state")
 async def reset_video_state():
@@ -636,11 +959,31 @@ async def add_new_mask(request: VideoAddMaskRequest):
 
 @app.post("/video/propagate_in_video")
 async def propagate_in_video(request: VideoPropagateRequest):
+    return _queue_long_job(
+        operation="mask_propagation",
+        stage="validating_prompts",
+        stage_label="Validating prompts",
+        message="Mask propagation queued",
+        worker=lambda: _run_propagation_job(request),
+    )
+
+
+def _run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
     global video_masker, video_dir, video_frame_files, mask_manifest_path, video_state_epoch
+    def _propagation_progress(processed_frames_count: int, expected_frames_count: int) -> float:
+        return (processed_frames_count / expected_frames_count) if expected_frames_count else 0.0
+
+    _update_job(
+        status="running",
+        stage="validating_prompts",
+        stage_label="Validating prompts",
+        progress=0.0,
+        message="Validating mask propagation inputs",
+    )
     if video_masker is None:
-        return {"error": "Video masker not active."}
+        raise HTTPException(status_code=400, detail="Video masker not active.")
     if video_dir is None:
-        return {"error": "Video directory not set. Call /video/init_state first."}
+        raise HTTPException(status_code=400, detail="Video directory not set. Call /video/init_state first.")
 
     if request.reverse:
         raise HTTPException(
@@ -692,6 +1035,16 @@ async def propagate_in_video(request: VideoPropagateRequest):
     if end_frame_idx < start_frame_idx:
         raise HTTPException(status_code=400, detail="Invalid propagation frame range.")
 
+    expected_total_frames = end_frame_idx - start_frame_idx + 1
+    _update_job(
+        stage="preparing_manifest",
+        stage_label="Preparing manifest",
+        progress=0.02,
+        current=0,
+        total=expected_total_frames,
+        message=f"Preparing masks for {expected_total_frames} frames",
+    )
+
     frame_files, masks_dir = prepare_video_masks_output(video_dir)
     manifest_file_path = masks_dir / "manifest.json"
 
@@ -727,9 +1080,55 @@ async def propagate_in_video(request: VideoPropagateRequest):
 
     try:
         for window_index, (window_start, window_end) in enumerate(windows):
+            window_number = window_index + 1
+            window_count = len(windows)
+            _update_job(
+                stage="building_window",
+                stage_label="Loading propagation window",
+                current=0,
+                total=window_end - window_start + 1,
+                window_index=window_number,
+                window_count=window_count,
+                frame_idx=window_start,
+                progress=_propagation_progress(len(processed_frames), expected_total_frames),
+                message=f"Preparing window {window_number} of {window_count}: frames {window_start}-{window_end}",
+            )
             window_frame_paths = [Path(video_dir) / video_frame_files[idx] for idx in range(window_start, window_end + 1)]
             window_name = f"window_{window_index}_{window_start}_{window_end}"
-            window_dir = _build_window_dir(window_frame_paths, run_root, window_name)
+
+            def _on_window_build_progress(current: int, total: int, source_path: Path) -> None:
+                source_frame_idx = window_start + current - 1
+                _update_job(
+                    stage="building_window",
+                    stage_label="Loading propagation window",
+                    current=current,
+                    total=total,
+                    window_index=window_number,
+                    window_count=window_count,
+                    frame_idx=source_frame_idx,
+                    progress=_propagation_progress(len(processed_frames), expected_total_frames),
+                    message=f"Linked {current} of {total} frames for window {window_number} of {window_count}",
+                    append_history=current == 1 or current == total,
+                )
+
+            window_dir = _build_window_dir(
+                window_frame_paths,
+                run_root,
+                window_name,
+                progress_callback=_on_window_build_progress,
+            )
+
+            _update_job(
+                stage="initializing_state",
+                stage_label="Initializing SAM2 window state",
+                current=len(processed_frames),
+                total=expected_total_frames,
+                window_index=window_number,
+                window_count=window_count,
+                frame_idx=window_start,
+                progress=_propagation_progress(len(processed_frames), expected_total_frames),
+                message=f"Initializing SAM2 state for window {window_number} of {window_count}",
+            )
 
             video_masker.init_state(
                 str(window_dir),
@@ -740,7 +1139,30 @@ async def propagate_in_video(request: VideoPropagateRequest):
                 async_loading_frames=False,
             )
 
+            _update_job(
+                stage="seeding_window",
+                stage_label="Seeding prompts",
+                current=len(processed_frames),
+                total=expected_total_frames,
+                window_index=window_number,
+                window_count=window_count,
+                frame_idx=window_start,
+                progress=_propagation_progress(len(processed_frames), expected_total_frames),
+                message=f"Seeding prompts for window {window_number} of {window_count}",
+            )
+
             if window_index > 0 and boundary_masks and boundary_frame_idx is not None:
+                _update_job(
+                    stage="seeding_window",
+                    stage_label="Seeding boundary masks",
+                    current=len(processed_frames),
+                    total=expected_total_frames,
+                    window_index=window_number,
+                    window_count=window_count,
+                    frame_idx=boundary_frame_idx,
+                    progress=_propagation_progress(len(processed_frames), expected_total_frames),
+                    message=f"Seeding boundary masks for window {window_number} of {window_count}",
+                )
                 local_boundary_idx = int(boundary_frame_idx - window_start)
                 for obj_id, obj_mask in boundary_masks.items():
                     video_masker.add_new_mask(
@@ -788,6 +1210,18 @@ async def propagate_in_video(request: VideoPropagateRequest):
                     return
 
                 processed_frames.add(global_frame_idx)
+                _update_job(
+                    stage="propagating_window",
+                    stage_label="Propagating masks",
+                    current=len(processed_frames),
+                    total=expected_total_frames,
+                    window_index=window_number,
+                    window_count=window_count,
+                    frame_idx=global_frame_idx,
+                    progress=_propagation_progress(len(processed_frames), expected_total_frames),
+                    message=f"Processed {len(processed_frames)} of {expected_total_frames} frames",
+                    append_history=len(processed_frames) == 1 or len(processed_frames) == expected_total_frames,
+                )
                 manifest_frames[str(global_frame_idx)] = _manifest_frame_payload(frame_masks)
                 if request.include_masks_in_response:
                     video_segments_serializable[global_frame_idx] = {
@@ -826,6 +1260,17 @@ async def propagate_in_video(request: VideoPropagateRequest):
                 collect_segments=False,
                 frame_callback=_on_window_frame,
             )
+            _update_job(
+                stage="propagating_window",
+                stage_label="Propagating masks",
+                current=len(processed_frames),
+                total=expected_total_frames,
+                window_index=window_number,
+                window_count=window_count,
+                frame_idx=window_end,
+                progress=_propagation_progress(len(processed_frames), expected_total_frames),
+                message=f"Finished window {window_number} of {window_count}",
+            )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except torch.OutOfMemoryError as error:
@@ -849,9 +1294,31 @@ async def propagate_in_video(request: VideoPropagateRequest):
 
     write_mask_manifest(manifest_file_path, manifest)
     mask_manifest_path = str(manifest_file_path)
+    _update_job(
+        stage="saving_manifest",
+        stage_label="Saving manifest",
+        progress=0.98,
+        current=len(processed_frames),
+        total=expected_total_frames,
+        window_index=None,
+        window_count=None,
+        frame_idx=None,
+        message="Saving mask manifest",
+    )
 
     try:
         # Rebind interactive state to the original full video frame index space.
+        _update_job(
+            stage="restoring_state",
+            stage_label="Restoring interactive state",
+            progress=0.99,
+            current=len(processed_frames),
+            total=expected_total_frames,
+            window_index=None,
+            window_count=None,
+            frame_idx=None,
+            message="Restoring interactive masking state",
+        )
         _restore_video_masker_from_prompt_events(
             online_mode=effective_online_mode,
             batch_size=effective_batch_size,
@@ -945,7 +1412,24 @@ async def load_tracking_video(request: TrackingLoadVideoRequest):
 
 @app.post("/tracking/track_prompt_points")
 async def track_prompt_points(request: TrackingPromptPointsRequest):
+    return _queue_long_job(
+        operation="prompt_tracking",
+        stage="collecting_prompts",
+        stage_label="Collecting prompts",
+        message="Prompt tracking queued",
+        worker=lambda: _run_prompt_tracking_job(request),
+    )
+
+
+def _run_prompt_tracking_job(request: TrackingPromptPointsRequest) -> dict[str, Any]:
     global tracker, tracking_video, tracking_video_path, video_masker, video_prompt_events, video_dir, video_state_epoch
+    _update_job(
+        status="running",
+        stage="collecting_prompts",
+        stage_label="Collecting prompts",
+        progress=0.05,
+        message="Collecting positive prompt points",
+    )
 
     if not video_prompt_events:
         raise HTTPException(status_code=400, detail="No annotation prompts available for tracking.")
@@ -978,6 +1462,15 @@ async def track_prompt_points(request: TrackingPromptPointsRequest):
 
     if not positive_queries:
         raise HTTPException(status_code=400, detail="No positive prompt points available for tracking.")
+    total_queries = len(positive_queries)
+    _update_job(
+        stage="loading_tracker",
+        stage_label="Loading tracker",
+        progress=0.2,
+        current=0,
+        total=total_queries,
+        message=f"Preparing to track {total_queries} prompt points",
+    )
 
     should_restore_video_masker = video_masker is not None and video_dir is not None
     restore_online_mode = video_masker.online_mode if video_masker is not None else True
@@ -1010,6 +1503,14 @@ async def track_prompt_points(request: TrackingPromptPointsRequest):
         _cleanup_cuda_memory()
 
     _ensure_tracker_model(request.model_name)
+    _update_job(
+        stage="loading_frames",
+        stage_label="Loading frames",
+        progress=0.35,
+        current=0,
+        total=total_queries,
+        message="Loading video frames for tracking",
+    )
 
     def _is_oom_runtime_error(error: RuntimeError) -> bool:
         return "out of memory" in str(error).lower()
@@ -1060,6 +1561,14 @@ async def track_prompt_points(request: TrackingPromptPointsRequest):
             tracks_batches.append(batch_tracks)
             visibility_batches.append(batch_visibility)
             index = end_index
+            _update_job(
+                stage="tracking_points",
+                stage_label="Tracking prompt points",
+                progress=0.35 + (0.55 * (index / query_array.shape[0])),
+                current=index,
+                total=query_array.shape[0],
+                message=f"Tracked {index} of {query_array.shape[0]} prompt points",
+            )
 
         tracks = np.concatenate(tracks_batches, axis=0)
         visibility = np.concatenate(visibility_batches, axis=0)
@@ -1119,6 +1628,14 @@ async def track_prompt_points(request: TrackingPromptPointsRequest):
         raise HTTPException(status_code=500, detail=f"Prompt-point tracking failed: {error}") from error
 
     _cleanup_cuda_memory()
+    _update_job(
+        stage="restoring_masker",
+        stage_label="Restoring masking state",
+        progress=0.95,
+        current=int(tracks.shape[0]),
+        total=total_queries,
+        message="Restoring interactive masking state",
+    )
     _restore_masker_state(raise_on_error=True)
 
     return {

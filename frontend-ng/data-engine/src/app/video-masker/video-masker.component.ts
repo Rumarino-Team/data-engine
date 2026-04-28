@@ -1,12 +1,18 @@
-import { Component, ElementRef, ViewChild, effect, signal } from '@angular/core';
+import { Component, ElementRef, OnDestroy, ViewChild, effect, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { firstValueFrom } from 'rxjs';
 import {
+	ApiHealthStatus,
+	BackendJob,
 	BackendService,
+	JobStageHistoryEntry,
 	TrackPromptPointMetadata,
+	TrackPromptPointsResponse,
 	VideoAddPointsOrBoxRequest,
-	VideoMaskObjectData
+	VideoInitStateResponse,
+	VideoMaskObjectData,
+	VideoPropagateResponse
 } from '../services/backend.service';
 import { DesktopBridgeService } from '../services/desktop-bridge.service';
 
@@ -29,6 +35,15 @@ interface TrackedPointSeries extends TrackPromptPointMetadata {
 
 type TrackingOverlayStyle = 'point' | 'short' | 'full';
 type DebugMaskSource = 'live' | 'manifest' | 'none';
+type ToastSeverity = 'error' | 'warning' | 'info' | 'success';
+
+interface AppToast {
+	id: number;
+	severity: ToastSeverity;
+	title: string;
+	message: string;
+	createdAt: number;
+}
 
 @Component({
 	selector: 'app-video-masker',
@@ -37,7 +52,7 @@ type DebugMaskSource = 'live' | 'manifest' | 'none';
 	templateUrl: './video-masker.component.html',
 	styleUrls: ['./video-masker.component.css']
 })
-export class VideoMaskerComponent {
+export class VideoMaskerComponent implements OnDestroy {
 	@ViewChild('canvas') canvasRef!: ElementRef<HTMLCanvasElement>;
 	@ViewChild('videoFileInput') videoFileInputRef?: ElementRef<HTMLInputElement>;
 	@ViewChild('framesDirInput') framesDirInputRef?: ElementRef<HTMLInputElement>;
@@ -67,6 +82,10 @@ export class VideoMaskerComponent {
 	isLoading = signal<boolean>(false);
 	isFrameLoading = signal<boolean>(false);
 	isPointRequestInFlight = signal<boolean>(false);
+	apiHealthStatus = signal<ApiHealthStatus>('checking');
+	activeJob = signal<BackendJob | null>(null);
+	activeJobTitle = signal<string>('');
+	toasts = signal<AppToast[]>([]);
 	lastClickRequestFrameIdx = signal<number | null>(null);
 	lastBackendResponseFrameIdx = signal<number | null>(null);
 	lastBackendResponseFrameFile = signal<string>('n/a');
@@ -80,6 +99,8 @@ export class VideoMaskerComponent {
 	private frameLoadToken = 0;
 	private currentBaseImage: HTMLImageElement | null = null;
 	private currentMaskObjects: { [objId: string]: VideoMaskObjectData } = {};
+	private healthTimerId: ReturnType<typeof setInterval> | null = null;
+	private nextToastId = 1;
 
 	constructor(
 		private backend: BackendService,
@@ -100,6 +121,92 @@ export class VideoMaskerComponent {
 				this.drawCurrentFrame();
 			}
 		});
+
+		this.checkApiHealth(true);
+		this.healthTimerId = setInterval(() => this.checkApiHealth(), 3000);
+	}
+
+	ngOnDestroy(): void {
+		if (this.healthTimerId !== null) {
+			clearInterval(this.healthTimerId);
+		}
+	}
+
+	private async checkApiHealth(showChecking = false): Promise<void> {
+		if (showChecking || this.apiHealthStatus() === 'checking') {
+			this.apiHealthStatus.set('checking');
+		}
+		try {
+			await firstValueFrom(this.backend.health());
+			this.apiHealthStatus.set('online');
+		} catch {
+			this.apiHealthStatus.set('offline');
+		}
+	}
+
+	private showToast(severity: ToastSeverity, title: string, message: string): void {
+		const toast: AppToast = {
+			id: this.nextToastId++,
+			severity,
+			title,
+			message,
+			createdAt: Date.now(),
+		};
+		this.toasts.update((existing) => [toast, ...existing].slice(0, 6));
+		if (severity === 'info' || severity === 'success') {
+			setTimeout(() => this.dismissToast(toast.id), 5000);
+		}
+	}
+
+	dismissToast(id: number): void {
+		this.toasts.update((existing) => existing.filter((toast) => toast.id !== id));
+	}
+
+	recentJobHistory(): JobStageHistoryEntry[] {
+		const history = this.activeJob()?.stage_history || [];
+		return history.slice(-3);
+	}
+
+	private getErrorMessage(error: any, fallback: string): string {
+		return error?.error?.detail || error?.error?.error || error?.message || fallback;
+	}
+
+	private delay(ms: number): Promise<void> {
+		return new Promise((resolve) => setTimeout(resolve, ms));
+	}
+
+	private async runBackendJob<T>(
+		title: string,
+		startJob: () => Promise<{ job_id: string }>,
+	): Promise<T | null> {
+		this.isLoading.set(true);
+		this.activeJobTitle.set(title);
+		this.activeJob.set(null);
+		try {
+			const started = await startJob();
+			while (true) {
+				const response = await firstValueFrom(this.backend.getJob<T>(started.job_id));
+				this.activeJob.set(response.job);
+				if (response.job.status === 'completed') {
+					return response.job.result as T;
+				}
+				if (response.job.status === 'failed') {
+					const message = response.job.error?.message || response.job.message || `${title} failed`;
+					this.showToast('error', title, message);
+					return null;
+				}
+				await this.delay(500);
+			}
+		} catch (error: any) {
+			console.error(error);
+			this.apiHealthStatus.set('offline');
+			this.showToast('error', title, this.getErrorMessage(error, `${title} failed`));
+			return null;
+		} finally {
+			this.activeJob.set(null);
+			this.activeJobTitle.set('');
+			this.isLoading.set(false);
+		}
 	}
 
 	private updateStateEpoch(nextEpoch: number | undefined, source: string): void {
@@ -194,10 +301,12 @@ export class VideoMaskerComponent {
 
 	applyApiUrl() {
 		this.apiUrlInput.set(this.backend.setApiUrl(this.apiUrlInput()));
+		this.checkApiHealth(true);
 	}
 
 	resetApiUrl() {
 		this.apiUrlInput.set(this.backend.resetApiUrl());
+		this.checkApiHealth(true);
 	}
 
 	async browseVideo() {
@@ -275,11 +384,11 @@ export class VideoMaskerComponent {
 
 	private showPathUnavailableMessage(target: 'video' | 'directory') {
 		if (target === 'video') {
-			alert('Selected video file name is available, but this browser does not expose the full local path. Please paste the full video path manually.');
+			this.showToast('warning', 'Path unavailable', 'Selected video file name is available, but this browser does not expose the full local path. Paste the full video path manually.');
 			return;
 		}
 
-		alert('Selected folder contents are available, but this browser does not expose the full local directory path. Please paste the full frames directory path manually.');
+		this.showToast('warning', 'Path unavailable', 'Selected folder contents are available, but this browser does not expose the full local directory path. Paste the full frames directory path manually.');
 	}
 
 	isApiUrlDirty(): boolean {
@@ -289,34 +398,31 @@ export class VideoMaskerComponent {
 	async initVideo() {
 		const enteredPath = this.videoDir().trim().replace(/^['\"]|['\"]$/g, '');
 		if (!enteredPath) {
-			alert('Please enter a valid video frames directory path or pick a video file.');
+			this.showToast('warning', 'Missing video path', 'Enter a video frames directory path or pick a video file.');
 			return;
 		}
 
 		this.videoDir.set(enteredPath);
-		this.isLoading.set(true);
-		try {
-			const res = await firstValueFrom(this.backend.initVideoState(enteredPath));
-			this.numFrames.set(res.num_frames);
-			this.targetFrameIdx.set(0);
-			this.displayedFrameIdx.set(-1);
-			this.hasManifestMasks.set(false);
-			this.trackedPoints.set([]);
-			this.masks.set(new Map());
-			this.points.set(new Map());
-			this.liveEditedObjectFrames.set(new Map());
-			this.objects.set([{ id: 1, name: 'Object 1', color: this.getRandomColor() }]);
-			this.selectedObjectId.set(1);
-			this.updateStateEpoch(res.state_epoch, 'video init');
-			this.resetDebugState();
-			this.isInitialized.set(true);
-		} catch (err: any) {
-			console.error(err);
-			const errorMessage = err?.error?.detail || err?.error?.error || 'Failed to initialize video';
-			alert(errorMessage);
-		} finally {
-			this.isLoading.set(false);
+		const res = await this.runBackendJob<VideoInitStateResponse>(
+			'Loading video',
+			() => firstValueFrom(this.backend.initVideoState(enteredPath)),
+		);
+		if (!res) {
+			return;
 		}
+		this.numFrames.set(res.num_frames);
+		this.targetFrameIdx.set(0);
+		this.displayedFrameIdx.set(-1);
+		this.hasManifestMasks.set(false);
+		this.trackedPoints.set([]);
+		this.masks.set(new Map());
+		this.points.set(new Map());
+		this.liveEditedObjectFrames.set(new Map());
+		this.objects.set([{ id: 1, name: 'Object 1', color: this.getRandomColor() }]);
+		this.selectedObjectId.set(1);
+		this.updateStateEpoch(res.state_epoch, 'video init');
+		this.resetDebugState();
+		this.isInitialized.set(true);
 	}
 
 	loadFrame(frameIdx: number) {
@@ -803,46 +909,41 @@ export class VideoMaskerComponent {
 	}
 
 	async propagate() {
-		this.isLoading.set(true);
-		try {
-			const response = await firstValueFrom(this.backend.propagateInVideo({
+		const response = await this.runBackendJob<VideoPropagateResponse>(
+			'Propagating masks',
+			() => firstValueFrom(this.backend.propagateInVideo({
 				include_masks_in_response: false,
 				include_saved_mask_paths: false
-			}));
-			this.updateStateEpoch(response.state_epoch, 'propagation');
-			this.hasManifestMasks.set(Boolean(response.mask_manifest_path));
-			this.loadFrame(this.targetFrameIdx());
-		} catch (error) {
-			console.error(error);
-			alert('Propagation failed');
-		} finally {
-			this.isLoading.set(false);
+			})),
+		);
+		if (!response) {
+			return;
 		}
+		this.updateStateEpoch(response.state_epoch, 'propagation');
+		this.hasManifestMasks.set(Boolean(response.mask_manifest_path));
+		this.loadFrame(this.targetFrameIdx());
 	}
 
 	async runTracking() {
-		this.isLoading.set(true);
-		try {
-			const response = await firstValueFrom(this.backend.trackPromptPoints({
+		const response = await this.runBackendJob<TrackPromptPointsResponse>(
+			'Tracking prompt points',
+			() => firstValueFrom(this.backend.trackPromptPoints({
 				model_name: this.trackingModel(),
 				add_support_grid: this.trackingUseSupportGrid()
-			}));
-			this.updateStateEpoch(response.state_epoch, 'tracking restore');
-
-			const trackedSeries: TrackedPointSeries[] = response.points.map((point, index) => ({
-				...point,
-				tracks: response.tracks[index] || [],
-				visibility: response.visibility[index] || []
-			}));
-			this.trackedPoints.set(trackedSeries);
-			this.drawCurrentFrame();
-		} catch (error: any) {
-			console.error(error);
-			const errorMessage = error?.error?.detail || 'Tracking failed';
-			alert(errorMessage);
-		} finally {
-			this.isLoading.set(false);
+			})),
+		);
+		if (!response) {
+			return;
 		}
+		this.updateStateEpoch(response.state_epoch, 'tracking restore');
+
+		const trackedSeries: TrackedPointSeries[] = response.points.map((point, index) => ({
+			...point,
+			tracks: response.tracks[index] || [],
+			visibility: response.visibility[index] || []
+		}));
+		this.trackedPoints.set(trackedSeries);
+		this.drawCurrentFrame();
 	}
 
 	clearMasks() {
@@ -858,7 +959,7 @@ export class VideoMaskerComponent {
 	}
 
 	save() {
-		alert('Save functionality not implemented yet.');
+		this.showToast('info', 'Save not available', 'Save functionality is not implemented yet.');
 	}
 
 	getRandomColor() {

@@ -54,6 +54,77 @@ ONLINE_MODE = _env_bool("DATA_ENGINE_ONLINE_MODE", True)
 ONLINE_BATCH_SIZE = int(os.getenv("DATA_ENGINE_BATCH_SIZE", "32"))
 OFFLOAD_VIDEO_TO_CPU = _env_bool("DATA_ENGINE_OFFLOAD_VIDEO_TO_CPU", True)
 OFFLOAD_STATE_TO_CPU = _env_bool("DATA_ENGINE_OFFLOAD_STATE_TO_CPU", False)
+JOB_POLL_INTERVAL_SECONDS = float(os.getenv("DATA_ENGINE_JOB_POLL_INTERVAL", "0.5"))
+JOB_TIMEOUT_SECONDS = float(os.getenv("DATA_ENGINE_JOB_TIMEOUT", "1800"))
+
+
+def _print_job_progress(job):
+    stage_label = job.get("stage_label") or job.get("stage") or "Working"
+    progress = job.get("progress")
+    current = job.get("current")
+    total = job.get("total")
+    window_index = job.get("window_index")
+    window_count = job.get("window_count")
+    frame_idx = job.get("frame_idx")
+    history = job.get("stage_history") or []
+    message = job.get("message") or ""
+
+    parts = [stage_label]
+    if window_index is not None and window_count:
+        parts.append(f"Window {window_index}/{window_count}")
+    if frame_idx is not None:
+        parts.append(f"Frame {frame_idx}")
+    if isinstance(progress, (int, float)):
+        parts.append(f"{progress * 100:5.1f}%")
+    if current is not None and total:
+        parts.append(f"{current}/{total}")
+    if message:
+        parts.append(message)
+    if history:
+        latest_history_message = history[-1].get("message")
+        if latest_history_message and latest_history_message != message:
+            parts.append(f"last: {latest_history_message}")
+
+    print("\r  " + " | ".join(parts), end="", flush=True)
+
+
+def wait_for_job(job_start_response, timeout=JOB_TIMEOUT_SECONDS):
+    """Polls a background job until it completes and returns its result payload."""
+    job_id = job_start_response.get("job_id")
+    if not job_id:
+        print(f"Invalid job start response: {job_start_response}")
+        return False, None
+
+    started = time.time()
+    last_status = None
+    while time.time() - started < timeout:
+        response = requests.get(f"{BASE_URL}/jobs/{job_id}")
+        if response.status_code != 200:
+            print(f"\nFailed to poll job {job_id}. Status: {response.status_code}, Response: {response.text}")
+            return False, None
+
+        job = response.json().get("job", {})
+        status = job.get("status")
+        if status != last_status:
+            print(f"\n  Job {job_id}: {status}")
+            last_status = status
+        _print_job_progress(job)
+
+        if status == "completed":
+            print()
+            return True, job.get("result")
+        if status == "failed":
+            print()
+            error = job.get("error") or {}
+            print(f"Job failed: {error.get('message', 'Unknown error')}")
+            if error.get("detail"):
+                print(f"  Detail: {error.get('detail')}")
+            return False, job
+
+        time.sleep(JOB_POLL_INTERVAL_SECONDS)
+
+    print(f"\nTimed out waiting for job {job_id} after {timeout:.1f}s.")
+    return False, None
 
 
 def download_and_extract_bedroom():
@@ -133,10 +204,14 @@ def init_video_state(video_dir):
     }
     response = requests.post(url, json=payload)
     if response.status_code == 200:
-        print(f"Video state initialized successfully for '{video_dir}'.")
+        print(f"Video init job started for '{video_dir}'.")
+        success, result = wait_for_job(response.json())
+        if success:
+            print(f"Video state initialized successfully for '{video_dir}'.")
+        return success
     else:
         print(f"Failed to initialize video state. Status: {response.status_code}, Response: {response.text}")
-    return response.status_code == 200
+    return False
 
 
 def reset_video_state():
@@ -187,7 +262,10 @@ def propagate_in_video(start_frame_idx=None, max_frame_num_to_track=None, revers
     }
     response = requests.post(url, json=payload)
     if response.status_code == 200:
-        response_data = response.json()
+        print("Propagation job started.")
+        success, response_data = wait_for_job(response.json())
+        if not success or response_data is None:
+            return False, response_data
         online_mode = response_data.get("online_mode")
         batch_size = response_data.get("batch_size")
         if online_mode is not None:
@@ -201,9 +279,10 @@ def propagate_in_video(start_frame_idx=None, max_frame_num_to_track=None, revers
         print(f"Saved masks for {len(saved_paths)} frames.")
         for frame_idx, paths in saved_paths.items():
             print(f"  Frame {frame_idx}: {paths}")
+        return True, response_data
     else:
         print(f"Failed to propagate. Status: {response.status_code}, Response: {response.text}")
-    return response.status_code == 200, response.json() if response.status_code == 200 else None
+    return False, None
 
 
 def stop_server_process(server_process):
