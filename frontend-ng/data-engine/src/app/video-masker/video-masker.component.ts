@@ -8,6 +8,7 @@ import {
 	VideoAddPointsOrBoxRequest,
 	VideoMaskObjectData
 } from '../services/backend.service';
+import { DesktopBridgeService } from '../services/desktop-bridge.service';
 
 interface MaskObject {
 	id: number;
@@ -42,6 +43,7 @@ export class VideoMaskerComponent {
 	@ViewChild('framesDirInput') framesDirInputRef?: ElementRef<HTMLInputElement>;
 
 	videoDir = signal<string>('');
+	apiUrlInput = signal<string>('');
 	isInitialized = signal<boolean>(false);
 	numFrames = signal<number>(0);
 	targetFrameIdx = signal<number>(0);
@@ -79,7 +81,12 @@ export class VideoMaskerComponent {
 	private currentBaseImage: HTMLImageElement | null = null;
 	private currentMaskObjects: { [objId: string]: VideoMaskObjectData } = {};
 
-	constructor(private backend: BackendService) {
+	constructor(
+		private backend: BackendService,
+		private desktopBridge: DesktopBridgeService,
+	) {
+		this.apiUrlInput.set(this.backend.getApiUrl());
+
 		effect(() => {
 			if (this.isInitialized()) {
 				this.loadFrame(this.targetFrameIdx());
@@ -181,6 +188,40 @@ export class VideoMaskerComponent {
 		this.videoDir.set(value);
 	}
 
+	onApiUrlChange(value: string) {
+		this.apiUrlInput.set(value);
+	}
+
+	applyApiUrl() {
+		this.apiUrlInput.set(this.backend.setApiUrl(this.apiUrlInput()));
+	}
+
+	resetApiUrl() {
+		this.apiUrlInput.set(this.backend.resetApiUrl());
+	}
+
+	async browseVideo() {
+		if (this.desktopBridge.isTauri()) {
+			const selectedPath = await this.desktopBridge.pickVideoFile();
+			if (selectedPath) {
+				this.videoDir.set(selectedPath);
+			}
+			return;
+		}
+		this.openVideoFilePicker();
+	}
+
+	async browseFramesDirectory() {
+		if (this.desktopBridge.isTauri()) {
+			const selectedPath = await this.desktopBridge.pickFramesDirectory();
+			if (selectedPath) {
+				this.videoDir.set(selectedPath);
+			}
+			return;
+		}
+		this.openFramesDirPicker();
+	}
+
 	onVideoFileSelected(event: Event) {
 		const input = event.target as HTMLInputElement;
 		const file = input.files?.[0];
@@ -239,6 +280,10 @@ export class VideoMaskerComponent {
 		}
 
 		alert('Selected folder contents are available, but this browser does not expose the full local directory path. Please paste the full frames directory path manually.');
+	}
+
+	isApiUrlDirty(): boolean {
+		return this.apiUrlInput().trim() !== this.backend.getApiUrl();
 	}
 
 	async initVideo() {

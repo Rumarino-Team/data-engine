@@ -2,9 +2,21 @@
 	<div class="top-bar">
 		<input type="text" [ngModel]="videoDir()" (ngModelChange)="onVideoDirChange($event)" placeholder="Enter video frames directory or video file path (.mp4, .mov, .avi)"
 			[disabled]="isInitialized()">
-		<button (click)="openFramesDirPicker()" [disabled]="isInitialized() || isLoading()">Browse Frames</button>
-		<button (click)="openVideoFilePicker()" [disabled]="isInitialized() || isLoading()">Browse Video</button>
+		<button (click)="browseFramesDirectory()" [disabled]="isInitialized() || isLoading()">Browse Frames</button>
+		<button (click)="browseVideo()" [disabled]="isInitialized() || isLoading()">Browse Video</button>
 		<button (click)="initVideo()" [disabled]="isInitialized() || isLoading() || !videoDir().trim()">Load Video</button>
+		<div class="api-url-controls">
+			<input
+				type="text"
+				class="api-url-input"
+				[ngModel]="apiUrlInput()"
+				(ngModelChange)="onApiUrlChange($event)"
+				placeholder="Backend URL"
+				[disabled]="isLoading()"
+			>
+			<button (click)="applyApiUrl()" [disabled]="isLoading() || !apiUrlInput().trim() || !isApiUrlDirty()">Apply API</button>
+			<button (click)="resetApiUrl()" [disabled]="isLoading() || apiUrlInput() === 'http://127.0.0.1:8000'">Reset API</button>
+		</div>
 
 		<input
 			#framesDirInput

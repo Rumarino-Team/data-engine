@@ -2,12 +2,21 @@ import { TestBed } from '@angular/core/testing';
 import { of } from 'rxjs';
 import { vi } from 'vitest';
 import { BackendService, VideoAddPointsResponse } from '../services/backend.service';
+import { DesktopBridgeService } from '../services/desktop-bridge.service';
 import { VideoMaskerComponent } from './video-masker.component';
 
 describe('VideoMaskerComponent sync contract', () => {
 	let component: VideoMaskerComponent;
 	let backendMock: {
 		addNewPointsOrBox: ReturnType<typeof vi.fn>;
+		getApiUrl: ReturnType<typeof vi.fn>;
+		setApiUrl: ReturnType<typeof vi.fn>;
+		resetApiUrl: ReturnType<typeof vi.fn>;
+	};
+	let desktopBridgeMock: {
+		isTauri: ReturnType<typeof vi.fn>;
+		pickVideoFile: ReturnType<typeof vi.fn>;
+		pickFramesDirectory: ReturnType<typeof vi.fn>;
 	};
 
 	const makeResponse = (overrides: Partial<VideoAddPointsResponse>): VideoAddPointsResponse => ({
@@ -25,6 +34,14 @@ describe('VideoMaskerComponent sync contract', () => {
 	beforeEach(async () => {
 		backendMock = {
 			addNewPointsOrBox: vi.fn(),
+			getApiUrl: vi.fn(() => 'http://127.0.0.1:8000'),
+			setApiUrl: vi.fn((value: string) => value),
+			resetApiUrl: vi.fn(() => 'http://127.0.0.1:8000'),
+		};
+		desktopBridgeMock = {
+			isTauri: vi.fn(() => false),
+			pickVideoFile: vi.fn(),
+			pickFramesDirectory: vi.fn(),
 		};
 
 		await TestBed.configureTestingModule({
@@ -34,7 +51,14 @@ describe('VideoMaskerComponent sync contract', () => {
 					provide: BackendService,
 					useValue: {
 						addNewPointsOrBox: backendMock.addNewPointsOrBox,
+						getApiUrl: backendMock.getApiUrl,
+						setApiUrl: backendMock.setApiUrl,
+						resetApiUrl: backendMock.resetApiUrl,
 					},
+				},
+				{
+					provide: DesktopBridgeService,
+					useValue: desktopBridgeMock,
 				},
 			],
 		}).compileComponents();
@@ -101,5 +125,23 @@ describe('VideoMaskerComponent sync contract', () => {
 
 		expect(component.liveEditedObjectFrames().get(5)?.has(1)).toBe(true);
 		expect(component.lastMaskPixelCount()).toBe(0);
+	});
+
+	it('uses the native Tauri video picker when desktop runtime is available', async () => {
+		desktopBridgeMock.isTauri.mockReturnValue(true);
+		desktopBridgeMock.pickVideoFile.mockResolvedValue('C:/videos/example.mp4');
+
+		await component.browseVideo();
+
+		expect(desktopBridgeMock.pickVideoFile).toHaveBeenCalled();
+		expect(component.videoDir()).toBe('C:/videos/example.mp4');
+	});
+
+	it('falls back to browser file input when Tauri runtime is unavailable', async () => {
+		const pickerSpy = vi.spyOn(component, 'openVideoFilePicker').mockImplementation(() => undefined);
+
+		await component.browseVideo();
+
+		expect(pickerSpy).toHaveBeenCalled();
 	});
 });

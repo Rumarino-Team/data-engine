@@ -2,6 +2,9 @@ import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable } from 'rxjs';
 
+const API_URL_STORAGE_KEY = 'dataEngineApiUrl';
+const DEFAULT_API_URL = 'http://127.0.0.1:8000';
+
 export interface VideoInitStateRequest {
 	video_frames_dir: string;
 	online_mode?: boolean;
@@ -113,21 +116,60 @@ export interface TrackPromptPointsResponse {
 	providedIn: 'root'
 })
 export class BackendService {
-	private readonly apiUrl = this.resolveApiUrl();
+	private apiUrl = this.resolveApiUrl();
 
 	constructor(private http: HttpClient) { }
 
 	private resolveApiUrl(): string {
+		const persistedConfig = this.readStoredApiUrl();
 		const globalConfig = (globalThis as { __DATA_ENGINE_API_URL__?: string }).__DATA_ENGINE_API_URL__;
-		const localStorageConfig = typeof localStorage !== 'undefined'
-			? localStorage.getItem('dataEngineApiUrl')
-			: null;
+		return this.normalizeApiUrl(persistedConfig || globalConfig || DEFAULT_API_URL);
+	}
 
-		const browserHost = typeof window !== 'undefined' && window.location.hostname
-			? window.location.hostname
-			: '127.0.0.1';
-		const fallback = `http://${browserHost}:8000`;
-		return (globalConfig || localStorageConfig || fallback).replace(/\/+$/, '');
+	private readStoredApiUrl(): string | null {
+		if (typeof localStorage === 'undefined') {
+			return null;
+		}
+		return localStorage.getItem(API_URL_STORAGE_KEY);
+	}
+
+	private writeStoredApiUrl(value: string | null): void {
+		if (typeof localStorage === 'undefined') {
+			return;
+		}
+		if (value === null) {
+			localStorage.removeItem(API_URL_STORAGE_KEY);
+			return;
+		}
+		localStorage.setItem(API_URL_STORAGE_KEY, value);
+	}
+
+	private normalizeApiUrl(value: string): string {
+		const normalized = value.trim().replace(/^['"]|['"]$/g, '');
+		if (!normalized) {
+			return DEFAULT_API_URL;
+		}
+		return normalized.replace(/\/+$/, '');
+	}
+
+	private endpoint(path: string): string {
+		return `${this.apiUrl}${path}`;
+	}
+
+	getApiUrl(): string {
+		return this.apiUrl;
+	}
+
+	setApiUrl(value: string): string {
+		this.apiUrl = this.normalizeApiUrl(value);
+		this.writeStoredApiUrl(this.apiUrl);
+		return this.apiUrl;
+	}
+
+	resetApiUrl(): string {
+		this.apiUrl = DEFAULT_API_URL;
+		this.writeStoredApiUrl(null);
+		return this.apiUrl;
 	}
 
 	private safeDecodeURIComponent(value: string): string {
@@ -172,50 +214,50 @@ export class BackendService {
 			video_frames_dir: this.normalizePath(dir),
 			...options
 		};
-		return this.http.post<VideoInitStateResponse>(`${this.apiUrl}/video/init_state`, payload);
+		return this.http.post<VideoInitStateResponse>(this.endpoint('/video/init_state'), payload);
 	}
 
 	resetVideoState(): Observable<any> {
-		return this.http.post(`${this.apiUrl}/video/reset_state`, {});
+		return this.http.post(this.endpoint('/video/reset_state'), {});
 	}
 
 	addNewPointsOrBox(request: VideoAddPointsOrBoxRequest): Observable<VideoAddPointsResponse> {
-		return this.http.post<VideoAddPointsResponse>(`${this.apiUrl}/video/add_new_points_or_box`, request);
+		return this.http.post<VideoAddPointsResponse>(this.endpoint('/video/add_new_points_or_box'), request);
 	}
 
 	propagateInVideo(request: VideoPropagateRequest): Observable<VideoPropagateResponse> {
-		return this.http.post<VideoPropagateResponse>(`${this.apiUrl}/video/propagate_in_video`, request);
+		return this.http.post<VideoPropagateResponse>(this.endpoint('/video/propagate_in_video'), request);
 	}
 
 	clearAllPromptsInFrame(frameIdx: number, objId: number): Observable<any> {
-		return this.http.post(`${this.apiUrl}/video/clear_all_prompts_in_frame`, null, {
+		return this.http.post(this.endpoint('/video/clear_all_prompts_in_frame'), null, {
 			params: { frame_idx: frameIdx.toString(), obj_id: objId.toString() }
 		});
 	}
 
 	removeObject(objId: number): Observable<any> {
-		return this.http.post(`${this.apiUrl}/video/remove_object`, null, {
+		return this.http.post(this.endpoint('/video/remove_object'), null, {
 			params: { obj_id: objId.toString() }
 		});
 	}
 
 	getVideoInfo(): Observable<{ num_frames: number, frame_files: string[] }> {
-		return this.http.get<{ num_frames: number, frame_files: string[] }>(`${this.apiUrl}/video/info`);
+		return this.http.get<{ num_frames: number, frame_files: string[] }>(this.endpoint('/video/info'));
 	}
 
 	getVideoFrameUrl(frameIdx: number): string {
-		return `${this.apiUrl}/video/frame/${frameIdx}`;
+		return this.endpoint(`/video/frame/${frameIdx}`);
 	}
 
 	getVideoMaskFrameUrl(frameIdx: number): string {
-		return `${this.apiUrl}/video/mask_frame/${frameIdx}`;
+		return this.endpoint(`/video/mask_frame/${frameIdx}`);
 	}
 
 	getVideoMaskData(frameIdx: number): Observable<VideoMaskDataResponse> {
-		return this.http.get<VideoMaskDataResponse>(`${this.apiUrl}/video/mask_data/${frameIdx}`);
+		return this.http.get<VideoMaskDataResponse>(this.endpoint(`/video/mask_data/${frameIdx}`));
 	}
 
 	trackPromptPoints(request: TrackPromptPointsRequest): Observable<TrackPromptPointsResponse> {
-		return this.http.post<TrackPromptPointsResponse>(`${this.apiUrl}/tracking/track_prompt_points`, request);
+		return this.http.post<TrackPromptPointsResponse>(this.endpoint('/tracking/track_prompt_points'), request);
 	}
 }
