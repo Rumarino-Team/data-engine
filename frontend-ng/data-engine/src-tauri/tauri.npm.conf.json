@@ -4,9 +4,9 @@
   "version": "0.0.0",
   "identifier": "com.rumarino.dataengine",
   "build": {
-    "beforeDevCommand": "bun run start -- --host 127.0.0.1 --port 4200",
+    "beforeDevCommand": "npm run start -- --host 127.0.0.1 --port 4200",
     "devUrl": "http://127.0.0.1:4200",
-    "beforeBuildCommand": "bun run build",
+    "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist/data-engine/browser"
   },
   "app": {

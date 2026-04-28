@@ -9,7 +9,9 @@
     "test": "ng test",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "tauri:dev:npm": "tauri dev -c src-tauri/tauri.npm.conf.json",
+    "tauri:build:npm": "tauri build -c src-tauri/tauri.npm.conf.json"
   },
   "prettier": {
     "printWidth": 100,
@@ -24,7 +26,6 @@
     ]
   },
   "private": true,
-  "packageManager": "bun@1.3.6",
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-dialog": "^2.0.0",
