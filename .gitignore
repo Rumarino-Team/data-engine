@@ -6,3 +6,6 @@ build/
 apple_*
 *.log
 /backend/.data_engine_frames/*
+/backend/.data_engine_windows/*
+/backend/cache/*
+/backend/saved/*

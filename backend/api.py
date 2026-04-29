@@ -19,6 +19,7 @@ import cv2
 import shutil
 import uuid
 import threading
+import re
 
 app = FastAPI()
 
@@ -43,11 +44,18 @@ video_source_path: Optional[str] = None
 video_prompt_events: list[dict[str, Any]] = []
 mask_manifest_path: Optional[str] = None
 video_state_epoch: int = 0
+active_session_dir: Optional[Path] = None
+active_session_id: Optional[str] = None
+active_session_saved_name: Optional[str] = None
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+BACKEND_ROOT = PROJECT_ROOT / "backend"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
-GENERATED_FRAMES_ROOT = PROJECT_ROOT / "backend/.data_engine_frames"
-WINDOW_FRAMES_ROOT = PROJECT_ROOT / "backend/.data_engine_windows"
+CACHE_ROOT = BACKEND_ROOT / "cache"
+GENERATED_FRAMES_ROOT = CACHE_ROOT / "frames"
+WINDOW_FRAMES_ROOT = CACHE_ROOT / "windows"
+SESSION_CACHE_ROOT = CACHE_ROOT / "sessions"
+SAVED_ROOT = BACKEND_ROOT / "saved"
 DEFAULT_MAX_MASK_FRAMES_IN_RESPONSE = int(os.getenv("VIDEO_PROPAGATE_MAX_MASK_FRAMES", "0"))
 DEFAULT_MAX_MASK_VALUES_IN_RESPONSE = int(os.getenv("VIDEO_PROPAGATE_MAX_MASK_VALUES", "0"))
 DEFAULT_PROMPT_TRACK_BATCH_SIZE = int(os.getenv("TRACK_PROMPT_BATCH_SIZE", "32"))
@@ -251,6 +259,113 @@ def _cleanup_cuda_memory():
         torch.cuda.empty_cache()
 
 
+def _path_is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _current_session_path() -> Optional[Path]:
+    return active_session_dir.resolve() if active_session_dir is not None else None
+
+
+def _current_frames_dir() -> Optional[Path]:
+    session_path = _current_session_path()
+    return session_path / "frames" if session_path is not None else None
+
+
+def _current_masks_dir() -> Optional[Path]:
+    session_path = _current_session_path()
+    return session_path / "masks" if session_path is not None else None
+
+
+def _write_session_metadata(extra: Optional[dict[str, Any]] = None) -> None:
+    session_path = _current_session_path()
+    if session_path is None:
+        return
+    metadata = {
+        "session_id": active_session_id,
+        "saved_name": active_session_saved_name,
+        "source_video_path": video_source_path,
+        "resolved_video_frames_dir": video_dir,
+        "mask_manifest_path": mask_manifest_path,
+        "num_frames": len(video_frame_files),
+        "state_epoch": int(video_state_epoch),
+        "updated_at": _utc_now_iso(),
+    }
+    if video_masker is not None:
+        metadata.update(
+            {
+                "online_mode": video_masker.online_mode,
+                "batch_size": video_masker.default_batch_size,
+                "offload_video_to_cpu": video_masker.offload_video_to_cpu,
+                "offload_state_to_cpu": video_masker.offload_state_to_cpu,
+            }
+        )
+    if extra:
+        metadata.update(extra)
+    write_mask_manifest(session_path / "session.json", metadata)
+
+
+def _clear_active_cache_session() -> None:
+    session_path = _current_session_path()
+    if session_path is None:
+        return
+    if _path_is_relative_to(session_path, SESSION_CACHE_ROOT):
+        shutil.rmtree(session_path, ignore_errors=True)
+
+
+def _clear_window_cache() -> None:
+    shutil.rmtree(WINDOW_FRAMES_ROOT, ignore_errors=True)
+    WINDOW_FRAMES_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+def _release_active_session(
+    *,
+    clear_video_masker: bool = True,
+    clear_tracker: bool = True,
+    clear_tracking_video: bool = True,
+    clear_video_state: bool = True,
+    clear_prompts: bool = True,
+    clear_cache_session: bool = False,
+) -> None:
+    global video_masker, tracker, tracking_video, tracking_video_path
+    global video_dir, video_frame_files, video_source_path, video_prompt_events
+    global mask_manifest_path, active_session_dir, active_session_id, active_session_saved_name
+
+    if clear_video_masker and video_masker is not None:
+        del video_masker
+        video_masker = None
+    if clear_tracker and tracker is not None:
+        del tracker
+        tracker = None
+    if clear_tracking_video:
+        tracking_video = None
+        tracking_video_path = None
+    if clear_cache_session:
+        _clear_active_cache_session()
+    if clear_video_state:
+        video_dir = None
+        video_frame_files = []
+        video_source_path = None
+        mask_manifest_path = None
+        active_session_dir = None
+        active_session_id = None
+        active_session_saved_name = None
+    if clear_prompts:
+        video_prompt_events = []
+    _cleanup_cuda_memory()
+
+
+@app.on_event("shutdown")
+def _cleanup_backend_cache_on_shutdown() -> None:
+    _release_active_session(clear_cache_session=False)
+    shutil.rmtree(CACHE_ROOT, ignore_errors=True)
+    _cleanup_cuda_memory()
+
+
 def _bump_video_state_epoch() -> int:
     global video_state_epoch
     video_state_epoch += 1
@@ -261,7 +376,6 @@ def _reset_video_session_state():
     global video_prompt_events, mask_manifest_path, video_source_path
     video_prompt_events = []
     mask_manifest_path = None
-    video_source_path = None
 
 
 def _record_prompt_event(request: "VideoAddPointsOrBoxRequest"):
@@ -325,6 +439,102 @@ def _build_window_dir(
     return window_dir
 
 
+def _link_or_copy_file(source_path: Path, target_path: Path) -> None:
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.symlink(source_path, target_path)
+    except OSError:
+        try:
+            os.link(source_path, target_path)
+        except OSError:
+            shutil.copy2(source_path, target_path)
+
+
+def _create_active_session(source_path: Path) -> Path:
+    global active_session_dir, active_session_id, active_session_saved_name
+
+    SESSION_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
+    session_id = uuid.uuid4().hex
+    session_dir = SESSION_CACHE_ROOT / session_id
+    (session_dir / "frames").mkdir(parents=True, exist_ok=False)
+    (session_dir / "masks").mkdir(parents=True, exist_ok=True)
+    active_session_dir = session_dir
+    active_session_id = session_id
+    active_session_saved_name = None
+    _write_session_metadata(
+        {
+            "created_at": _utc_now_iso(),
+            "source_input_path": str(source_path),
+        }
+    )
+    return session_dir
+
+
+def _copy_frames_directory_to_session(
+    source_dir: Path,
+    frames_dir: Path,
+    progress_callback: Optional[Callable[[int, int, Path], None]] = None,
+) -> list[str]:
+    source_frames = sorted(
+        frame_path
+        for frame_path in source_dir.iterdir()
+        if frame_path.is_file() and frame_path.suffix.lower() in IMAGE_EXTENSIONS
+    )
+    total = len(source_frames)
+    frame_names: list[str] = []
+    for index, source_path in enumerate(source_frames, start=1):
+        target_name = f"{index - 1:05d}{source_path.suffix.lower()}"
+        target_path = frames_dir / target_name
+        _link_or_copy_file(source_path, target_path)
+        frame_names.append(target_name)
+        if progress_callback is not None:
+            progress_callback(index, total, source_path)
+    return frame_names
+
+
+def _extract_video_to_session_frames(
+    video_path: Path,
+    frames_dir: Path,
+    progress_callback: Optional[Callable[[int, Optional[int]], None]] = None,
+) -> list[str]:
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        raise ValueError(f"Unable to open video file: {video_path}")
+
+    raw_total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    total_frames: Optional[int] = raw_total_frames if raw_total_frames > 0 else None
+    frame_idx = 0
+    frame_names: list[str] = []
+    try:
+        while True:
+            success, frame = capture.read()
+            if not success:
+                break
+            frame_name = f"{frame_idx:05d}.jpg"
+            output_path = frames_dir / frame_name
+            if not cv2.imwrite(str(output_path), frame):
+                raise RuntimeError(f"Failed to write extracted frame: {output_path}")
+            frame_names.append(frame_name)
+            frame_idx += 1
+            if progress_callback is not None:
+                progress_callback(frame_idx, total_frames)
+    finally:
+        capture.release()
+
+    if frame_idx == 0:
+        raise ValueError(f"No frames could be extracted from video: {video_path}")
+    return frame_names
+
+
+def _sanitize_save_name(name: str) -> str:
+    sanitized = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", name.strip())
+    sanitized = re.sub(r"_+", "_", sanitized).strip(" ._")
+    if not sanitized or sanitized in {".", ".."}:
+        raise HTTPException(status_code=400, detail="Save name cannot be empty.")
+    return sanitized
+
+
 def _manifest_frame_payload(frame_masks: dict[int, np.ndarray]) -> dict[str, Any]:
     objects: dict[str, Any] = {}
     for obj_id, mask in frame_masks.items():
@@ -373,8 +583,11 @@ def _restore_video_masker_from_prompt_events(
     if video_dir is None:
         return
 
+    def _on_progress(stage: str, label: str, progress: Optional[float], message: str) -> None:
+        _update_job(stage=stage, stage_label=label, progress=progress, message=message)
+
     if video_masker is None:
-        video_masker = svm.SAM2VideoMasker()
+        video_masker = svm.SAM2VideoMasker(progress_callback=_on_progress)
 
     video_masker.init_state(
         video_dir,
@@ -383,6 +596,7 @@ def _restore_video_masker_from_prompt_events(
         offload_video_to_cpu=offload_video_to_cpu,
         offload_state_to_cpu=offload_state_to_cpu,
         async_loading_frames=False,
+        progress_callback=_on_progress,
     )
 
     for event in video_prompt_events:
@@ -399,6 +613,7 @@ def _restore_video_masker_from_prompt_events(
 
     if increment_epoch:
         _bump_video_state_epoch()
+        _write_session_metadata()
 
 
 def _load_tracking_video_from_current_video_state() -> tuple[np.ndarray, str]:
@@ -466,20 +681,27 @@ def _resolve_input_path(path_value: str, expect_dir: Optional[bool] = None) -> P
     return resolved_path
 
 
+def _validate_video_input_path(resolved_input_path: Path) -> None:
+    if not resolved_input_path.is_file():
+        return
+    suffix = resolved_input_path.suffix.lower()
+    if suffix in VIDEO_EXTENSIONS:
+        return
+    if suffix in IMAGE_EXTENSIONS:
+        detail = (
+            f"Expected a frames directory or video file, got a single image file: {resolved_input_path}. "
+            "Provide a directory containing image frames."
+        )
+    else:
+        detail = (
+            f"Unsupported input file type: {resolved_input_path.suffix or '<none>'}. "
+            "Provide a directory of image frames or a video file (.mp4, .mov, .avi, .mkv, .webm, .m4v)."
+        )
+    raise HTTPException(status_code=400, detail=detail)
+
+
 def _prepare_video_masker_for_video_init():
-    global video_masker, tracker, tracking_video, tracking_video_path, video_dir
-
-    if tracker is not None:
-        del tracker
-        tracker = None
-        tracking_video = None
-        tracking_video_path = None
-        _cleanup_cuda_memory()
-
-    if video_masker is None:
-        video_masker = svm.SAM2VideoMasker()
-
-    _reset_video_session_state()
+    _release_active_session(clear_cache_session=True)
 
 
 def _initialize_video_state_from_resolved_input(
@@ -494,15 +716,15 @@ def _initialize_video_state_from_resolved_input(
     global video_masker, video_dir, video_frame_files, video_source_path
 
     source_video_path = None
-    extraction_reported = False
+    session_dir = _create_active_session(resolved_input_path)
+    frames_dir = session_dir / "frames"
+
     if resolved_input_path.is_file():
         suffix = resolved_input_path.suffix.lower()
         if suffix in VIDEO_EXTENSIONS:
             def _on_extract_progress(current: int, total: Optional[int]) -> None:
-                nonlocal extraction_reported
-                extraction_reported = True
                 if total:
-                    progress = min(0.7, 0.15 + (0.5 * (current / total)))
+                    progress = 0.35 + (0.3 * (current / total))
                     message = f"Extracted {current} of {total} frames"
                 else:
                     progress = None
@@ -519,10 +741,9 @@ def _initialize_video_state_from_resolved_input(
                 )
 
             try:
-                resolved_video_dir = extract_video_to_frames(
+                indexed_frame_files = _extract_video_to_session_frames(
                     resolved_input_path,
-                    output_root=GENERATED_FRAMES_ROOT,
-                    image_extensions=IMAGE_EXTENSIONS,
+                    frames_dir,
                     progress_callback=_on_extract_progress,
                 )
             except ValueError as error:
@@ -530,16 +751,6 @@ def _initialize_video_state_from_resolved_input(
             except Exception as error:
                 raise HTTPException(status_code=500, detail=str(error)) from error
             source_video_path = str(resolved_input_path)
-            if not extraction_reported:
-                _update_job(
-                    stage="indexing_frames",
-                    stage_label="Indexing video frames",
-                    progress=0.7,
-                    current=None,
-                    total=None,
-                    frame_idx=None,
-                    message="Found cached frame directory",
-                )
         else:
             if suffix in IMAGE_EXTENSIONS:
                 detail = (
@@ -553,18 +764,63 @@ def _initialize_video_state_from_resolved_input(
                 )
             raise HTTPException(status_code=400, detail=detail)
     else:
-        resolved_video_dir = resolved_input_path
+        candidate_count = len([
+            path
+            for path in resolved_input_path.iterdir()
+            if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+        ])
 
-    video_dir = str(resolved_video_dir)
-    _update_job(
-        stage="initializing_state",
-        stage_label="Initializing video state",
-        progress=0.75,
-        current=None,
-        total=None,
-        frame_idx=None,
-        message="Initializing SAM2 state",
-    )
+        def _on_link_progress(current: int, total: int, source_path: Path) -> None:
+            progress = 0.35 + (0.3 * (current / total)) if total else 0.65
+            _update_job(
+                stage="linking_frames",
+                stage_label="Linking frame cache",
+                progress=progress,
+                current=current,
+                total=total,
+                frame_idx=max(0, current - 1),
+                message=f"Linked {current} of {total} frames",
+                append_history=current == 1 or current == total,
+            )
+
+        _update_job(
+            stage="linking_frames",
+            stage_label="Linking frame cache",
+            progress=0.35,
+            current=0,
+            total=candidate_count,
+            frame_idx=None,
+            message="Preparing session-local frame cache",
+        )
+        indexed_frame_files = _copy_frames_directory_to_session(
+            resolved_input_path,
+            frames_dir,
+            progress_callback=_on_link_progress,
+        )
+
+    video_dir = str(frames_dir)
+    video_frame_files = indexed_frame_files
+
+    if not video_frame_files:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No image frames found in directory: {resolved_input_path}"
+        )
+
+    def _on_sam2_progress(stage: str, label: str, progress: Optional[float], message: str) -> None:
+        _update_job(
+            stage=stage,
+            stage_label=label,
+            progress=progress,
+            current=None,
+            total=None,
+            frame_idx=None,
+            message=message,
+        )
+
+    if video_masker is None:
+        video_masker = svm.SAM2VideoMasker(progress_callback=_on_sam2_progress)
+
     try:
         video_masker.init_state(
             video_dir,
@@ -573,6 +829,7 @@ def _initialize_video_state_from_resolved_input(
             offload_video_to_cpu=offload_video_to_cpu,
             offload_state_to_cpu=offload_state_to_cpu,
             async_loading_frames=async_loading_frames,
+            progress_callback=_on_sam2_progress,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -586,7 +843,7 @@ def _initialize_video_state_from_resolved_input(
 
     candidate_paths = sorted([
         frame_path
-        for frame_path in resolved_video_dir.iterdir()
+        for frame_path in frames_dir.iterdir()
         if frame_path.is_file()
     ])
     total_candidates = len(candidate_paths)
@@ -611,17 +868,14 @@ def _initialize_video_state_from_resolved_input(
                 message=f"Indexed {len(indexed_frame_files)} of {total_candidates} frame files",
                 append_history=candidate_idx == 1 or candidate_idx == total_candidates,
             )
-
-    video_frame_files = indexed_frame_files
-
-    if not video_frame_files:
-        raise HTTPException(
-            status_code=400,
-            detail=f"No image frames found in directory: {resolved_video_dir}"
-        )
-
     video_source_path = source_video_path
     state_epoch = _bump_video_state_epoch()
+    _write_session_metadata(
+        {
+            "created_at": _utc_now_iso(),
+            "source_input_path": str(resolved_input_path),
+        }
+    )
 
     return {
         "message": "Video state initialized successfully",
@@ -706,6 +960,10 @@ class VideoAddMaskRequest(BaseModel):
     mask: list[list[bool]]  # 2D boolean mask
 
 
+class VideoSaveRequest(BaseModel):
+    name: str
+
+
 class TrackingLoadVideoRequest(BaseModel):
     video_path: str
     model_name: str = "cotracker3_offline"  # "cotracker3_offline" or "cotracker3_online"
@@ -774,26 +1032,39 @@ async def init_video_state(request: VideoInitStateRequest):
 
 
 def _run_video_init_job(request: VideoInitStateRequest) -> dict[str, Any]:
+    global video_masker
     _update_job(
         status="running",
         stage="resolving_input",
         stage_label="Resolving input",
-        progress=0.1,
+        progress=0.05,
         message="Resolving video path",
     )
     _prepare_video_masker_for_video_init()
     resolved_input_path = _resolve_input_path(request.video_frames_dir)
+    _validate_video_input_path(resolved_input_path)
     _update_job(
-        stage="loading_sam2",
-        stage_label="Loading SAM2",
+        stage="preparing_session_cache",
+        stage_label="Preparing session cache",
+        progress=0.10,
+        message="Creating active session cache",
+    )
+
+    def _on_sam2_progress(stage: str, label: str, progress: Optional[float], message: str) -> None:
+        _update_job(stage=stage, stage_label=label, progress=progress, message=message)
+
+    video_masker = svm.SAM2VideoMasker(progress_callback=_on_sam2_progress)
+    _update_job(
+        stage="model_ready",
+        stage_label="SAM2 model ready",
         progress=0.35,
-        message="Preparing video masker",
+        message="SAM2 model loaded",
     )
     if resolved_input_path.is_file() and resolved_input_path.suffix.lower() in VIDEO_EXTENSIONS:
         _update_job(
             stage="extracting_frames",
-            stage_label="Extracting frames",
-            progress=0.45,
+            stage_label="Extracting video frames",
+            progress=0.35,
             message="Extracting video frames",
         )
     result = _initialize_video_state_from_resolved_input(
@@ -816,14 +1087,21 @@ def _run_video_init_job(request: VideoInitStateRequest) -> dict[str, Any]:
 
 @app.post("/video/reset_state")
 async def reset_video_state():
-    global video_masker
+    global video_masker, mask_manifest_path
     if video_masker is None:
         return {"error": "Video masker not active."}
     video_masker.reset_state()
     _reset_video_session_state()
+    masks_dir = _current_masks_dir()
+    if masks_dir is not None:
+        shutil.rmtree(masks_dir, ignore_errors=True)
+        masks_dir.mkdir(parents=True, exist_ok=True)
+    mask_manifest_path = None
+    state_epoch = _bump_video_state_epoch()
+    _write_session_metadata()
     return {
         "message": "Video state reset successfully",
-        "state_epoch": _bump_video_state_epoch(),
+        "state_epoch": state_epoch,
     }
 
 @app.post("/video/add_new_points_or_box")
@@ -957,6 +1235,48 @@ async def add_new_mask(request: VideoAddMaskRequest):
         "out_masks": masks_list
     }
 
+
+@app.post("/video/save")
+async def save_video_session(request: VideoSaveRequest):
+    global active_session_dir, active_session_saved_name, video_dir, mask_manifest_path
+
+    session_path = _current_session_path()
+    if session_path is None or video_dir is None or not video_frame_files:
+        raise HTTPException(status_code=400, detail="Video session is not initialized.")
+
+    save_name = _sanitize_save_name(request.name)
+    SAVED_ROOT.mkdir(parents=True, exist_ok=True)
+    saved_path = (SAVED_ROOT / save_name).resolve()
+    if saved_path.exists():
+        raise HTTPException(status_code=409, detail=f"Saved session already exists: {save_name}")
+
+    if _path_is_relative_to(session_path, SAVED_ROOT):
+        raise HTTPException(status_code=409, detail="Current session is already saved.")
+
+    session_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(session_path), str(saved_path))
+
+    active_session_dir = saved_path
+    active_session_saved_name = save_name
+    video_dir = str(saved_path / "frames")
+    manifest_path = saved_path / "masks" / "manifest.json"
+    mask_manifest_path = str(manifest_path) if manifest_path.exists() else None
+    _write_session_metadata(
+        {
+            "saved_name": save_name,
+            "saved_path": str(saved_path),
+            "saved_at": _utc_now_iso(),
+        }
+    )
+
+    return {
+        "message": "Session saved successfully",
+        "name": save_name,
+        "saved_path": str(saved_path),
+        "state_epoch": int(video_state_epoch),
+    }
+
+
 @app.post("/video/propagate_in_video")
 async def propagate_in_video(request: VideoPropagateRequest):
     return _queue_long_job(
@@ -1036,16 +1356,20 @@ def _run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="Invalid propagation frame range.")
 
     expected_total_frames = end_frame_idx - start_frame_idx + 1
+    masks_root = _current_masks_dir()
+    if masks_root is None:
+        raise HTTPException(status_code=400, detail="Video session cache is not initialized.")
+    _clear_window_cache()
     _update_job(
-        stage="preparing_manifest",
-        stage_label="Preparing manifest",
+        stage="clearing_previous_masks",
+        stage_label="Clearing previous masks",
         progress=0.02,
         current=0,
         total=expected_total_frames,
-        message=f"Preparing masks for {expected_total_frames} frames",
+        message="Preparing mask output directory",
     )
 
-    frame_files, masks_dir = prepare_video_masks_output(video_dir)
+    frame_files, masks_dir = prepare_video_masks_output(video_dir, masks_root)
     manifest_file_path = masks_dir / "manifest.json"
 
     first_frame = cv2.imread(str(Path(video_dir) / video_frame_files[start_frame_idx]))
@@ -1294,6 +1618,7 @@ def _run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
 
     write_mask_manifest(manifest_file_path, manifest)
     mask_manifest_path = str(manifest_file_path)
+    _write_session_metadata()
     _update_job(
         stage="saving_manifest",
         stage_label="Saving manifest",
@@ -1309,9 +1634,9 @@ def _run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
     try:
         # Rebind interactive state to the original full video frame index space.
         _update_job(
-            stage="restoring_state",
+            stage="restoring_interactive_state",
             stage_label="Restoring interactive state",
-            progress=0.99,
+            progress=None,
             current=len(processed_frames),
             total=expected_total_frames,
             window_index=None,
@@ -1376,15 +1701,10 @@ async def remove_object(obj_id: int):
 @app.post("/tracking/load_video")
 async def load_tracking_video(request: TrackingLoadVideoRequest):
     """Load a video file for tracking."""
-    global tracker, tracking_video, tracking_video_path, video_masker, video_dir
-    
-    # Unload video masker if it's currently loaded
-    if video_masker is not None:
-        del video_masker
-        video_masker = None
-        video_dir = None
-        _bump_video_state_epoch()
-        _cleanup_cuda_memory()
+    global tracker, tracking_video, tracking_video_path
+
+    _release_active_session(clear_tracker=False, clear_cache_session=True)
+    _bump_video_state_epoch()
     
     # (Re-)initialise tracker with the requested model variant.
     # A new tracker is created if the model_name changed or no tracker exists.
@@ -1802,7 +2122,8 @@ async def get_mask_manifest():
     if video_dir is None:
         return {"error": "Video not initialized"}
 
-    manifest_path = Path(mask_manifest_path) if mask_manifest_path else Path(video_dir) / "masks" / "manifest.json"
+    masks_dir = _current_masks_dir()
+    manifest_path = Path(mask_manifest_path) if mask_manifest_path else (masks_dir / "manifest.json" if masks_dir is not None else Path(video_dir) / "masks" / "manifest.json")
     if not manifest_path.exists():
         return {"error": "Mask manifest not found. Run /video/propagate_in_video first."}
 
@@ -1826,7 +2147,8 @@ async def get_mask_data(frame_idx: int):
     if frame_idx < 0:
         return {"error": "Frame index out of bounds"}
 
-    manifest_path = Path(mask_manifest_path) if mask_manifest_path else Path(video_dir) / "masks" / "manifest.json"
+    masks_dir = _current_masks_dir()
+    manifest_path = Path(mask_manifest_path) if mask_manifest_path else (masks_dir / "manifest.json" if masks_dir is not None else Path(video_dir) / "masks" / "manifest.json")
     if not manifest_path.exists():
         return {"frame_idx": frame_idx, "objects": {}}
 
@@ -1866,7 +2188,8 @@ async def get_video_mask_frame(frame_idx: int):
     if frame_idx < 0:
         return {"error": "Frame index out of bounds"}
 
-    file_path = Path(video_dir) / "masks" / f"frame_{frame_idx:05d}_masks.png"
+    masks_dir = _current_masks_dir() or Path(video_dir) / "masks"
+    file_path = masks_dir / f"frame_{frame_idx:05d}_masks.png"
     if not file_path.exists():
         raise HTTPException(status_code=404, detail=f"Mask frame not found: {file_path}")
     return FileResponse(str(file_path))

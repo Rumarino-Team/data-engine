@@ -12,7 +12,8 @@ import {
 	VideoAddPointsOrBoxRequest,
 	VideoInitStateResponse,
 	VideoMaskObjectData,
-	VideoPropagateResponse
+	VideoPropagateResponse,
+	VideoSaveResponse
 } from '../services/backend.service';
 import { DesktopBridgeService } from '../services/desktop-bridge.service';
 
@@ -73,6 +74,7 @@ export class VideoMaskerComponent implements OnDestroy {
 	points = signal<Map<number, Map<number, Point[]>>>(new Map());
 	liveEditedObjectFrames = signal<Map<number, Set<number>>>(new Map());
 	hasManifestMasks = signal<boolean>(false);
+	saveName = signal<string>('');
 
 	trackingModel = signal<'cotracker3_online' | 'cotracker3_offline'>('cotracker3_online');
 	trackingOverlayStyle = signal<TrackingOverlayStyle>('short');
@@ -97,6 +99,11 @@ export class VideoMaskerComponent implements OnDestroy {
 	lastDiscardReason = signal<string | null>(null);
 
 	private frameLoadToken = 0;
+	private pendingFrameIdx: number | null = null;
+	private frameLoadAnimationId: number | null = null;
+	private frameImageCache = new Map<number, HTMLImageElement>();
+	private maskDataCache = new Map<number, { [objId: string]: VideoMaskObjectData }>();
+	private readonly maxFrameCacheSize = 24;
 	private currentBaseImage: HTMLImageElement | null = null;
 	private currentMaskObjects: { [objId: string]: VideoMaskObjectData } = {};
 	private healthTimerId: ReturnType<typeof setInterval> | null = null;
@@ -110,7 +117,7 @@ export class VideoMaskerComponent implements OnDestroy {
 
 		effect(() => {
 			if (this.isInitialized()) {
-				this.loadFrame(this.targetFrameIdx());
+				this.scheduleFrameLoad(this.targetFrameIdx());
 			}
 		});
 
@@ -129,6 +136,9 @@ export class VideoMaskerComponent implements OnDestroy {
 	ngOnDestroy(): void {
 		if (this.healthTimerId !== null) {
 			clearInterval(this.healthTimerId);
+		}
+		if (this.frameLoadAnimationId !== null) {
+			cancelAnimationFrame(this.frameLoadAnimationId);
 		}
 	}
 
@@ -299,6 +309,10 @@ export class VideoMaskerComponent implements OnDestroy {
 		this.apiUrlInput.set(value);
 	}
 
+	onSaveNameChange(value: string) {
+		this.saveName.set(value);
+	}
+
 	applyApiUrl() {
 		this.apiUrlInput.set(this.backend.setApiUrl(this.apiUrlInput()));
 		this.checkApiHealth(true);
@@ -414,15 +428,44 @@ export class VideoMaskerComponent implements OnDestroy {
 		this.targetFrameIdx.set(0);
 		this.displayedFrameIdx.set(-1);
 		this.hasManifestMasks.set(false);
+		this.saveName.set('');
 		this.trackedPoints.set([]);
 		this.masks.set(new Map());
 		this.points.set(new Map());
 		this.liveEditedObjectFrames.set(new Map());
+		this.clearFrameCaches();
 		this.objects.set([{ id: 1, name: 'Object 1', color: this.getRandomColor() }]);
 		this.selectedObjectId.set(1);
 		this.updateStateEpoch(res.state_epoch, 'video init');
 		this.resetDebugState();
 		this.isInitialized.set(true);
+	}
+
+	private clearFrameCaches(): void {
+		this.frameImageCache.clear();
+		this.maskDataCache.clear();
+		this.currentBaseImage = null;
+		this.currentMaskObjects = {};
+		this.frameLoadToken++;
+		if (this.frameLoadAnimationId !== null) {
+			cancelAnimationFrame(this.frameLoadAnimationId);
+			this.frameLoadAnimationId = null;
+		}
+	}
+
+	private scheduleFrameLoad(frameIdx: number) {
+		this.pendingFrameIdx = frameIdx;
+		if (this.frameLoadAnimationId !== null) {
+			return;
+		}
+		this.frameLoadAnimationId = requestAnimationFrame(() => {
+			this.frameLoadAnimationId = null;
+			const nextFrameIdx = this.pendingFrameIdx;
+			this.pendingFrameIdx = null;
+			if (nextFrameIdx !== null) {
+				this.loadFrame(nextFrameIdx);
+			}
+		});
 	}
 
 	loadFrame(frameIdx: number) {
@@ -431,10 +474,16 @@ export class VideoMaskerComponent implements OnDestroy {
 		}
 
 		const token = ++this.frameLoadToken;
+		this.currentMaskObjects = {};
+		const cachedImage = this.frameImageCache.get(frameIdx);
+		if (cachedImage?.complete) {
+			this.paintLoadedFrame(cachedImage, frameIdx, token);
+			return;
+		}
+
 		this.isFrameLoading.set(true);
 		const image = new Image();
 		const frameUrl = this.backend.getVideoFrameUrl(frameIdx);
-		this.currentMaskObjects = {};
 
 		image.onerror = () => {
 			if (token !== this.frameLoadToken) {
@@ -448,22 +497,52 @@ export class VideoMaskerComponent implements OnDestroy {
 			if (token !== this.frameLoadToken) {
 				return;
 			}
-
-			this.currentBaseImage = image;
-			this.ensureCanvasSize(image.width, image.height);
-			this.draw(image, frameIdx);
-			this.displayedFrameIdx.set(frameIdx);
-			// The displayed frame is now stable on canvas, so allow interaction immediately.
-			this.isFrameLoading.set(false);
-
-			await this.loadMaskDataForFrame(frameIdx, token);
-			if (token !== this.frameLoadToken) {
-				return;
-			}
-			this.draw(image, frameIdx);
+			this.cacheFrameImage(frameIdx, image);
+			this.paintLoadedFrame(image, frameIdx, token);
 		};
 
 		image.src = frameUrl;
+	}
+
+	private async paintLoadedFrame(image: HTMLImageElement, frameIdx: number, token: number) {
+		this.currentBaseImage = image;
+		this.ensureCanvasSize(image.width, image.height);
+		this.draw(image, frameIdx);
+		this.displayedFrameIdx.set(frameIdx);
+		this.isFrameLoading.set(false);
+		this.preloadNeighborFrames(frameIdx);
+
+		await this.loadMaskDataForFrame(frameIdx, token);
+		if (token !== this.frameLoadToken) {
+			return;
+		}
+		this.draw(image, frameIdx);
+	}
+
+	private cacheFrameImage(frameIdx: number, image: HTMLImageElement) {
+		if (this.frameImageCache.has(frameIdx)) {
+			this.frameImageCache.delete(frameIdx);
+		}
+		this.frameImageCache.set(frameIdx, image);
+		while (this.frameImageCache.size > this.maxFrameCacheSize) {
+			const oldestKey = this.frameImageCache.keys().next().value;
+			if (oldestKey === undefined) {
+				break;
+			}
+			this.frameImageCache.delete(oldestKey);
+			this.maskDataCache.delete(oldestKey);
+		}
+	}
+
+	private preloadNeighborFrames(frameIdx: number) {
+		for (const neighborIdx of [frameIdx + 1, frameIdx - 1]) {
+			if (neighborIdx < 0 || neighborIdx >= this.numFrames() || this.frameImageCache.has(neighborIdx)) {
+				continue;
+			}
+			const image = new Image();
+			image.onload = () => this.cacheFrameImage(neighborIdx, image);
+			image.src = this.backend.getVideoFrameUrl(neighborIdx);
+		}
 	}
 
 	private ensureCanvasSize(width: number, height: number) {
@@ -482,6 +561,11 @@ export class VideoMaskerComponent implements OnDestroy {
 			this.currentMaskObjects = {};
 			return;
 		}
+		const cachedMaskData = this.maskDataCache.get(frameIdx);
+		if (cachedMaskData) {
+			this.currentMaskObjects = cachedMaskData;
+			return;
+		}
 
 		try {
 			const response = await firstValueFrom(this.backend.getVideoMaskData(frameIdx));
@@ -494,6 +578,7 @@ export class VideoMaskerComponent implements OnDestroy {
 				return;
 			}
 			this.currentMaskObjects = response.objects || {};
+			this.maskDataCache.set(frameIdx, this.currentMaskObjects);
 		} catch (error) {
 			console.error(error);
 			this.currentMaskObjects = {};
@@ -921,7 +1006,8 @@ export class VideoMaskerComponent implements OnDestroy {
 		}
 		this.updateStateEpoch(response.state_epoch, 'propagation');
 		this.hasManifestMasks.set(Boolean(response.mask_manifest_path));
-		this.loadFrame(this.targetFrameIdx());
+		this.maskDataCache.clear();
+		this.scheduleFrameLoad(this.targetFrameIdx());
 	}
 
 	async runTracking() {
@@ -954,12 +1040,32 @@ export class VideoMaskerComponent implements OnDestroy {
 			this.masks.set(new Map());
 			this.points.set(new Map());
 			this.liveEditedObjectFrames.set(new Map());
-			this.loadFrame(this.targetFrameIdx());
+			this.maskDataCache.clear();
+			this.scheduleFrameLoad(this.targetFrameIdx());
 		});
 	}
 
 	save() {
-		this.showToast('info', 'Save not available', 'Save functionality is not implemented yet.');
+		const name = this.saveName().trim();
+		if (!name) {
+			this.showToast('warning', 'Missing save name', 'Enter a name for this saved session.');
+			return;
+		}
+
+		this.isLoading.set(true);
+		firstValueFrom(this.backend.saveVideoSession(name))
+			.then((response: VideoSaveResponse) => {
+				this.updateStateEpoch(response.state_epoch, 'save');
+				this.saveName.set(response.name);
+				this.showToast('success', 'Session saved', `Saved to ${response.saved_path}`);
+			})
+			.catch((error: any) => {
+				console.error(error);
+				this.showToast('error', 'Save failed', this.getErrorMessage(error, 'Session save failed'));
+			})
+			.finally(() => {
+				this.isLoading.set(false);
+			});
 	}
 
 	getRandomColor() {

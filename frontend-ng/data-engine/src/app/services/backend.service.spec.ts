@@ -87,4 +87,17 @@ describe('BackendService', () => {
 
 		expect((http.get as any).mock.calls[0][0]).toBe('http://127.0.0.1:8000/jobs/abc123');
 	});
+
+	it('saves a video session by name', () => {
+		const http = {
+			post: vi.fn(() => of({})),
+			get: vi.fn(),
+		} as unknown as HttpClient;
+		const service = new BackendService(http);
+
+		service.saveVideoSession('review-run').subscribe();
+
+		expect((http.post as any).mock.calls[0][0]).toBe('http://127.0.0.1:8000/video/save');
+		expect((http.post as any).mock.calls[0][1]).toEqual({ name: 'review-run' });
+	});
 });

@@ -15,6 +15,7 @@ describe('VideoMaskerComponent sync contract', () => {
 		getApiUrl: ReturnType<typeof vi.fn>;
 		setApiUrl: ReturnType<typeof vi.fn>;
 		resetApiUrl: ReturnType<typeof vi.fn>;
+		saveVideoSession: ReturnType<typeof vi.fn>;
 	};
 	let desktopBridgeMock: {
 		isTauri: ReturnType<typeof vi.fn>;
@@ -43,6 +44,7 @@ describe('VideoMaskerComponent sync contract', () => {
 			getApiUrl: vi.fn(() => 'http://127.0.0.1:8000'),
 			setApiUrl: vi.fn((value: string) => value),
 			resetApiUrl: vi.fn(() => 'http://127.0.0.1:8000'),
+			saveVideoSession: vi.fn(),
 		};
 		desktopBridgeMock = {
 			isTauri: vi.fn(() => false),
@@ -63,6 +65,7 @@ describe('VideoMaskerComponent sync contract', () => {
 						getApiUrl: backendMock.getApiUrl,
 						setApiUrl: backendMock.setApiUrl,
 						resetApiUrl: backendMock.resetApiUrl,
+						saveVideoSession: backendMock.saveVideoSession,
 					},
 				},
 				{
@@ -240,5 +243,22 @@ describe('VideoMaskerComponent sync contract', () => {
 		expect(component.isInitialized()).toBe(false);
 		expect(component.toasts()[0].title).toBe('Loading video');
 		expect(component.toasts()[0].message).toBe('Path not found');
+	});
+
+	it('saves the current session with the typed name', async () => {
+		backendMock.saveVideoSession.mockReturnValue(of({
+			message: 'Session saved successfully',
+			name: 'review-run',
+			saved_path: 'C:/project/backend/saved/review-run',
+			state_epoch: 3,
+		}));
+		component.isInitialized.set(true);
+		component.saveName.set('review-run');
+
+		component.save();
+		await Promise.resolve();
+
+		expect(backendMock.saveVideoSession).toHaveBeenCalledWith('review-run');
+		expect(component.toasts()[0].title).toBe('Session saved');
 	});
 });

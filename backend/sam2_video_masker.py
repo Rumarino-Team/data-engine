@@ -3,6 +3,7 @@ import numpy as np
 import os
 import gc
 from pathlib import Path
+from typing import Callable, Optional
 from sam2.sam2_video_predictor import SAM2VideoPredictor
 from utils import extract_video_to_frames
 
@@ -13,11 +14,15 @@ os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-GENERATED_FRAMES_ROOT = PROJECT_ROOT / "backend/.data_engine_frames"
+GENERATED_FRAMES_ROOT = PROJECT_ROOT / "backend/cache/frames"
 
 
 class SAM2VideoMasker:
-    def __init__(self):
+    def __init__(self, progress_callback: Optional[Callable[[str, str, Optional[float], str], None]] = None):
+        def _report(stage: str, label: str, progress: Optional[float], message: str) -> None:
+            if progress_callback is not None:
+                progress_callback(stage, label, progress, message)
+
         if torch.cuda.is_available():
             self.device = torch.device("cuda")
         elif torch.backends.mps.is_available():
@@ -63,7 +68,9 @@ class SAM2VideoMasker:
                 "give numerically different outputs and sometimes degraded performance on MPS."
             )
 
+        _report("loading_sam2_model", "Loading SAM2 model", None, "Loading SAM2 model weights")
         self.predictor = SAM2VideoPredictor.from_pretrained("facebook/sam2-hiera-large")
+        _report("model_ready", "SAM2 model ready", 0.35, "SAM2 model loaded")
 
         self.inference_state = None
         self.online_mode = True
@@ -79,6 +86,7 @@ class SAM2VideoMasker:
         offload_video_to_cpu=None,
         offload_state_to_cpu=None,
         async_loading_frames=False,
+        progress_callback: Optional[Callable[[str, str, Optional[float], str], None]] = None,
     ):
         self.online_mode = bool(online_mode)
 
@@ -124,6 +132,14 @@ class SAM2VideoMasker:
         else:
             resolved_video_dir = resolved_input_path
 
+        if progress_callback is not None:
+            progress_callback(
+                "initializing_sam2_video_state",
+                "Initializing SAM2 video state",
+                None,
+                "Loading frames into SAM2 state",
+            )
+
         self.inference_state = self.predictor.init_state(
             video_path=str(resolved_video_dir),
             offload_video_to_cpu=self.offload_video_to_cpu,
@@ -131,6 +147,13 @@ class SAM2VideoMasker:
             async_loading_frames=async_loading_frames,
         )
         self.predictor.reset_state(self.inference_state)
+        if progress_callback is not None:
+            progress_callback(
+                "indexing_frames",
+                "Indexing video frames",
+                0.85,
+                "SAM2 state initialized; indexing frame files",
+            )
 
     def reset_state(self):
         self.predictor.reset_state(self.inference_state)

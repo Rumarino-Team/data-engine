@@ -41,6 +41,17 @@ export interface VideoAddMaskRequest {
 	mask: boolean[][];
 }
 
+export interface VideoSaveRequest {
+	name: string;
+}
+
+export interface VideoSaveResponse {
+	message: string;
+	name: string;
+	saved_path: string;
+	state_epoch: number;
+}
+
 export interface VideoAddPointsResponse {
 	request_frame_idx: number;
 	frame_idx: number;
@@ -297,6 +308,11 @@ export class BackendService {
 
 	propagateInVideo(request: VideoPropagateRequest): Observable<JobStartResponse> {
 		return this.http.post<JobStartResponse>(this.endpoint('/video/propagate_in_video'), request);
+	}
+
+	saveVideoSession(name: string): Observable<VideoSaveResponse> {
+		const payload: VideoSaveRequest = { name };
+		return this.http.post<VideoSaveResponse>(this.endpoint('/video/save'), payload);
 	}
 
 	clearAllPromptsInFrame(frameIdx: number, objId: number): Observable<any> {

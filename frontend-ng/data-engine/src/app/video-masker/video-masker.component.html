@@ -107,7 +107,16 @@
 					</label>
 					<button (click)="runTracking()" [disabled]="!isInitialized() || isLoading()">Run CoTracker</button>
 					<button (click)="clearMasks()" [disabled]="!isInitialized() || isLoading()">Clear All Masks</button>
-					<button (click)="save()" [disabled]="!isInitialized()">Save (Placeholder)</button>
+					<div class="save-controls">
+						<input
+							type="text"
+							[ngModel]="saveName()"
+							(ngModelChange)="onSaveNameChange($event)"
+							placeholder="Save name"
+							[disabled]="!isInitialized() || isLoading()"
+						>
+						<button (click)="save()" [disabled]="!isInitialized() || isLoading() || !saveName().trim()">Save</button>
+					</div>
 				</div>
 
 				<div class="section debug-section" *ngIf="isInitialized()">
@@ -135,7 +144,7 @@
 					<span>Target: {{ targetFrameIdx() }} | Displayed: {{ displayedFrameIdx() }} / {{ numFrames() - 1 }}</span>
 					<input type="range" [min]="0" [max]="numFrames() - 1" [ngModel]="targetFrameIdx()"
 						(ngModelChange)="onScrubberFrameChange($event)"
-						[disabled]="isLoading() || isFrameLoading() || isPointRequestInFlight()">
+						[disabled]="isLoading() || isPointRequestInFlight()">
 				</div>
 			</div>
 

@@ -160,6 +160,18 @@ canvas {
 	padding: 4px 6px;
 }
 
+.save-controls {
+	display: grid;
+	grid-template-columns: 1fr auto;
+	gap: 6px;
+	margin-top: 8px;
+}
+
+.save-controls input {
+	min-width: 0;
+	padding: 4px 6px;
+}
+
 .debug-section {
 	font-size: 0.85rem;
 }
