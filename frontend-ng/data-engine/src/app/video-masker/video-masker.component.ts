@@ -369,15 +369,15 @@ export class VideoMaskerComponent implements OnDestroy {
 		const mode = this.loadSourceMode();
 		if (this.desktopBridge.isTauri()) {
 			if (mode === 'video_file') {
-				const selectedVideoPath = await this.desktopBridge.pickVideoFile();
-				if (selectedVideoPath) {
-					this.videoDir.set(selectedVideoPath);
+				const selectedPath = await this.desktopBridge.pickVideoFile();
+				if (selectedPath) {
+					this.videoDir.set(selectedPath);
 				}
 				return;
 			}
-			const selectedDirectoryPath = await this.desktopBridge.pickFramesDirectory();
-			if (selectedDirectoryPath) {
-				this.videoDir.set(selectedDirectoryPath);
+			const selectedPath = await this.desktopBridge.pickFramesDirectory();
+			if (selectedPath) {
+				this.videoDir.set(selectedPath);
 			}
 			return;
 		}
@@ -386,6 +386,16 @@ export class VideoMaskerComponent implements OnDestroy {
 			return;
 		}
 		this.openFramesDirPicker();
+	}
+
+	async browseVideo() {
+		this.loadSourceMode.set('video_file');
+		await this.browseSelectedSource();
+	}
+
+	async browseFramesDirectory() {
+		this.loadSourceMode.set('frames_dir');
+		await this.browseSelectedSource();
 	}
 
 	onVideoFileSelected(event: Event) {
@@ -496,11 +506,7 @@ export class VideoMaskerComponent implements OnDestroy {
 		this.isInitialized.set(true);
 		const restoredWarnings = res.restored_session?.interactive_state_warnings || [];
 		if (restoredWarnings.length > 0) {
-			this.showToast(
-				'warning',
-				'Session partially restored',
-				restoredWarnings.slice(0, 2).join(' '),
-			);
+			this.showToast('warning', 'Session partially restored', restoredWarnings.slice(0, 2).join(' '));
 		}
 	}
 
@@ -543,8 +549,7 @@ export class VideoMaskerComponent implements OnDestroy {
 			&& interactive.current_frame_idx >= 0
 			&& interactive.current_frame_idx < this.numFrames()
 		) {
-			const normalizedFrame = Math.trunc(interactive.current_frame_idx);
-			this.targetFrameIdx.set(normalizedFrame);
+			this.targetFrameIdx.set(Math.trunc(interactive.current_frame_idx));
 		}
 	}
 
@@ -569,11 +574,9 @@ export class VideoMaskerComponent implements OnDestroy {
 			});
 			changed = true;
 		}
-		if (!changed) {
-			return;
+		if (changed) {
+			this.objects.set(Array.from(existing.values()).sort((a, b) => a.id - b.id));
 		}
-		const merged = Array.from(existing.values()).sort((a, b) => a.id - b.id);
-		this.objects.set(merged);
 	}
 
 	private normalizeInteractiveObjects(objects: InteractiveObject[]): MaskObject[] {
@@ -1407,7 +1410,6 @@ export class VideoMaskerComponent implements OnDestroy {
 			return;
 		}
 		const interactiveState = this.buildInteractiveStateSnapshot();
-
 		this.isLoading.set(true);
 		firstValueFrom(this.backend.saveVideoSession(name, interactiveState))
 			.then((response: VideoSaveResponse) => {

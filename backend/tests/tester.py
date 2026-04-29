@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 import json
 import zipfile
+import shutil
 
 import requests
 import numpy as np
@@ -285,6 +286,35 @@ def propagate_in_video(start_frame_idx=None, max_frame_num_to_track=None, revers
     return False, None
 
 
+def restore_bedroom_masks_output(result_payload):
+    """Copy propagated masks back to BEDROOM_DIR/masks to preserve legacy test output location."""
+    if not isinstance(result_payload, dict):
+        return False
+
+    manifest_path_raw = result_payload.get("mask_manifest_path")
+    if not manifest_path_raw:
+        print("No mask manifest path returned; cannot restore bedroom mask output folder.")
+        return False
+
+    manifest_path = Path(manifest_path_raw)
+    if not manifest_path.exists():
+        print(f"Mask manifest not found: {manifest_path}")
+        return False
+
+    source_masks_dir = manifest_path.parent
+    target_masks_dir = BEDROOM_DIR / "masks"
+
+    try:
+        if target_masks_dir.exists():
+            shutil.rmtree(target_masks_dir)
+        shutil.copytree(source_masks_dir, target_masks_dir)
+        print(f"Restored bedroom masks output to: {target_masks_dir}")
+        return True
+    except Exception as error:
+        print(f"Failed to restore bedroom masks output: {error}")
+        return False
+
+
 def stop_server_process(server_process):
     """Stops FastAPI server process and its child processes reliably."""
     if server_process is None:
@@ -392,6 +422,7 @@ def run_video_tests():
     success, result = propagate_in_video()
     
     if success:
+        restore_bedroom_masks_output(result)
         print("\n✓ Video masking test completed successfully!")
     else:
         print("\n✗ Video masking test failed.")

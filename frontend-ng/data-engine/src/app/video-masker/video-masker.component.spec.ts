@@ -207,6 +207,7 @@ describe('VideoMaskerComponent sync contract', () => {
 		component.loadSourceMode.set('saved_session_dir');
 		expect(component.getBrowseLabel()).toBe('Browse Saved Session');
 		expect(component.getLoadPathPlaceholder()).toContain('saved session directory');
+		expect(component.getLoadPathPlaceholder()).toContain('session.json');
 		expect(component.getLoadPathPlaceholder()).toContain('masks/');
 	});
 

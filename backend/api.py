@@ -777,7 +777,7 @@ def _initialize_video_state_from_resolved_input(
     async_loading_frames: bool,
 ):
     global video_masker, video_dir, video_frame_files, video_source_path
-    global active_session_dir, active_session_id, active_session_saved_name, mask_manifest_path
+    global active_session_dir, active_session_id, active_session_saved_name, mask_manifest_path, video_prompt_events
 
     source_video_path = None
     source_type = "frames_dir"
@@ -816,6 +816,7 @@ def _initialize_video_state_from_resolved_input(
         interactive_state, restore_warnings = _validate_interactive_state_for_restore(
             session_metadata.get("interactive_state")
         )
+        video_prompt_events = _prompt_events_from_interactive_state(interactive_state)
         restored_session_payload = {
             "session_meta": session_metadata,
             "interactive_state": interactive_state,
@@ -1240,29 +1241,29 @@ def _validate_interactive_state_for_restore(raw_state: Any) -> tuple[Optional[di
         validated = InteractiveState.model_validate(raw_state)
         return _sanitize_interactive_state(validated), []
     except ValidationError as error:
-        warnings: list[str] = [f"interactive_state had validation issues: {error.errors()[0].get('msg', 'invalid payload')}"]
+        first_error = error.errors()[0] if error.errors() else {}
+        warnings: list[str] = [
+            f"interactive_state had validation issues: {first_error.get('msg', 'invalid payload')}"
+        ]
 
     objects: list[dict[str, Any]] = []
     for index, raw_obj in enumerate(raw_state.get("objects", [])):
         try:
-            normalized_obj = InteractiveObject.model_validate(raw_obj).model_dump()
-            objects.append(normalized_obj)
+            objects.append(InteractiveObject.model_validate(raw_obj).model_dump())
         except ValidationError:
             warnings.append(f"Dropped invalid interactive_state.objects[{index}].")
 
     points: list[dict[str, Any]] = []
     for index, raw_point in enumerate(raw_state.get("points", [])):
         try:
-            normalized_point = InteractivePoint.model_validate(raw_point).model_dump()
-            points.append(normalized_point)
+            points.append(InteractivePoint.model_validate(raw_point).model_dump())
         except ValidationError:
             warnings.append(f"Dropped invalid interactive_state.points[{index}].")
 
     live_masks: list[dict[str, Any]] = []
     for index, raw_mask in enumerate(raw_state.get("live_masks", [])):
         try:
-            normalized_mask = InteractiveMaskRLE.model_validate(raw_mask).model_dump()
-            live_masks.append(normalized_mask)
+            live_masks.append(InteractiveMaskRLE.model_validate(raw_mask).model_dump())
         except ValidationError:
             warnings.append(f"Dropped invalid interactive_state.live_masks[{index}].")
         if len(live_masks) >= DEFAULT_MAX_INTERACTIVE_LIVE_MASKS:
@@ -1272,31 +1273,27 @@ def _validate_interactive_state_for_restore(raw_state: Any) -> tuple[Optional[di
             break
 
     interaction_mode_value = raw_state.get("interaction_mode")
-    interaction_mode: Optional[str]
-    if interaction_mode_value in {"positive", "negative"}:
-        interaction_mode = str(interaction_mode_value)
-    else:
-        interaction_mode = None
-        if interaction_mode_value is not None:
-            warnings.append("Dropped invalid interactive_state.interaction_mode.")
+    interaction_mode = str(interaction_mode_value) if interaction_mode_value in {"positive", "negative"} else None
+    if interaction_mode is None and interaction_mode_value is not None:
+        warnings.append("Dropped invalid interactive_state.interaction_mode.")
 
     selected_object_id_value = raw_state.get("selected_object_id")
-    selected_object_id: Optional[int]
-    if isinstance(selected_object_id_value, int) and selected_object_id_value > 0:
-        selected_object_id = int(selected_object_id_value)
-    else:
-        selected_object_id = None
-        if selected_object_id_value is not None:
-            warnings.append("Dropped invalid interactive_state.selected_object_id.")
+    selected_object_id = (
+        int(selected_object_id_value)
+        if isinstance(selected_object_id_value, int) and selected_object_id_value > 0
+        else None
+    )
+    if selected_object_id is None and selected_object_id_value is not None:
+        warnings.append("Dropped invalid interactive_state.selected_object_id.")
 
     current_frame_idx_value = raw_state.get("current_frame_idx")
-    current_frame_idx: Optional[int]
-    if isinstance(current_frame_idx_value, int) and current_frame_idx_value >= 0:
-        current_frame_idx = int(current_frame_idx_value)
-    else:
-        current_frame_idx = None
-        if current_frame_idx_value is not None:
-            warnings.append("Dropped invalid interactive_state.current_frame_idx.")
+    current_frame_idx = (
+        int(current_frame_idx_value)
+        if isinstance(current_frame_idx_value, int) and current_frame_idx_value >= 0
+        else None
+    )
+    if current_frame_idx is None and current_frame_idx_value is not None:
+        warnings.append("Dropped invalid interactive_state.current_frame_idx.")
 
     sanitized = {
         "version": 1,
@@ -1313,6 +1310,31 @@ def _validate_interactive_state_for_restore(raw_state: Any) -> tuple[Optional[di
     except ValidationError:
         warnings.append("interactive_state could not be restored and was ignored.")
         return None, warnings
+
+
+def _prompt_events_from_interactive_state(interactive_state: Optional[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not interactive_state:
+        return []
+
+    grouped: dict[tuple[int, int], list[dict[str, Any]]] = {}
+    for point in interactive_state.get("points", []):
+        frame_idx = int(point["frame_idx"])
+        obj_id = int(point["obj_id"])
+        grouped.setdefault((frame_idx, obj_id), []).append(point)
+
+    events: list[dict[str, Any]] = []
+    for (frame_idx, obj_id), points in sorted(grouped.items()):
+        events.append(
+            {
+                "frame_idx": frame_idx,
+                "obj_id": obj_id,
+                "points": [[float(point["x"]), float(point["y"])] for point in points],
+                "labels": [int(point["label"]) for point in points],
+                "box": None,
+                "clear_old_points": True,
+            }
+        )
+    return events
 
 
 @app.get("/")
@@ -1613,15 +1635,15 @@ async def save_video_session(request: VideoSaveRequest):
     video_dir = str(saved_path / "frames")
     manifest_path = saved_path / "masks" / "manifest.json"
     mask_manifest_path = str(manifest_path) if manifest_path.exists() else None
-    _write_session_metadata(
-        {
-            "schema_version": 2,
-            "saved_name": save_name,
-            "saved_path": str(saved_path),
-            "saved_at": saved_at,
-            "interactive_state": interactive_state_payload,
-        }
-    )
+    metadata_extra = {
+        "schema_version": 2,
+        "saved_name": save_name,
+        "saved_path": str(saved_path),
+        "saved_at": saved_at,
+    }
+    if interactive_state_payload is not None:
+        metadata_extra["interactive_state"] = interactive_state_payload
+    _write_session_metadata(metadata_extra)
 
     return {
         "message": "Session saved successfully",
