@@ -100,4 +100,36 @@ describe('BackendService', () => {
 		expect((http.post as any).mock.calls[0][0]).toBe('http://127.0.0.1:8000/video/save');
 		expect((http.post as any).mock.calls[0][1]).toEqual({ name: 'review-run' });
 	});
+
+	it('sends interactive state when saving a session snapshot', () => {
+		const http = {
+			post: vi.fn(() => of({})),
+			get: vi.fn(),
+		} as unknown as HttpClient;
+		const service = new BackendService(http);
+
+		service.saveVideoSession('review-run', {
+			version: 1,
+			objects: [{ id: 1, name: 'Object 1', color: '#ff6600' }],
+			selected_object_id: 1,
+			interaction_mode: 'positive',
+			current_frame_idx: 3,
+			points: [{ frame_idx: 3, obj_id: 1, x: 10, y: 20, label: 1 }],
+			live_masks: [{ frame_idx: 3, obj_id: 1, height: 2, width: 2, counts: [0, 1, 3] }],
+		}).subscribe();
+
+		expect((http.post as any).mock.calls[0][0]).toBe('http://127.0.0.1:8000/video/save');
+		expect((http.post as any).mock.calls[0][1]).toEqual({
+			name: 'review-run',
+			interactive_state: {
+				version: 1,
+				objects: [{ id: 1, name: 'Object 1', color: '#ff6600' }],
+				selected_object_id: 1,
+				interaction_mode: 'positive',
+				current_frame_idx: 3,
+				points: [{ frame_idx: 3, obj_id: 1, x: 10, y: 20, label: 1 }],
+				live_masks: [{ frame_idx: 3, obj_id: 1, height: 2, width: 2, counts: [0, 1, 3] }],
+			},
+		});
+	});
 });

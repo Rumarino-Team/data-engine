@@ -43,6 +43,7 @@ export interface VideoAddMaskRequest {
 
 export interface VideoSaveRequest {
 	name: string;
+	interactive_state?: VideoSaveInteractiveState;
 }
 
 export interface VideoSaveResponse {
@@ -74,6 +75,47 @@ export interface VideoInitStateResponse {
 	offload_video_to_cpu: boolean;
 	offload_state_to_cpu: boolean;
 	state_epoch: number;
+	source_type?: 'frames_dir' | 'video_file' | 'saved_session';
+	restored_session?: RestoredSessionPayload;
+}
+
+export interface InteractiveObject {
+	id: number;
+	name: string;
+	color: string;
+}
+
+export interface InteractivePoint {
+	frame_idx: number;
+	obj_id: number;
+	x: number;
+	y: number;
+	label: 0 | 1;
+}
+
+export interface InteractiveMaskRle {
+	frame_idx: number;
+	obj_id: number;
+	height: number;
+	width: number;
+	counts: number[];
+}
+
+export interface VideoSaveInteractiveState {
+	version: number;
+	objects: InteractiveObject[];
+	selected_object_id?: number | null;
+	interaction_mode?: 'positive' | 'negative' | null;
+	current_frame_idx?: number | null;
+	points: InteractivePoint[];
+	live_masks: InteractiveMaskRle[];
+}
+
+export interface RestoredSessionPayload {
+	session_meta: Record<string, unknown>;
+	interactive_state?: VideoSaveInteractiveState | null;
+	has_mask_manifest: boolean;
+	interactive_state_warnings?: string[];
 }
 
 export interface VideoPropagateResponse {
@@ -310,8 +352,11 @@ export class BackendService {
 		return this.http.post<JobStartResponse>(this.endpoint('/video/propagate_in_video'), request);
 	}
 
-	saveVideoSession(name: string): Observable<VideoSaveResponse> {
-		const payload: VideoSaveRequest = { name };
+	saveVideoSession(name: string, interactiveState?: VideoSaveInteractiveState): Observable<VideoSaveResponse> {
+		const payload: VideoSaveRequest = {
+			name,
+			...(interactiveState ? { interactive_state: interactiveState } : {}),
+		};
 		return this.http.post<VideoSaveResponse>(this.endpoint('/video/save'), payload);
 	}
 

@@ -1,5 +1,5 @@
 import { TestBed } from '@angular/core/testing';
-import { of } from 'rxjs';
+import { Subject, of } from 'rxjs';
 import { vi } from 'vitest';
 import { BackendService, VideoAddPointsResponse } from '../services/backend.service';
 import { DesktopBridgeService } from '../services/desktop-bridge.service';
@@ -139,22 +139,75 @@ describe('VideoMaskerComponent sync contract', () => {
 		expect(component.lastMaskPixelCount()).toBe(0);
 	});
 
-	it('uses the native Tauri video picker when desktop runtime is available', async () => {
+	it('does not mark an object live-edited until the point mask response returns', async () => {
+		const response$ = new Subject<VideoAddPointsResponse>();
+		backendMock.addNewPointsOrBox.mockReturnValue(response$);
+
+		const pendingRequest = component.addPoint(30, 40, 1, 5);
+
+		expect(component.points().get(5)?.get(1)?.length).toBe(1);
+		expect(component.liveEditedObjectFrames().get(5)?.has(1)).toBeFalsy();
+
+		response$.next(makeResponse({}));
+		response$.complete();
+		await pendingRequest;
+
+		expect(component.liveEditedObjectFrames().get(5)?.has(1)).toBe(true);
+	});
+
+	it('uses the native Tauri video picker when video mode is selected', async () => {
 		desktopBridgeMock.isTauri.mockReturnValue(true);
 		desktopBridgeMock.pickVideoFile.mockResolvedValue('C:/videos/example.mp4');
+		component.loadSourceMode.set('video_file');
 
-		await component.browseVideo();
+		await component.browseSelectedSource();
 
 		expect(desktopBridgeMock.pickVideoFile).toHaveBeenCalled();
 		expect(component.videoDir()).toBe('C:/videos/example.mp4');
 	});
 
-	it('falls back to browser file input when Tauri runtime is unavailable', async () => {
-		const pickerSpy = vi.spyOn(component, 'openVideoFilePicker').mockImplementation(() => undefined);
+	it('uses the native Tauri directory picker for saved-session mode', async () => {
+		desktopBridgeMock.isTauri.mockReturnValue(true);
+		desktopBridgeMock.pickFramesDirectory.mockResolvedValue('C:/sessions/saved1');
+		component.loadSourceMode.set('saved_session_dir');
 
-		await component.browseVideo();
+		await component.browseSelectedSource();
+
+		expect(desktopBridgeMock.pickFramesDirectory).toHaveBeenCalled();
+		expect(component.videoDir()).toBe('C:/sessions/saved1');
+	});
+
+	it('falls back to browser video input when Tauri runtime is unavailable in video mode', async () => {
+		const pickerSpy = vi.spyOn(component, 'openVideoFilePicker').mockImplementation(() => undefined);
+		component.loadSourceMode.set('video_file');
+
+		await component.browseSelectedSource();
 
 		expect(pickerSpy).toHaveBeenCalled();
+	});
+
+	it('falls back to browser directory input when Tauri runtime is unavailable in frames mode', async () => {
+		const pickerSpy = vi.spyOn(component, 'openFramesDirPicker').mockImplementation(() => undefined);
+		component.loadSourceMode.set('frames_dir');
+
+		await component.browseSelectedSource();
+
+		expect(pickerSpy).toHaveBeenCalled();
+	});
+
+	it('updates load placeholder and browse label based on selected load mode', () => {
+		component.loadSourceMode.set('frames_dir');
+		expect(component.getBrowseLabel()).toBe('Browse Frames');
+		expect(component.getLoadPathPlaceholder()).toContain('frames directory');
+
+		component.loadSourceMode.set('video_file');
+		expect(component.getBrowseLabel()).toBe('Browse Video');
+		expect(component.getLoadPathPlaceholder()).toContain('video file');
+
+		component.loadSourceMode.set('saved_session_dir');
+		expect(component.getBrowseLabel()).toBe('Browse Saved Session');
+		expect(component.getLoadPathPlaceholder()).toContain('saved session directory');
+		expect(component.getLoadPathPlaceholder()).toContain('masks/');
 	});
 
 	it('starts a video init job, polls completion, and applies the result', async () => {
@@ -205,6 +258,119 @@ describe('VideoMaskerComponent sync contract', () => {
 		expect(component.isInitialized()).toBe(true);
 		expect(component.numFrames()).toBe(12);
 		expect(component.stateEpoch()).toBe(7);
+	});
+
+	it('uses the same init endpoint path flow for saved-session mode', async () => {
+		backendMock.initVideoState.mockReturnValue(of({
+			job_id: 'job-saved',
+			status: 'queued',
+			operation: 'video_init',
+			message: 'queued',
+		}));
+		backendMock.getJob.mockReturnValue(of({
+			job: {
+				job_id: 'job-saved',
+				operation: 'video_init',
+				status: 'completed',
+				stage: 'completed',
+				stage_label: 'Completed',
+				progress: 1,
+				current: 8,
+				total: 8,
+				window_index: null,
+				window_count: null,
+				frame_idx: null,
+				stage_history: [],
+				message: 'done',
+				error: null,
+				started_at: 'now',
+				updated_at: 'now',
+				completed_at: 'now',
+				result: {
+					message: 'Video state initialized successfully',
+					num_frames: 8,
+					resolved_video_frames_dir: 'C:/backend/saved/review-run/frames',
+					source_video_path: null,
+					online_mode: true,
+					batch_size: 32,
+					offload_video_to_cpu: true,
+					offload_state_to_cpu: true,
+					state_epoch: 11,
+				},
+			},
+		}));
+		component.loadSourceMode.set('saved_session_dir');
+		component.videoDir.set('C:/backend/saved/review-run');
+
+		await component.initVideo();
+
+		expect(backendMock.initVideoState).toHaveBeenCalledWith('C:/backend/saved/review-run');
+		expect(component.isInitialized()).toBe(true);
+	});
+
+	it('restores interactive state from saved-session init result', async () => {
+		backendMock.initVideoState.mockReturnValue(of({
+			job_id: 'job-restore',
+			status: 'queued',
+			operation: 'video_init',
+			message: 'queued',
+		}));
+		backendMock.getJob.mockReturnValue(of({
+			job: {
+				job_id: 'job-restore',
+				operation: 'video_init',
+				status: 'completed',
+				stage: 'completed',
+				stage_label: 'Completed',
+				progress: 1,
+				current: 10,
+				total: 10,
+				window_index: null,
+				window_count: null,
+				frame_idx: null,
+				stage_history: [],
+				message: 'done',
+				error: null,
+				started_at: 'now',
+				updated_at: 'now',
+				completed_at: 'now',
+				result: {
+					message: 'Video state initialized successfully',
+					num_frames: 10,
+					resolved_video_frames_dir: 'C:/backend/saved/review-run/frames',
+					source_video_path: null,
+					online_mode: true,
+					batch_size: 32,
+					offload_video_to_cpu: true,
+					offload_state_to_cpu: true,
+					state_epoch: 12,
+					source_type: 'saved_session',
+					restored_session: {
+						session_meta: { schema_version: 2 },
+						has_mask_manifest: true,
+						interactive_state: {
+							version: 1,
+							objects: [{ id: 1, name: 'Object 1', color: '#ff6600' }],
+							selected_object_id: 1,
+							interaction_mode: 'negative',
+							current_frame_idx: 4,
+							points: [{ frame_idx: 4, obj_id: 1, x: 10, y: 20, label: 1 }],
+							live_masks: [{ frame_idx: 4, obj_id: 1, height: 2, width: 2, counts: [0, 1, 3] }],
+						},
+					},
+				},
+			},
+		}));
+		component.loadSourceMode.set('saved_session_dir');
+		component.videoDir.set('C:/backend/saved/review-run');
+
+		await component.initVideo();
+
+		expect(component.hasManifestMasks()).toBe(true);
+		expect(component.interactionMode()).toBe('negative');
+		expect(component.targetFrameIdx()).toBe(4);
+		expect(component.points().get(4)?.get(1)?.length).toBe(1);
+		expect(component.masks().get(4)?.get(1)).toEqual([[true, false], [false, false]]);
 	});
 
 	it('creates an error toast when a job fails', async () => {
@@ -258,7 +424,15 @@ describe('VideoMaskerComponent sync contract', () => {
 		component.save();
 		await Promise.resolve();
 
-		expect(backendMock.saveVideoSession).toHaveBeenCalledWith('review-run');
+		expect(backendMock.saveVideoSession).toHaveBeenCalledWith(
+			'review-run',
+			expect.objectContaining({
+				version: 1,
+				objects: expect.any(Array),
+				points: expect.any(Array),
+				live_masks: expect.any(Array),
+			}),
+		);
 		expect(component.toasts()[0].title).toBe('Session saved');
 	});
 });

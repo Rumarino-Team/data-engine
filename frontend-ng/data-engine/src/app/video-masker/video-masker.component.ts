@@ -6,13 +6,18 @@ import {
 	ApiHealthStatus,
 	BackendJob,
 	BackendService,
+	InteractiveMaskRle,
+	InteractiveObject,
+	InteractivePoint,
 	JobStageHistoryEntry,
+	RestoredSessionPayload,
 	TrackPromptPointMetadata,
 	TrackPromptPointsResponse,
 	VideoAddPointsOrBoxRequest,
 	VideoInitStateResponse,
 	VideoMaskObjectData,
 	VideoPropagateResponse,
+	VideoSaveInteractiveState,
 	VideoSaveResponse
 } from '../services/backend.service';
 import { DesktopBridgeService } from '../services/desktop-bridge.service';
@@ -37,6 +42,7 @@ interface TrackedPointSeries extends TrackPromptPointMetadata {
 type TrackingOverlayStyle = 'point' | 'short' | 'full';
 type DebugMaskSource = 'live' | 'manifest' | 'none';
 type ToastSeverity = 'error' | 'warning' | 'info' | 'success';
+type LoadSourceMode = 'frames_dir' | 'video_file' | 'saved_session_dir';
 
 interface AppToast {
 	id: number;
@@ -59,6 +65,7 @@ export class VideoMaskerComponent implements OnDestroy {
 	@ViewChild('framesDirInput') framesDirInputRef?: ElementRef<HTMLInputElement>;
 
 	videoDir = signal<string>('');
+	loadSourceMode = signal<LoadSourceMode>('frames_dir');
 	apiUrlInput = signal<string>('');
 	isInitialized = signal<boolean>(false);
 	numFrames = signal<number>(0);
@@ -301,6 +308,12 @@ export class VideoMaskerComponent implements OnDestroy {
 		this.framesDirInputRef?.nativeElement.click();
 	}
 
+	onLoadSourceModeChange(value: string) {
+		const nextMode: LoadSourceMode =
+			value === 'video_file' || value === 'saved_session_dir' ? value : 'frames_dir';
+		this.loadSourceMode.set(nextMode);
+	}
+
 	onVideoDirChange(value: string) {
 		this.videoDir.set(value);
 	}
@@ -313,6 +326,35 @@ export class VideoMaskerComponent implements OnDestroy {
 		this.saveName.set(value);
 	}
 
+	getLoadPathPlaceholder(): string {
+		switch (this.loadSourceMode()) {
+			case 'video_file':
+				return 'Enter video file path (.mp4, .mov, .avi, .mkv, .webm, .m4v)';
+			case 'saved_session_dir':
+				return 'Enter saved session directory path (contains session.json, frames/, and masks/)';
+			default:
+				return 'Enter frames directory path';
+		}
+	}
+
+	getBrowseLabel(): string {
+		switch (this.loadSourceMode()) {
+			case 'video_file':
+				return 'Browse Video';
+			case 'saved_session_dir':
+				return 'Browse Saved Session';
+			default:
+				return 'Browse Frames';
+		}
+	}
+
+	getLoadModeHint(): string {
+		if (this.loadSourceMode() === 'saved_session_dir') {
+			return 'Saved session directory should include session.json, frames/, and masks/.';
+		}
+		return '';
+	}
+
 	applyApiUrl() {
 		this.apiUrlInput.set(this.backend.setApiUrl(this.apiUrlInput()));
 		this.checkApiHealth(true);
@@ -323,23 +365,24 @@ export class VideoMaskerComponent implements OnDestroy {
 		this.checkApiHealth(true);
 	}
 
-	async browseVideo() {
+	async browseSelectedSource() {
+		const mode = this.loadSourceMode();
 		if (this.desktopBridge.isTauri()) {
-			const selectedPath = await this.desktopBridge.pickVideoFile();
-			if (selectedPath) {
-				this.videoDir.set(selectedPath);
+			if (mode === 'video_file') {
+				const selectedVideoPath = await this.desktopBridge.pickVideoFile();
+				if (selectedVideoPath) {
+					this.videoDir.set(selectedVideoPath);
+				}
+				return;
+			}
+			const selectedDirectoryPath = await this.desktopBridge.pickFramesDirectory();
+			if (selectedDirectoryPath) {
+				this.videoDir.set(selectedDirectoryPath);
 			}
 			return;
 		}
-		this.openVideoFilePicker();
-	}
-
-	async browseFramesDirectory() {
-		if (this.desktopBridge.isTauri()) {
-			const selectedPath = await this.desktopBridge.pickFramesDirectory();
-			if (selectedPath) {
-				this.videoDir.set(selectedPath);
-			}
+		if (mode === 'video_file') {
+			this.openVideoFilePicker();
 			return;
 		}
 		this.openFramesDirPicker();
@@ -401,7 +444,10 @@ export class VideoMaskerComponent implements OnDestroy {
 			this.showToast('warning', 'Path unavailable', 'Selected video file name is available, but this browser does not expose the full local path. Paste the full video path manually.');
 			return;
 		}
-
+		if (this.loadSourceMode() === 'saved_session_dir') {
+			this.showToast('warning', 'Path unavailable', 'Selected folder contents are available, but this browser does not expose the full local directory path. Paste the full saved session directory path manually.');
+			return;
+		}
 		this.showToast('warning', 'Path unavailable', 'Selected folder contents are available, but this browser does not expose the full local directory path. Paste the full frames directory path manually.');
 	}
 
@@ -412,7 +458,15 @@ export class VideoMaskerComponent implements OnDestroy {
 	async initVideo() {
 		const enteredPath = this.videoDir().trim().replace(/^['\"]|['\"]$/g, '');
 		if (!enteredPath) {
-			this.showToast('warning', 'Missing video path', 'Enter a video frames directory path or pick a video file.');
+			if (this.loadSourceMode() === 'saved_session_dir') {
+				this.showToast('warning', 'Missing session path', 'Enter a saved session directory path or browse for one.');
+				return;
+			}
+			if (this.loadSourceMode() === 'video_file') {
+				this.showToast('warning', 'Missing video path', 'Enter a video file path or browse for one.');
+				return;
+			}
+			this.showToast('warning', 'Missing frames path', 'Enter a frames directory path or browse for one.');
 			return;
 		}
 
@@ -427,7 +481,6 @@ export class VideoMaskerComponent implements OnDestroy {
 		this.numFrames.set(res.num_frames);
 		this.targetFrameIdx.set(0);
 		this.displayedFrameIdx.set(-1);
-		this.hasManifestMasks.set(false);
 		this.saveName.set('');
 		this.trackedPoints.set([]);
 		this.masks.set(new Map());
@@ -436,9 +489,297 @@ export class VideoMaskerComponent implements OnDestroy {
 		this.clearFrameCaches();
 		this.objects.set([{ id: 1, name: 'Object 1', color: this.getRandomColor() }]);
 		this.selectedObjectId.set(1);
+		this.hasManifestMasks.set(Boolean(res.restored_session?.has_mask_manifest));
 		this.updateStateEpoch(res.state_epoch, 'video init');
+		this.restoreInteractiveSessionState(res.restored_session);
 		this.resetDebugState();
 		this.isInitialized.set(true);
+		const restoredWarnings = res.restored_session?.interactive_state_warnings || [];
+		if (restoredWarnings.length > 0) {
+			this.showToast(
+				'warning',
+				'Session partially restored',
+				restoredWarnings.slice(0, 2).join(' '),
+			);
+		}
+	}
+
+	private restoreInteractiveSessionState(restored: RestoredSessionPayload | null | undefined): void {
+		if (!restored?.interactive_state) {
+			return;
+		}
+		const interactive = restored.interactive_state;
+		const restoredObjects = this.normalizeInteractiveObjects(interactive.objects || []);
+		if (restoredObjects.length > 0) {
+			this.objects.set(restoredObjects);
+		}
+
+		const restoredPoints = this.deserializePoints(interactive.points || []);
+		if (restoredPoints.size > 0) {
+			this.points.set(restoredPoints);
+		}
+
+		const { masks, liveEditedFrames } = this.deserializeLiveMasks(interactive.live_masks || []);
+		if (masks.size > 0) {
+			this.masks.set(masks);
+			this.liveEditedObjectFrames.set(liveEditedFrames);
+		}
+		this.ensureObjectsForRestoredState();
+
+		const availableObjectIds = new Set(this.objects().map((objectEntry) => objectEntry.id));
+		const requestedObjectId = interactive.selected_object_id ?? null;
+		if (requestedObjectId !== null && availableObjectIds.has(requestedObjectId)) {
+			this.selectedObjectId.set(requestedObjectId);
+		} else if (this.objects().length > 0) {
+			this.selectedObjectId.set(this.objects()[0].id);
+		}
+
+		if (interactive.interaction_mode === 'positive' || interactive.interaction_mode === 'negative') {
+			this.interactionMode.set(interactive.interaction_mode);
+		}
+		if (
+			typeof interactive.current_frame_idx === 'number'
+			&& Number.isFinite(interactive.current_frame_idx)
+			&& interactive.current_frame_idx >= 0
+			&& interactive.current_frame_idx < this.numFrames()
+		) {
+			const normalizedFrame = Math.trunc(interactive.current_frame_idx);
+			this.targetFrameIdx.set(normalizedFrame);
+		}
+	}
+
+	private ensureObjectsForRestoredState(): void {
+		const existing = new Map(this.objects().map((entry) => [entry.id, entry]));
+		const requiredObjectIds = new Set<number>();
+		this.points().forEach((framePoints) => {
+			framePoints.forEach((_objPoints, objId) => requiredObjectIds.add(objId));
+		});
+		this.masks().forEach((frameMasks) => {
+			frameMasks.forEach((_mask, objId) => requiredObjectIds.add(objId));
+		});
+		let changed = false;
+		for (const objId of requiredObjectIds) {
+			if (existing.has(objId)) {
+				continue;
+			}
+			existing.set(objId, {
+				id: objId,
+				name: `Object ${objId}`,
+				color: this.getRandomColor(),
+			});
+			changed = true;
+		}
+		if (!changed) {
+			return;
+		}
+		const merged = Array.from(existing.values()).sort((a, b) => a.id - b.id);
+		this.objects.set(merged);
+	}
+
+	private normalizeInteractiveObjects(objects: InteractiveObject[]): MaskObject[] {
+		const normalized: MaskObject[] = [];
+		const seen = new Set<number>();
+		for (const candidate of objects) {
+			if (!Number.isInteger(candidate.id) || candidate.id <= 0 || seen.has(candidate.id)) {
+				continue;
+			}
+			seen.add(candidate.id);
+			normalized.push({
+				id: candidate.id,
+				name: (candidate.name || '').trim() || `Object ${candidate.id}`,
+				color: this.normalizeObjectColor(candidate.color),
+			});
+		}
+		return normalized;
+	}
+
+	private normalizeObjectColor(color: string | undefined): string {
+		if (typeof color === 'string' && /^#[0-9a-fA-F]{6}$/.test(color.trim())) {
+			return color.trim();
+		}
+		return this.getRandomColor();
+	}
+
+	private deserializePoints(points: InteractivePoint[]): Map<number, Map<number, Point[]>> {
+		const pointsByFrame = new Map<number, Map<number, Point[]>>();
+		for (const point of points) {
+			if (
+				!Number.isFinite(point.frame_idx)
+				|| !Number.isFinite(point.obj_id)
+				|| !Number.isFinite(point.x)
+				|| !Number.isFinite(point.y)
+				|| (point.label !== 0 && point.label !== 1)
+			) {
+				continue;
+			}
+			const frameIdx = Math.trunc(point.frame_idx);
+			const objId = Math.trunc(point.obj_id);
+			if (frameIdx < 0 || objId <= 0) {
+				continue;
+			}
+			let frameMap = pointsByFrame.get(frameIdx);
+			if (!frameMap) {
+				frameMap = new Map<number, Point[]>();
+				pointsByFrame.set(frameIdx, frameMap);
+			}
+			const objPoints = frameMap.get(objId) || [];
+			objPoints.push({
+				x: point.x,
+				y: point.y,
+				label: point.label,
+			});
+			frameMap.set(objId, objPoints);
+		}
+		return pointsByFrame;
+	}
+
+	private deserializeLiveMasks(
+		liveMasks: InteractiveMaskRle[],
+	): { masks: Map<number, Map<number, boolean[][]>>; liveEditedFrames: Map<number, Set<number>> } {
+		const masksByFrame = new Map<number, Map<number, boolean[][]>>();
+		const editedByFrame = new Map<number, Set<number>>();
+		for (const entry of liveMasks) {
+			const decodedMask = this.decodeMaskFromCounts(entry);
+			if (!decodedMask) {
+				continue;
+			}
+			const frameIdx = Math.trunc(entry.frame_idx);
+			const objId = Math.trunc(entry.obj_id);
+			if (frameIdx < 0 || objId <= 0) {
+				continue;
+			}
+			let frameMasks = masksByFrame.get(frameIdx);
+			if (!frameMasks) {
+				frameMasks = new Map<number, boolean[][]>();
+				masksByFrame.set(frameIdx, frameMasks);
+			}
+			frameMasks.set(objId, decodedMask);
+
+			const editedSet = editedByFrame.get(frameIdx) || new Set<number>();
+			editedSet.add(objId);
+			editedByFrame.set(frameIdx, editedSet);
+		}
+		return { masks: masksByFrame, liveEditedFrames: editedByFrame };
+	}
+
+	private buildInteractiveStateSnapshot(): VideoSaveInteractiveState {
+		const objects = this.objects().map((entry) => ({
+			id: entry.id,
+			name: entry.name,
+			color: entry.color,
+		}));
+		const points: InteractivePoint[] = [];
+		this.points().forEach((framePoints, frameIdx) => {
+			framePoints.forEach((objPoints, objId) => {
+				for (const point of objPoints) {
+					points.push({
+						frame_idx: frameIdx,
+						obj_id: objId,
+						x: point.x,
+						y: point.y,
+						label: point.label === 1 ? 1 : 0,
+					});
+				}
+			});
+		});
+
+		const liveMasks: InteractiveMaskRle[] = [];
+		this.masks().forEach((frameMasks, frameIdx) => {
+			frameMasks.forEach((mask, objId) => {
+				const encoded = this.encodeMaskToCounts(mask);
+				if (!encoded) {
+					return;
+				}
+				liveMasks.push({
+					frame_idx: frameIdx,
+					obj_id: objId,
+					height: encoded.height,
+					width: encoded.width,
+					counts: encoded.counts,
+				});
+			});
+		});
+
+		return {
+			version: 1,
+			objects,
+			selected_object_id: this.selectedObjectId(),
+			interaction_mode: this.interactionMode(),
+			current_frame_idx: this.targetFrameIdx(),
+			points,
+			live_masks: liveMasks,
+		};
+	}
+
+	private encodeMaskToCounts(mask: boolean[][]): { width: number; height: number; counts: number[] } | null {
+		const normalizedMask = this.normalizeMask2d(mask);
+		if (!normalizedMask || normalizedMask.length === 0 || normalizedMask[0].length === 0) {
+			return null;
+		}
+		const height = normalizedMask.length;
+		const width = normalizedMask[0].length;
+		const counts: number[] = [];
+		let currentValue = false;
+		let currentRun = 0;
+		for (let y = 0; y < height; y++) {
+			const row = normalizedMask[y];
+			if (!Array.isArray(row) || row.length !== width) {
+				return null;
+			}
+			for (let x = 0; x < width; x++) {
+				const value = Boolean(row[x]);
+				if (value === currentValue) {
+					currentRun += 1;
+					continue;
+				}
+				counts.push(currentRun);
+				currentRun = 1;
+				currentValue = value;
+			}
+		}
+		counts.push(currentRun);
+		return { width, height, counts };
+	}
+
+	private decodeMaskFromCounts(maskRle: InteractiveMaskRle): boolean[][] | null {
+		const height = Math.trunc(maskRle.height);
+		const width = Math.trunc(maskRle.width);
+		if (height <= 0 || width <= 0) {
+			return null;
+		}
+		if (!Array.isArray(maskRle.counts) || maskRle.counts.length === 0) {
+			return null;
+		}
+		const totalPixels = width * height;
+		const flatMask = new Array<boolean>(totalPixels).fill(false);
+		let index = 0;
+		let foreground = false;
+		for (const rawCount of maskRle.counts) {
+			const count = Math.trunc(rawCount);
+			if (!Number.isFinite(count) || count < 0) {
+				return null;
+			}
+			const end = index + count;
+			if (end > totalPixels) {
+				return null;
+			}
+			if (foreground) {
+				for (let cursor = index; cursor < end; cursor++) {
+					flatMask[cursor] = true;
+				}
+			}
+			index = end;
+			foreground = !foreground;
+		}
+		if (index !== totalPixels) {
+			return null;
+		}
+		const mask2d: boolean[][] = [];
+		for (let y = 0; y < height; y++) {
+			const rowStart = y * width;
+			mask2d.push(flatMask.slice(rowStart, rowStart + width));
+		}
+		return mask2d;
 	}
 
 	private clearFrameCaches(): void {
@@ -834,22 +1175,14 @@ export class VideoMaskerComponent implements OnDestroy {
 		const objId = this.selectedObjectId();
 		if (objId === null) return;
 
-		const pointsMap = this.points();
-		let framePointsMap = pointsMap.get(frameIdx);
-		if (!framePointsMap) {
-			framePointsMap = new Map();
-			pointsMap.set(frameIdx, framePointsMap);
-		}
-		let objectPoints = framePointsMap.get(objId);
-		if (!objectPoints) {
-			objectPoints = [];
-			framePointsMap.set(objId, objectPoints);
-		}
 		const wasLiveEditedBeforeRequest = this.isObjectLiveEdited(frameIdx, objId);
-		objectPoints.push({ x, y, label });
-		const pushedPointIndex = objectPoints.length - 1;
-		this.points.set(new Map(pointsMap));
-		this.markObjectAsLiveEdited(frameIdx, objId);
+		const pointsMap = new Map(this.points());
+		const framePointsMap = new Map(pointsMap.get(frameIdx) || new Map<number, Point[]>());
+		const previousObjectPoints = framePointsMap.get(objId) || [];
+		const objectPoints = [...previousObjectPoints, { x, y, label }];
+		framePointsMap.set(objId, objectPoints);
+		pointsMap.set(frameIdx, framePointsMap);
+		this.points.set(pointsMap);
 		const frameObjectPoints = objectPoints.map((point) => [point.x, point.y]);
 		const frameObjectLabels = objectPoints.map((point) => point.label);
 		const requestFrameIdx = frameIdx;
@@ -916,33 +1249,34 @@ export class VideoMaskerComponent implements OnDestroy {
 			this.lastMaskPixelCount.set(maskPixelCount);
 			this.lastFallbackUsed.set(Boolean(response.single_frame_fallback_used));
 
-			const masksMap = this.masks();
-			let frameMasksMap = masksMap.get(requestFrameIdx);
-			if (!frameMasksMap) {
-				frameMasksMap = new Map();
-				masksMap.set(requestFrameIdx, frameMasksMap);
-			}
+			const masksMap = new Map(this.masks());
+			const frameMasksMap = new Map(masksMap.get(requestFrameIdx) || new Map<number, boolean[][]>());
 			response.out_obj_ids.forEach((id, index) => {
-				frameMasksMap?.set(id, response.out_masks[index]);
+				frameMasksMap.set(id, response.out_masks[index]);
 			});
-			this.masks.set(new Map(masksMap));
+			masksMap.set(requestFrameIdx, frameMasksMap);
+			this.markObjectAsLiveEdited(requestFrameIdx, objId);
+			this.masks.set(masksMap);
 			this.drawCurrentFrame();
 		} catch (error) {
 			console.error(error);
-			if (objectPoints[pushedPointIndex]) {
-				objectPoints.splice(pushedPointIndex, 1);
-				if (objectPoints.length === 0) {
-					framePointsMap.delete(objId);
-				}
-				if (framePointsMap.size === 0) {
-					pointsMap.delete(frameIdx);
-				}
-				if (!wasLiveEditedBeforeRequest && (!objectPoints || objectPoints.length === 0)) {
-					this.unmarkObjectAsLiveEdited(frameIdx, objId);
-				}
-				this.points.set(new Map(pointsMap));
-				this.drawCurrentFrame();
+			const rollbackPointsMap = new Map(this.points());
+			const rollbackFramePointsMap = new Map(rollbackPointsMap.get(frameIdx) || new Map<number, Point[]>());
+			if (previousObjectPoints.length > 0) {
+				rollbackFramePointsMap.set(objId, previousObjectPoints);
+			} else {
+				rollbackFramePointsMap.delete(objId);
 			}
+			if (rollbackFramePointsMap.size === 0) {
+				rollbackPointsMap.delete(frameIdx);
+			} else {
+				rollbackPointsMap.set(frameIdx, rollbackFramePointsMap);
+			}
+			if (!wasLiveEditedBeforeRequest) {
+				this.unmarkObjectAsLiveEdited(frameIdx, objId);
+			}
+			this.points.set(rollbackPointsMap);
+			this.drawCurrentFrame();
 		} finally {
 			this.isPointRequestInFlight.set(false);
 		}
@@ -979,6 +1313,27 @@ export class VideoMaskerComponent implements OnDestroy {
 			this.selectedObjectId.set(this.objects().length > 0 ? this.objects()[0].id : null);
 			this.drawCurrentFrame();
 		});
+	}
+
+	async removeAllObjects() {
+		const objectIds = this.objects().map((entry) => entry.id);
+		if (objectIds.length === 0) {
+			return;
+		}
+
+		try {
+			await Promise.all(objectIds.map((id) => firstValueFrom(this.backend.removeObject(id))));
+			this.objects.set([]);
+			this.selectedObjectId.set(null);
+			this.masks.set(new Map());
+			this.points.set(new Map());
+			this.liveEditedObjectFrames.set(new Map());
+			this.trackedPoints.set([]);
+			this.drawCurrentFrame();
+		} catch (error) {
+			console.error(error);
+			this.showToast('error', 'Remove all failed', this.getErrorMessage(error, 'Failed to remove all objects.'));
+		}
 	}
 
 	private removeObjectFromFrameMaps(objectId: number) {
@@ -1051,9 +1406,10 @@ export class VideoMaskerComponent implements OnDestroy {
 			this.showToast('warning', 'Missing save name', 'Enter a name for this saved session.');
 			return;
 		}
+		const interactiveState = this.buildInteractiveStateSnapshot();
 
 		this.isLoading.set(true);
-		firstValueFrom(this.backend.saveVideoSession(name))
+		firstValueFrom(this.backend.saveVideoSession(name, interactiveState))
 			.then((response: VideoSaveResponse) => {
 				this.updateStateEpoch(response.state_epoch, 'save');
 				this.saveName.set(response.name);

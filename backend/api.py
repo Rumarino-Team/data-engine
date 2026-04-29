@@ -1,7 +1,7 @@
 from typing import Optional, Any, Callable
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 import numpy as np
 import gc
 import logging
@@ -59,6 +59,7 @@ SAVED_ROOT = BACKEND_ROOT / "saved"
 DEFAULT_MAX_MASK_FRAMES_IN_RESPONSE = int(os.getenv("VIDEO_PROPAGATE_MAX_MASK_FRAMES", "0"))
 DEFAULT_MAX_MASK_VALUES_IN_RESPONSE = int(os.getenv("VIDEO_PROPAGATE_MAX_MASK_VALUES", "0"))
 DEFAULT_PROMPT_TRACK_BATCH_SIZE = int(os.getenv("TRACK_PROMPT_BATCH_SIZE", "32"))
+DEFAULT_MAX_INTERACTIVE_LIVE_MASKS = int(os.getenv("VIDEO_SAVE_MAX_LIVE_MASKS", "5000"))
 
 logger = logging.getLogger(__name__)
 current_job: Optional[dict[str, Any]] = None
@@ -285,6 +286,15 @@ def _write_session_metadata(extra: Optional[dict[str, Any]] = None) -> None:
     session_path = _current_session_path()
     if session_path is None:
         return
+    existing_metadata: dict[str, Any] = {}
+    session_metadata_path = session_path / "session.json"
+    if session_metadata_path.exists():
+        try:
+            loaded = load_mask_manifest(session_metadata_path)
+            if isinstance(loaded, dict):
+                existing_metadata = loaded
+        except Exception:
+            logger.warning("Failed to read existing session metadata from %s", session_metadata_path)
     metadata = {
         "session_id": active_session_id,
         "saved_name": active_session_saved_name,
@@ -304,9 +314,19 @@ def _write_session_metadata(extra: Optional[dict[str, Any]] = None) -> None:
                 "offload_state_to_cpu": video_masker.offload_state_to_cpu,
             }
         )
+    for key in (
+        "schema_version",
+        "interactive_state",
+        "created_at",
+        "saved_at",
+        "saved_path",
+        "source_input_path",
+    ):
+        if key in existing_metadata:
+            metadata[key] = existing_metadata[key]
     if extra:
         metadata.update(extra)
-    write_mask_manifest(session_path / "session.json", metadata)
+    write_mask_manifest(session_metadata_path, metadata)
 
 
 def _clear_active_cache_session() -> None:
@@ -700,6 +720,49 @@ def _validate_video_input_path(resolved_input_path: Path) -> None:
     raise HTTPException(status_code=400, detail=detail)
 
 
+def _resolve_saved_session_layout(resolved_input_path: Path) -> Optional[tuple[Path, Path, Path]]:
+    if not resolved_input_path.is_dir():
+        return None
+    session_json = resolved_input_path / "session.json"
+    if not session_json.exists():
+        return None
+    frames_dir = resolved_input_path / "frames"
+    masks_dir = resolved_input_path / "masks"
+    if not frames_dir.is_dir():
+        raise HTTPException(
+            status_code=400,
+            detail=f"Saved session directory is missing required frames/ folder: {frames_dir}",
+        )
+    if not masks_dir.is_dir():
+        raise HTTPException(
+            status_code=400,
+            detail=f"Saved session directory is missing required masks/ folder: {masks_dir}",
+        )
+    return resolved_input_path.resolve(), frames_dir.resolve(), masks_dir.resolve()
+
+
+def _load_session_metadata(session_root: Path) -> dict[str, Any]:
+    session_json_path = session_root / "session.json"
+    try:
+        metadata = load_mask_manifest(session_json_path)
+    except FileNotFoundError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Saved session directory is missing session.json: {session_json_path}",
+        ) from error
+    except Exception as error:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unable to parse saved session metadata: {session_json_path}",
+        ) from error
+    if not isinstance(metadata, dict):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Saved session metadata must be a JSON object: {session_json_path}",
+        )
+    return metadata
+
+
 def _prepare_video_masker_for_video_init():
     _release_active_session(clear_cache_session=True)
 
@@ -714,98 +777,158 @@ def _initialize_video_state_from_resolved_input(
     async_loading_frames: bool,
 ):
     global video_masker, video_dir, video_frame_files, video_source_path
+    global active_session_dir, active_session_id, active_session_saved_name, mask_manifest_path
 
     source_video_path = None
-    session_dir = _create_active_session(resolved_input_path)
-    frames_dir = session_dir / "frames"
+    source_type = "frames_dir"
+    restored_session_payload: Optional[dict[str, Any]] = None
+    saved_session_layout = _resolve_saved_session_layout(resolved_input_path)
 
-    if resolved_input_path.is_file():
-        suffix = resolved_input_path.suffix.lower()
-        if suffix in VIDEO_EXTENSIONS:
-            def _on_extract_progress(current: int, total: Optional[int]) -> None:
-                if total:
-                    progress = 0.35 + (0.3 * (current / total))
-                    message = f"Extracted {current} of {total} frames"
+    if saved_session_layout is not None:
+        session_dir, frames_dir, masks_dir = saved_session_layout
+        session_metadata = _load_session_metadata(session_dir)
+        source_type = "saved_session"
+        active_session_dir = session_dir
+        active_session_id = str(session_metadata.get("session_id") or uuid.uuid4().hex)
+        active_session_saved_name = (
+            str(session_metadata.get("saved_name")).strip()
+            if session_metadata.get("saved_name")
+            else session_dir.name
+        )
+        manifest_path = masks_dir / "manifest.json"
+        mask_manifest_path = str(manifest_path) if manifest_path.exists() else None
+        source_video_path = session_metadata.get("source_video_path")
+        video_source_path = source_video_path
+        indexed_frame_files = sorted(
+            frame_path.name
+            for frame_path in frames_dir.iterdir()
+            if frame_path.is_file() and frame_path.suffix.lower() in IMAGE_EXTENSIONS
+        )
+        _update_job(
+            stage="linking_frames",
+            stage_label="Loading saved session frames",
+            progress=0.65,
+            current=len(indexed_frame_files),
+            total=len(indexed_frame_files),
+            frame_idx=len(indexed_frame_files) - 1 if indexed_frame_files else None,
+            message=f"Found {len(indexed_frame_files)} saved session frames",
+        )
+        interactive_state, restore_warnings = _validate_interactive_state_for_restore(
+            session_metadata.get("interactive_state")
+        )
+        restored_session_payload = {
+            "session_meta": session_metadata,
+            "interactive_state": interactive_state,
+            "has_mask_manifest": bool(mask_manifest_path),
+            "interactive_state_warnings": restore_warnings,
+        }
+    else:
+        session_dir = _create_active_session(resolved_input_path)
+        frames_dir = session_dir / "frames"
+
+        if resolved_input_path.is_file():
+            source_type = "video_file"
+            suffix = resolved_input_path.suffix.lower()
+            if suffix in VIDEO_EXTENSIONS:
+                def _on_extract_progress(current: int, total: Optional[int]) -> None:
+                    if total:
+                        progress = 0.35 + (0.3 * (current / total))
+                        message = f"Extracted {current} of {total} frames"
+                    else:
+                        progress = None
+                        message = f"Extracted {current} frames"
+                    _update_job(
+                        stage="extracting_frames",
+                        stage_label="Extracting video frames",
+                        progress=progress,
+                        current=current,
+                        total=total,
+                        frame_idx=max(0, current - 1),
+                        message=message,
+                        append_history=current == 1 or (bool(total) and current == total),
+                    )
+
+                try:
+                    indexed_frame_files = _extract_video_to_session_frames(
+                        resolved_input_path,
+                        frames_dir,
+                        progress_callback=_on_extract_progress,
+                    )
+                except ValueError as error:
+                    raise HTTPException(status_code=400, detail=str(error)) from error
+                except Exception as error:
+                    raise HTTPException(status_code=500, detail=str(error)) from error
+                source_video_path = str(resolved_input_path)
+            else:
+                if suffix in IMAGE_EXTENSIONS:
+                    detail = (
+                        f"Expected a frames directory or video file, got a single image file: {resolved_input_path}. "
+                        "Provide a directory containing image frames."
+                    )
                 else:
-                    progress = None
-                    message = f"Extracted {current} frames"
+                    detail = (
+                        f"Unsupported input file type: {resolved_input_path.suffix or '<none>'}. "
+                        "Provide a directory of image frames or a video file (.mp4, .mov, .avi, .mkv, .webm, .m4v)."
+                    )
+                raise HTTPException(status_code=400, detail=detail)
+        else:
+            source_type = "frames_dir"
+            candidate_count = len([
+                path
+                for path in resolved_input_path.iterdir()
+                if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+            ])
+
+            def _on_link_progress(current: int, total: int, source_path: Path) -> None:
+                progress = 0.35 + (0.3 * (current / total)) if total else 0.65
                 _update_job(
-                    stage="extracting_frames",
-                    stage_label="Extracting video frames",
+                    stage="linking_frames",
+                    stage_label="Linking frame cache",
                     progress=progress,
                     current=current,
                     total=total,
                     frame_idx=max(0, current - 1),
-                    message=message,
-                    append_history=current == 1 or (bool(total) and current == total),
+                    message=f"Linked {current} of {total} frames",
+                    append_history=current == 1 or current == total,
                 )
 
-            try:
-                indexed_frame_files = _extract_video_to_session_frames(
-                    resolved_input_path,
-                    frames_dir,
-                    progress_callback=_on_extract_progress,
-                )
-            except ValueError as error:
-                raise HTTPException(status_code=400, detail=str(error)) from error
-            except Exception as error:
-                raise HTTPException(status_code=500, detail=str(error)) from error
-            source_video_path = str(resolved_input_path)
-        else:
-            if suffix in IMAGE_EXTENSIONS:
-                detail = (
-                    f"Expected a frames directory or video file, got a single image file: {resolved_input_path}. "
-                    "Provide a directory containing image frames."
-                )
-            else:
-                detail = (
-                    f"Unsupported input file type: {resolved_input_path.suffix or '<none>'}. "
-                    "Provide a directory of image frames or a video file (.mp4, .mov, .avi, .mkv, .webm, .m4v)."
-                )
-            raise HTTPException(status_code=400, detail=detail)
-    else:
-        candidate_count = len([
-            path
-            for path in resolved_input_path.iterdir()
-            if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
-        ])
-
-        def _on_link_progress(current: int, total: int, source_path: Path) -> None:
-            progress = 0.35 + (0.3 * (current / total)) if total else 0.65
             _update_job(
                 stage="linking_frames",
                 stage_label="Linking frame cache",
-                progress=progress,
-                current=current,
-                total=total,
-                frame_idx=max(0, current - 1),
-                message=f"Linked {current} of {total} frames",
-                append_history=current == 1 or current == total,
+                progress=0.35,
+                current=0,
+                total=candidate_count,
+                frame_idx=None,
+                message="Preparing session-local frame cache",
             )
-
-        _update_job(
-            stage="linking_frames",
-            stage_label="Linking frame cache",
-            progress=0.35,
-            current=0,
-            total=candidate_count,
-            frame_idx=None,
-            message="Preparing session-local frame cache",
-        )
-        indexed_frame_files = _copy_frames_directory_to_session(
-            resolved_input_path,
-            frames_dir,
-            progress_callback=_on_link_progress,
-        )
+            indexed_frame_files = _copy_frames_directory_to_session(
+                resolved_input_path,
+                frames_dir,
+                progress_callback=_on_link_progress,
+            )
 
     video_dir = str(frames_dir)
     video_frame_files = indexed_frame_files
 
     if not video_frame_files:
+        if source_type == "saved_session":
+            raise HTTPException(
+                status_code=400,
+                detail=f"No image frames found under saved session frames directory: {frames_dir}",
+            )
         raise HTTPException(
             status_code=400,
             detail=f"No image frames found in directory: {resolved_input_path}"
         )
+
+    if source_type != "saved_session":
+        mask_manifest_path = None
+        video_source_path = source_video_path
+
+    if resolved_input_path.is_file():
+        suffix = resolved_input_path.suffix.lower()
+        if source_type != "video_file" and suffix in VIDEO_EXTENSIONS:
+            source_type = "video_file"
 
     def _on_sam2_progress(stage: str, label: str, progress: Optional[float], message: str) -> None:
         _update_job(
@@ -868,16 +991,16 @@ def _initialize_video_state_from_resolved_input(
                 message=f"Indexed {len(indexed_frame_files)} of {total_candidates} frame files",
                 append_history=candidate_idx == 1 or candidate_idx == total_candidates,
             )
-    video_source_path = source_video_path
     state_epoch = _bump_video_state_epoch()
-    _write_session_metadata(
-        {
-            "created_at": _utc_now_iso(),
-            "source_input_path": str(resolved_input_path),
-        }
-    )
+    metadata_updates = {
+        "source_input_path": str(resolved_input_path),
+        "schema_version": 2,
+    }
+    if source_type != "saved_session":
+        metadata_updates["created_at"] = _utc_now_iso()
+    _write_session_metadata(metadata_updates)
 
-    return {
+    response_payload: dict[str, Any] = {
         "message": "Video state initialized successfully",
         "num_frames": len(video_frame_files),
         "resolved_video_frames_dir": video_dir,
@@ -887,7 +1010,11 @@ def _initialize_video_state_from_resolved_input(
         "offload_video_to_cpu": video_masker.offload_video_to_cpu,
         "offload_state_to_cpu": video_masker.offload_state_to_cpu,
         "state_epoch": state_epoch,
+        "source_type": source_type,
     }
+    if restored_session_payload is not None:
+        response_payload["restored_session"] = restored_session_payload
+    return response_payload
 
 
 def _serialize_video_segments_for_response(
@@ -960,8 +1087,101 @@ class VideoAddMaskRequest(BaseModel):
     mask: list[list[bool]]  # 2D boolean mask
 
 
+class InteractiveObject(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: int = Field(ge=1)
+    name: str = Field(min_length=1, max_length=200)
+    color: str = Field(pattern=r"^#[0-9A-Fa-f]{6}$")
+
+
+class InteractivePoint(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    frame_idx: int = Field(ge=0)
+    obj_id: int = Field(ge=1)
+    x: float
+    y: float
+    label: int
+
+    @field_validator("x", "y")
+    @classmethod
+    def _validate_finite_coordinate(cls, value: float) -> float:
+        if not np.isfinite(value):
+            raise ValueError("Point coordinates must be finite numbers.")
+        return float(value)
+
+    @field_validator("label")
+    @classmethod
+    def _validate_label(cls, value: int) -> int:
+        if int(value) not in (0, 1):
+            raise ValueError("Point label must be 0 or 1.")
+        return int(value)
+
+
+class InteractiveMaskRLE(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    frame_idx: int = Field(ge=0)
+    obj_id: int = Field(ge=1)
+    height: int = Field(ge=1)
+    width: int = Field(ge=1)
+    counts: list[int]
+
+    @field_validator("counts")
+    @classmethod
+    def _validate_counts_members(cls, counts: list[int]) -> list[int]:
+        if not counts:
+            raise ValueError("Live mask counts cannot be empty.")
+        normalized = [int(value) for value in counts]
+        if any(value < 0 for value in normalized):
+            raise ValueError("Live mask counts cannot contain negative values.")
+        return normalized
+
+    @model_validator(mode="after")
+    def _validate_counts_shape(self) -> "InteractiveMaskRLE":
+        total = sum(self.counts)
+        expected = int(self.height) * int(self.width)
+        if total != expected:
+            raise ValueError(
+                f"Live mask counts sum ({total}) does not match width*height ({expected})."
+            )
+        return self
+
+
+class InteractiveState(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = Field(default=1, ge=1)
+    objects: list[InteractiveObject] = Field(default_factory=list)
+    selected_object_id: Optional[int] = Field(default=None, ge=1)
+    interaction_mode: Optional[str] = None
+    current_frame_idx: Optional[int] = Field(default=None, ge=0)
+    points: list[InteractivePoint] = Field(default_factory=list)
+    live_masks: list[InteractiveMaskRLE] = Field(default_factory=list)
+
+    @field_validator("interaction_mode")
+    @classmethod
+    def _validate_interaction_mode(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        if value not in {"positive", "negative"}:
+            raise ValueError("interaction_mode must be positive or negative.")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_limits(self) -> "InteractiveState":
+        if len(self.live_masks) > DEFAULT_MAX_INTERACTIVE_LIVE_MASKS:
+            raise ValueError(
+                f"Too many live masks in interactive_state ({len(self.live_masks)}). "
+                f"Maximum allowed is {DEFAULT_MAX_INTERACTIVE_LIVE_MASKS}."
+            )
+        return self
+
+
 class VideoSaveRequest(BaseModel):
     name: str
+    interactive_state: Optional[InteractiveState] = None
 
 
 class TrackingLoadVideoRequest(BaseModel):
@@ -982,6 +1202,117 @@ class TrackingPointsRequest(BaseModel):
 class TrackingPromptPointsRequest(BaseModel):
     model_name: str = "cotracker3_online"
     add_support_grid: bool = True
+
+
+def _sanitize_interactive_state(interactive_state: Optional[InteractiveState]) -> Optional[dict[str, Any]]:
+    if interactive_state is None:
+        return None
+    payload = interactive_state.model_dump()
+    payload["version"] = int(payload.get("version", 1))
+    return payload
+
+
+def _merge_session_metadata(
+    *,
+    existing_meta: dict[str, Any],
+    interactive_state: Optional[dict[str, Any]],
+    save_name: str,
+    saved_path: Path,
+    saved_at: str,
+) -> dict[str, Any]:
+    merged = dict(existing_meta)
+    merged["schema_version"] = 2
+    merged["saved_name"] = save_name
+    merged["saved_path"] = str(saved_path)
+    merged["saved_at"] = saved_at
+    if interactive_state is not None:
+        merged["interactive_state"] = interactive_state
+    return merged
+
+
+def _validate_interactive_state_for_restore(raw_state: Any) -> tuple[Optional[dict[str, Any]], list[str]]:
+    if raw_state is None:
+        return None, []
+    if not isinstance(raw_state, dict):
+        return None, ["interactive_state was not a JSON object and was ignored."]
+
+    try:
+        validated = InteractiveState.model_validate(raw_state)
+        return _sanitize_interactive_state(validated), []
+    except ValidationError as error:
+        warnings: list[str] = [f"interactive_state had validation issues: {error.errors()[0].get('msg', 'invalid payload')}"]
+
+    objects: list[dict[str, Any]] = []
+    for index, raw_obj in enumerate(raw_state.get("objects", [])):
+        try:
+            normalized_obj = InteractiveObject.model_validate(raw_obj).model_dump()
+            objects.append(normalized_obj)
+        except ValidationError:
+            warnings.append(f"Dropped invalid interactive_state.objects[{index}].")
+
+    points: list[dict[str, Any]] = []
+    for index, raw_point in enumerate(raw_state.get("points", [])):
+        try:
+            normalized_point = InteractivePoint.model_validate(raw_point).model_dump()
+            points.append(normalized_point)
+        except ValidationError:
+            warnings.append(f"Dropped invalid interactive_state.points[{index}].")
+
+    live_masks: list[dict[str, Any]] = []
+    for index, raw_mask in enumerate(raw_state.get("live_masks", [])):
+        try:
+            normalized_mask = InteractiveMaskRLE.model_validate(raw_mask).model_dump()
+            live_masks.append(normalized_mask)
+        except ValidationError:
+            warnings.append(f"Dropped invalid interactive_state.live_masks[{index}].")
+        if len(live_masks) >= DEFAULT_MAX_INTERACTIVE_LIVE_MASKS:
+            warnings.append(
+                f"Truncated interactive_state.live_masks to {DEFAULT_MAX_INTERACTIVE_LIVE_MASKS} entries."
+            )
+            break
+
+    interaction_mode_value = raw_state.get("interaction_mode")
+    interaction_mode: Optional[str]
+    if interaction_mode_value in {"positive", "negative"}:
+        interaction_mode = str(interaction_mode_value)
+    else:
+        interaction_mode = None
+        if interaction_mode_value is not None:
+            warnings.append("Dropped invalid interactive_state.interaction_mode.")
+
+    selected_object_id_value = raw_state.get("selected_object_id")
+    selected_object_id: Optional[int]
+    if isinstance(selected_object_id_value, int) and selected_object_id_value > 0:
+        selected_object_id = int(selected_object_id_value)
+    else:
+        selected_object_id = None
+        if selected_object_id_value is not None:
+            warnings.append("Dropped invalid interactive_state.selected_object_id.")
+
+    current_frame_idx_value = raw_state.get("current_frame_idx")
+    current_frame_idx: Optional[int]
+    if isinstance(current_frame_idx_value, int) and current_frame_idx_value >= 0:
+        current_frame_idx = int(current_frame_idx_value)
+    else:
+        current_frame_idx = None
+        if current_frame_idx_value is not None:
+            warnings.append("Dropped invalid interactive_state.current_frame_idx.")
+
+    sanitized = {
+        "version": 1,
+        "objects": objects,
+        "selected_object_id": selected_object_id,
+        "interaction_mode": interaction_mode,
+        "current_frame_idx": current_frame_idx,
+        "points": points,
+        "live_masks": live_masks,
+    }
+    try:
+        validated = InteractiveState.model_validate(sanitized)
+        return _sanitize_interactive_state(validated), warnings
+    except ValidationError:
+        warnings.append("interactive_state could not be restored and was ignored.")
+        return None, warnings
 
 
 @app.get("/")
@@ -1253,6 +1584,27 @@ async def save_video_session(request: VideoSaveRequest):
     if _path_is_relative_to(session_path, SAVED_ROOT):
         raise HTTPException(status_code=409, detail="Current session is already saved.")
 
+    interactive_state_payload = _sanitize_interactive_state(request.interactive_state)
+    existing_metadata: dict[str, Any] = {}
+    session_metadata_path = session_path / "session.json"
+    if session_metadata_path.exists():
+        try:
+            loaded_metadata = load_mask_manifest(session_metadata_path)
+            if isinstance(loaded_metadata, dict):
+                existing_metadata = loaded_metadata
+        except Exception:
+            logger.warning("Failed to parse existing session metadata before save: %s", session_metadata_path)
+
+    saved_at = _utc_now_iso()
+    merged_metadata = _merge_session_metadata(
+        existing_meta=existing_metadata,
+        interactive_state=interactive_state_payload,
+        save_name=save_name,
+        saved_path=saved_path,
+        saved_at=saved_at,
+    )
+    write_mask_manifest(session_metadata_path, merged_metadata)
+
     session_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(session_path), str(saved_path))
 
@@ -1263,9 +1615,11 @@ async def save_video_session(request: VideoSaveRequest):
     mask_manifest_path = str(manifest_path) if manifest_path.exists() else None
     _write_session_metadata(
         {
+            "schema_version": 2,
             "saved_name": save_name,
             "saved_path": str(saved_path),
-            "saved_at": _utc_now_iso(),
+            "saved_at": saved_at,
+            "interactive_state": interactive_state_payload,
         }
     )
 
