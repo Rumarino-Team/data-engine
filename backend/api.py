@@ -59,6 +59,7 @@ SAVED_ROOT = BACKEND_ROOT / "saved"
 DEFAULT_MAX_MASK_FRAMES_IN_RESPONSE = int(os.getenv("VIDEO_PROPAGATE_MAX_MASK_FRAMES", "0"))
 DEFAULT_MAX_MASK_VALUES_IN_RESPONSE = int(os.getenv("VIDEO_PROPAGATE_MAX_MASK_VALUES", "0"))
 DEFAULT_PROMPT_TRACK_BATCH_SIZE = int(os.getenv("TRACK_PROMPT_BATCH_SIZE", "32"))
+DEFAULT_STREAMING_TRACK_FRAME_THRESHOLD = int(os.getenv("TRACK_STREAMING_FRAME_THRESHOLD", "256"))
 DEFAULT_MAX_INTERACTIVE_LIVE_MASKS = int(os.getenv("VIDEO_SAVE_MAX_LIVE_MASKS", "5000"))
 
 logger = logging.getLogger(__name__)
@@ -583,6 +584,8 @@ def _mask_logits_to_2d_bool(mask_logits: Any) -> np.ndarray:
 
 def _ensure_tracker_model(model_name: str):
     global tracker
+    if model_name != cot.DEFAULT_COTRACKER_MODEL:
+        raise ValueError(f"Unsupported CoTracker model '{model_name}'. Use '{cot.DEFAULT_COTRACKER_MODEL}'.")
     if tracker is None or getattr(tracker, "model_name", None) != model_name:
         if tracker is not None:
             del tracker
@@ -645,6 +648,13 @@ def _load_tracking_video_from_current_video_state() -> tuple[np.ndarray, str]:
     # Decoding directly from source_video_path can introduce index drift across different decoders.
     frame_video = _load_video_frames_as_numpy(Path(video_dir), video_frame_files)
     return frame_video, str(video_dir)
+
+
+def _should_stream_tracking(num_frames: int) -> bool:
+    threshold = int(DEFAULT_STREAMING_TRACK_FRAME_THRESHOLD)
+    if threshold <= 0:
+        return True
+    return int(num_frames) >= threshold
 
 
 def _normalize_input_path(path_value: str) -> str:
@@ -1187,7 +1197,7 @@ class VideoSaveRequest(BaseModel):
 
 class TrackingLoadVideoRequest(BaseModel):
     video_path: str
-    model_name: str = "cotracker3_offline"  # "cotracker3_offline" or "cotracker3_online"
+    model_name: str = cot.DEFAULT_COTRACKER_MODEL
 
 
 class TrackingGridRequest(BaseModel):
@@ -1201,7 +1211,6 @@ class TrackingPointsRequest(BaseModel):
 
 
 class TrackingPromptPointsRequest(BaseModel):
-    model_name: str = "cotracker3_online"
     add_support_grid: bool = True
 
 
@@ -2082,14 +2091,11 @@ async def load_tracking_video(request: TrackingLoadVideoRequest):
     _release_active_session(clear_tracker=False, clear_cache_session=True)
     _bump_video_state_epoch()
     
-    # (Re-)initialise tracker with the requested model variant.
-    # A new tracker is created if the model_name changed or no tracker exists.
-    requested_model = getattr(request, "model_name", "cotracker3_offline")
-    if tracker is None or getattr(tracker, "model_name", None) != requested_model:
-        if tracker is not None:
-            del tracker
-            _cleanup_cuda_memory()
-        tracker = cot.CoTracker(model_name=requested_model)
+    requested_model = getattr(request, "model_name", cot.DEFAULT_COTRACKER_MODEL)
+    try:
+        _ensure_tracker_model(requested_model)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     
     resolved_video_path = _resolve_input_path(request.video_path, expect_dir=False)
     tracking_video_path = str(resolved_video_path)
@@ -2198,7 +2204,11 @@ def _run_prompt_tracking_job(request: TrackingPromptPointsRequest) -> dict[str, 
         _bump_video_state_epoch()
         _cleanup_cuda_memory()
 
-    _ensure_tracker_model(request.model_name)
+    try:
+        _ensure_tracker_model(cot.DEFAULT_COTRACKER_MODEL)
+    except ValueError as error:
+        _restore_masker_state(raise_on_error=False)
+        raise HTTPException(status_code=400, detail=str(error)) from error
     _update_job(
         stage="loading_frames",
         stage_label="Loading frames",
@@ -2270,35 +2280,124 @@ def _run_prompt_tracking_job(request: TrackingPromptPointsRequest) -> dict[str, 
         visibility = np.concatenate(visibility_batches, axis=0)
         return tracks, visibility
 
+    def _track_queries_streaming(
+        query_array: np.ndarray,
+        *,
+        add_support_grid: bool,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        if video_dir is None or not video_frame_files:
+            raise ValueError("Video is not initialized for streaming tracking.")
+        if query_array.size == 0:
+            raise ValueError("No query points provided for streaming tracking.")
+
+        frame_loader = cot.FrameChunkLoader(
+            video_dir=Path(video_dir),
+            frame_files=video_frame_files,
+            device=tracker.device,
+        )
+
+        initial_batch_size = int(DEFAULT_PROMPT_TRACK_BATCH_SIZE)
+        if initial_batch_size <= 0:
+            initial_batch_size = query_array.shape[0]
+        batch_size = max(1, min(initial_batch_size, int(query_array.shape[0])))
+
+        tracks_batches: list[np.ndarray] = []
+        visibility_batches: list[np.ndarray] = []
+        index = 0
+
+        while index < query_array.shape[0]:
+            end_index = min(query_array.shape[0], index + batch_size)
+            query_batch = query_array[index:end_index]
+
+            try:
+                batch_tracks, batch_visibility = tracker.track_streaming(
+                    frame_loader,
+                    queries=query_batch,
+                    add_support_grid=add_support_grid,
+                )
+            except torch.OutOfMemoryError as error:
+                _cleanup_cuda_memory()
+                if batch_size <= 1:
+                    raise error
+                batch_size = max(1, batch_size // 2)
+                continue
+            except RuntimeError as error:
+                if _is_oom_runtime_error(error):
+                    _cleanup_cuda_memory()
+                    if batch_size <= 1:
+                        raise error
+                    batch_size = max(1, batch_size // 2)
+                    continue
+                raise
+
+            tracks_batches.append(batch_tracks)
+            visibility_batches.append(batch_visibility)
+            index = end_index
+            _update_job(
+                stage="tracking_points",
+                stage_label="Tracking prompt points",
+                progress=0.35 + (0.55 * (index / query_array.shape[0])),
+                current=index,
+                total=query_array.shape[0],
+                message=f"Tracked {index} of {query_array.shape[0]} prompt points",
+            )
+
+        tracks = np.concatenate(tracks_batches, axis=0)
+        visibility = np.concatenate(visibility_batches, axis=0)
+        return tracks, visibility
+
     try:
-        tracking_video, tracking_video_path = _load_tracking_video_from_current_video_state()
         query_array = np.asarray(positive_queries, dtype=np.float32)
         support_grid_used = bool(request.add_support_grid)
+        use_streaming_tracking = _should_stream_tracking(len(video_frame_files))
+        tracking_mode = "streaming" if use_streaming_tracking else "in_memory"
 
         try:
-            tracks, visibility = _track_queries_batched(
-                tracking_video,
-                query_array,
-                add_support_grid=support_grid_used,
-            )
+            if use_streaming_tracking:
+                tracks, visibility = _track_queries_streaming(
+                    query_array,
+                    add_support_grid=support_grid_used,
+                )
+                tracking_video_path = str(video_dir)
+            else:
+                tracking_video, tracking_video_path = _load_tracking_video_from_current_video_state()
+                tracks, visibility = _track_queries_batched(
+                    tracking_video,
+                    query_array,
+                    add_support_grid=support_grid_used,
+                )
         except torch.OutOfMemoryError:
             if not support_grid_used:
                 raise
             support_grid_used = False
-            tracks, visibility = _track_queries_batched(
-                tracking_video,
-                query_array,
-                add_support_grid=False,
-            )
+            if use_streaming_tracking:
+                tracks, visibility = _track_queries_streaming(
+                    query_array,
+                    add_support_grid=False,
+                )
+                tracking_video_path = str(video_dir)
+            else:
+                tracks, visibility = _track_queries_batched(
+                    tracking_video,
+                    query_array,
+                    add_support_grid=False,
+                )
         except RuntimeError as error:
             if not _is_oom_runtime_error(error) or not support_grid_used:
                 raise
             support_grid_used = False
-            tracks, visibility = _track_queries_batched(
-                tracking_video,
-                query_array,
-                add_support_grid=False,
-            )
+            if use_streaming_tracking:
+                tracks, visibility = _track_queries_streaming(
+                    query_array,
+                    add_support_grid=False,
+                )
+                tracking_video_path = str(video_dir)
+            else:
+                tracks, visibility = _track_queries_batched(
+                    tracking_video,
+                    query_array,
+                    add_support_grid=False,
+                )
     except ValueError as error:
         _restore_masker_state(raise_on_error=False)
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -2307,7 +2406,7 @@ def _run_prompt_tracking_job(request: TrackingPromptPointsRequest) -> dict[str, 
         _restore_masker_state(raise_on_error=False)
         raise HTTPException(
             status_code=507,
-            detail="CUDA out of memory during tracking. Try online mode or fewer prompt points.",
+            detail="CUDA out of memory during tracking. Try fewer prompt points or disable support grid.",
         ) from error
     except RuntimeError as error:
         if "out of memory" in str(error).lower():
@@ -2315,7 +2414,7 @@ def _run_prompt_tracking_job(request: TrackingPromptPointsRequest) -> dict[str, 
             _restore_masker_state(raise_on_error=False)
             raise HTTPException(
                 status_code=507,
-                detail="CUDA out of memory during tracking. Try online mode or fewer prompt points.",
+                detail="CUDA out of memory during tracking. Try fewer prompt points or disable support grid.",
             ) from error
         _restore_masker_state(raise_on_error=False)
         raise HTTPException(status_code=500, detail=f"Prompt-point tracking failed: {error}") from error
@@ -2340,6 +2439,8 @@ def _run_prompt_tracking_job(request: TrackingPromptPointsRequest) -> dict[str, 
         "num_points": int(tracks.shape[0]),
         "num_frames": int(tracks.shape[1]),
         "add_support_grid_used": support_grid_used,
+        "tracking_mode": tracking_mode,
+        "streaming_frame_threshold": int(DEFAULT_STREAMING_TRACK_FRAME_THRESHOLD),
         "tracks": tracks.tolist(),
         "visibility": visibility.tolist(),
         "points": point_metadata,
@@ -2388,7 +2489,7 @@ async def track_grid(request: TrackingGridRequest):
     video_name = Path(tracking_video_path).stem
     output_dir = Path(tracking_video_path).parent
     timestamp = int(datetime.now().timestamp())
-    mode_label = "online" if tracker.is_online else "offline"
+    mode_label = cot.DEFAULT_COTRACKER_MODEL.replace("cotracker3_", "")
     output_filename = f"{video_name}_tracked_grid_{mode_label}_{timestamp}.mp4"
     output_path = output_dir / output_filename
     
@@ -2457,7 +2558,7 @@ async def track_points(request: TrackingPointsRequest):
     video_name = Path(tracking_video_path).stem
     output_dir = Path(tracking_video_path).parent
     timestamp = int(datetime.now().timestamp())
-    mode_label = "online" if tracker.is_online else "offline"
+    mode_label = cot.DEFAULT_COTRACKER_MODEL.replace("cotracker3_", "")
     output_tag = "tracked_points_support" if request.add_support_grid else "tracked_points"
     output_filename = f"{video_name}_{output_tag}_{mode_label}_{timestamp}.mp4"
     output_path = output_dir / output_filename

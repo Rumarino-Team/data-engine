@@ -1,11 +1,63 @@
 import torch
 import numpy as np
 import mediapy
-from typing import List, Optional, Tuple
+import cv2
+from pathlib import Path
+from typing import List, Optional, Sequence, Tuple
 import colorsys
 import random
 
 VIDEO_INPUT_RESO = (384, 512) # Resolution of the input video to the model
+DEFAULT_COTRACKER_MODEL = "cotracker3_online"
+
+
+class FrameChunkLoader:
+    """Loads bounded frame ranges as CoTracker-ready GPU tensors."""
+
+    def __init__(
+        self,
+        video_dir: str | Path,
+        frame_files: Sequence[str],
+        device: str | torch.device,
+    ):
+        self.video_dir = Path(video_dir)
+        self.frame_files = list(frame_files)
+        self.device = torch.device(device)
+        self._frame_shape: tuple[int, int, int] | None = None
+
+    @property
+    def num_frames(self) -> int:
+        return len(self.frame_files)
+
+    def load_chunk(self, start_idx: int, end_idx_exclusive: int) -> torch.Tensor:
+        start_idx = int(start_idx)
+        end_idx_exclusive = int(end_idx_exclusive)
+        if start_idx < 0 or end_idx_exclusive > self.num_frames or start_idx >= end_idx_exclusive:
+            raise ValueError(
+                f"Invalid frame chunk range [{start_idx}, {end_idx_exclusive}) "
+                f"for {self.num_frames} frames."
+            )
+
+        frames: list[np.ndarray] = []
+        for frame_idx in range(start_idx, end_idx_exclusive):
+            frame_path = self.video_dir / self.frame_files[frame_idx]
+            frame_bgr = cv2.imread(str(frame_path))
+            if frame_bgr is None:
+                raise ValueError(f"Unable to read frame {frame_idx}: {frame_path}")
+
+            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            if self._frame_shape is None:
+                self._frame_shape = tuple(frame_rgb.shape)
+            elif tuple(frame_rgb.shape) != self._frame_shape:
+                raise ValueError(
+                    "Frame dimensions changed during tracking: "
+                    f"expected {self._frame_shape}, got {tuple(frame_rgb.shape)} "
+                    f"at frame {frame_idx} ({frame_path})."
+                )
+            frames.append(frame_rgb)
+
+        chunk_np = np.stack(frames, axis=0)
+        return torch.from_numpy(chunk_np).permute(0, 3, 1, 2)[None].float().to(self.device)
 
 # Generate random colormaps for visualizing different points.
 def get_colors(num_colors: int) -> List[Tuple[int, int, int]]:
@@ -162,18 +214,16 @@ def paint_point_track(
   return video
 
 class CoTracker:
-    def __init__(self, model_name="cotracker3_offline"):
+    def __init__(self, model_name=DEFAULT_COTRACKER_MODEL):
+        if model_name != DEFAULT_COTRACKER_MODEL:
+            raise ValueError(f"Unsupported CoTracker model '{model_name}'. Use '{DEFAULT_COTRACKER_MODEL}'.")
+
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.dtype = torch.float32
         self.model_name = model_name
-        self.is_online = "online" in model_name
 
-        # Load the requested CoTracker model variant:
-        #   • cotracker3_offline — single global attention pass over all frames,
-        #     globally consistent tracks, no sliding-window boundary artefacts.
-        #   • cotracker3_online  — sliding window (window_len=16, step=8), lower
-        #     VRAM but may exhibit drift at window boundaries.
-        # Both are independent of SAM2's online mode (video masking).
+        # Use CoTracker's online model to keep tracking memory bounded.
+        # This is independent of SAM2's online mode (video masking).
         self.model = torch.hub.load("facebookresearch/co-tracker", model_name)
         self.model = self.model.to(self.device)
 
@@ -210,41 +260,66 @@ class CoTracker:
             queries_torch = torch.from_numpy(queries).float()[None].to(self.device)  # (1, N, 3)
 
         with torch.inference_mode():
-            if self.is_online:
-                pred_tracks, pred_visibility = self._track_online(
-                    video_torch, queries_torch, grid_size, add_support_grid
-                )
-            else:
-                pred_tracks, pred_visibility = self._track_offline(
-                    video_torch, queries_torch, grid_size
-                )
+            pred_tracks, pred_visibility = self._track_online(
+                video_torch, queries_torch, grid_size, add_support_grid
+            )
 
         # pred_tracks: (B, T, N, 2),  pred_visibility: (B, T, N)
         # Transpose to (N, T, 2) and (N, T) for our output convention.
         tracks_np = pred_tracks[0].permute(1, 0, 2).detach().cpu().numpy()
-        # Always visible — caller controls rendering.
-        all_visible = np.ones((tracks_np.shape[0], tracks_np.shape[1]), dtype=bool)
+        visibility_np = pred_visibility[0].permute(1, 0).detach().cpu().numpy().astype(bool)
 
-        return tracks_np, all_visible
+        return tracks_np, visibility_np
 
-    # ------------------------------------------------------------------
-    # Offline tracking — single global attention pass over all T frames.
-    # Supports backward_tracking for forward+backward track merging.
-    # ------------------------------------------------------------------
-    def _track_offline(self, video_torch, queries_torch, grid_size):
-        if queries_torch is not None:
-            return self.model(
-                video_torch,
-                queries=queries_torch,
-                backward_tracking=True,
+    def track_streaming(
+        self,
+        frame_loader: FrameChunkLoader,
+        queries: np.ndarray,
+        *,
+        add_support_grid: bool = True,
+    ):
+        """
+        Tracks query points while loading only CoTracker online chunks onto GPU.
+
+        Returns the same shapes as track():
+        - tracks: (N, T, 2)
+        - visibility: (N, T)
+        """
+        if queries is None:
+            raise ValueError("Streaming CoTracker currently requires query points.")
+
+        queries = np.asarray(queries, dtype=np.float32)
+        if queries.ndim != 2 or queries.shape[1] != 3:
+            raise ValueError(f"Expected queries with shape (N, 3), got {queries.shape}.")
+        if queries.shape[0] == 0:
+            raise ValueError("No query points provided for streaming tracking.")
+
+        num_frames = int(frame_loader.num_frames)
+        if num_frames < 2:
+            raise ValueError(
+                f"Video too short ({num_frames} frames) for online tracking "
+                f"(minimum 2 frames required)."
             )
-        else:
-            return self.model(
-                video_torch,
-                grid_size=grid_size,
-                grid_query_frame=0,
-                backward_tracking=True,
+        if np.any(queries[:, 0] < 0) or np.any(queries[:, 0] >= num_frames):
+            raise ValueError(f"Query frame index out of bounds for {num_frames} frames.")
+
+        queries_torch = torch.from_numpy(queries).float()[None].to(self.device)
+        pred_tracks, pred_visibility = self._track_online_streaming(
+            frame_loader,
+            queries_torch,
+            add_support_grid=add_support_grid,
+        )
+
+        tracks_np = pred_tracks[0].permute(1, 0, 2).detach().cpu().numpy()
+        visibility_np = pred_visibility[0].permute(1, 0).detach().cpu().numpy().astype(bool)
+
+        if tracks_np.shape[1] != num_frames:
+            raise ValueError(
+                "Streaming CoTracker returned an unexpected frame count: "
+                f"expected {num_frames}, got {tracks_np.shape[1]}."
             )
+
+        return tracks_np, visibility_np
 
     # ------------------------------------------------------------------
     # Online tracking — sliding window (window_len=16, step=8).
@@ -295,6 +370,44 @@ class CoTracker:
         if pred_tracks is None:
             raise ValueError(
                 f"Online tracking produced no output for {T} frames. "
+                f"The video may be too short for the sliding window."
+            )
+
+        return pred_tracks, pred_visibility
+
+    def _track_online_streaming(self, frame_loader, queries_torch, add_support_grid):
+        step = self.model.step
+        num_frames = int(frame_loader.num_frames)
+        chunk_len = max(1, int(step) * 2)
+
+        init_end = min(num_frames, chunk_len)
+        init_chunk = frame_loader.load_chunk(0, init_end)
+        try:
+            self.model(
+                video_chunk=init_chunk,
+                is_first_step=True,
+                queries=queries_torch,
+                add_support_grid=add_support_grid,
+            )
+        finally:
+            del init_chunk
+
+        pred_tracks, pred_visibility = None, None
+        for start_idx in range(0, max(num_frames - step, 1), step):
+            end_idx = min(num_frames, start_idx + chunk_len)
+            video_chunk = frame_loader.load_chunk(start_idx, end_idx)
+            try:
+                pred_tracks, pred_visibility = self.model(
+                    video_chunk=video_chunk,
+                    is_first_step=False,
+                    add_support_grid=add_support_grid,
+                )
+            finally:
+                del video_chunk
+
+        if pred_tracks is None or pred_visibility is None:
+            raise ValueError(
+                f"Online tracking produced no output for {num_frames} frames. "
                 f"The video may be too short for the sliding window."
             )
 

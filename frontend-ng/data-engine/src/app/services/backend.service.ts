@@ -142,7 +142,6 @@ export interface VideoMaskDataResponse {
 }
 
 export interface TrackPromptPointsRequest {
-	model_name: 'cotracker3_online' | 'cotracker3_offline';
 	add_support_grid?: boolean;
 }
 
@@ -159,6 +158,8 @@ export interface TrackPromptPointsResponse {
 	model_name: string;
 	num_points: number;
 	num_frames: number;
+	tracking_mode?: 'streaming' | 'in_memory';
+	streaming_frame_threshold?: number;
 	tracks: number[][][];
 	visibility: boolean[][];
 	points: TrackPromptPointMetadata[];

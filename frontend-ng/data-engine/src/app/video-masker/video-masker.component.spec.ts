@@ -1,4 +1,4 @@
-import { TestBed } from '@angular/core/testing';
+import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { Subject, of } from 'rxjs';
 import { vi } from 'vitest';
 import { BackendService, VideoAddPointsResponse } from '../services/backend.service';
@@ -7,11 +7,13 @@ import { VideoMaskerComponent } from './video-masker.component';
 
 describe('VideoMaskerComponent sync contract', () => {
 	let component: VideoMaskerComponent;
+	let fixture: ComponentFixture<VideoMaskerComponent>;
 	let backendMock: {
 		addNewPointsOrBox: ReturnType<typeof vi.fn>;
 		health: ReturnType<typeof vi.fn>;
 		initVideoState: ReturnType<typeof vi.fn>;
 		getJob: ReturnType<typeof vi.fn>;
+		trackPromptPoints: ReturnType<typeof vi.fn>;
 		getApiUrl: ReturnType<typeof vi.fn>;
 		setApiUrl: ReturnType<typeof vi.fn>;
 		resetApiUrl: ReturnType<typeof vi.fn>;
@@ -41,6 +43,7 @@ describe('VideoMaskerComponent sync contract', () => {
 			health: vi.fn(() => of({ status: 'ok' })),
 			initVideoState: vi.fn(),
 			getJob: vi.fn(),
+			trackPromptPoints: vi.fn(),
 			getApiUrl: vi.fn(() => 'http://127.0.0.1:8000'),
 			setApiUrl: vi.fn((value: string) => value),
 			resetApiUrl: vi.fn(() => 'http://127.0.0.1:8000'),
@@ -62,6 +65,7 @@ describe('VideoMaskerComponent sync contract', () => {
 						health: backendMock.health,
 						initVideoState: backendMock.initVideoState,
 						getJob: backendMock.getJob,
+						trackPromptPoints: backendMock.trackPromptPoints,
 						getApiUrl: backendMock.getApiUrl,
 						setApiUrl: backendMock.setApiUrl,
 						resetApiUrl: backendMock.resetApiUrl,
@@ -75,7 +79,7 @@ describe('VideoMaskerComponent sync contract', () => {
 			],
 		}).compileComponents();
 
-		const fixture = TestBed.createComponent(VideoMaskerComponent);
+		fixture = TestBed.createComponent(VideoMaskerComponent);
 		component = fixture.componentInstance;
 		component.selectedObjectId.set(1);
 		component.objects.set([{ id: 1, name: 'Object 1', color: '#ff0000' }]);
@@ -372,6 +376,68 @@ describe('VideoMaskerComponent sync contract', () => {
 		expect(component.targetFrameIdx()).toBe(4);
 		expect(component.points().get(4)?.get(1)?.length).toBe(1);
 		expect(component.masks().get(4)?.get(1)).toEqual([[true, false], [false, false]]);
+	});
+
+	it('runs CoTracker without sending a model selector value', async () => {
+		backendMock.trackPromptPoints.mockReturnValue(of({
+			job_id: 'job-track',
+			status: 'queued',
+			operation: 'prompt_tracking',
+			message: 'queued',
+		}));
+		backendMock.getJob.mockReturnValue(of({
+			job: {
+				job_id: 'job-track',
+				operation: 'prompt_tracking',
+				status: 'completed',
+				stage: 'completed',
+				stage_label: 'Completed',
+				progress: 1,
+				current: 1,
+				total: 1,
+				window_index: null,
+				window_count: null,
+				frame_idx: null,
+				stage_history: [],
+				message: 'done',
+				error: null,
+				started_at: 'now',
+				updated_at: 'now',
+				completed_at: 'now',
+				result: {
+					message: 'Prompt-point tracking completed',
+					model_name: 'cotracker3_online',
+					num_points: 1,
+					num_frames: 2,
+					add_support_grid_used: true,
+					tracking_mode: 'streaming',
+					streaming_frame_threshold: 256,
+					tracks: [[[10, 20], [11, 21]]],
+					visibility: [[true, true]],
+					points: [{
+						point_id: 'p0_0',
+						obj_id: 1,
+						source_frame_idx: 0,
+						source_x: 10,
+						source_y: 20,
+					}],
+					state_epoch: 3,
+				},
+			},
+		}));
+		component.trackingUseSupportGrid.set(true);
+
+		await component.runTracking();
+
+		expect(backendMock.trackPromptPoints).toHaveBeenCalledWith({ add_support_grid: true });
+		expect(backendMock.trackPromptPoints.mock.calls[0][0]).not.toHaveProperty('model_name');
+		expect(component.trackedPoints()[0].tracks).toEqual([[10, 20], [11, 21]]);
+	});
+
+	it('does not render a tracking model selector', () => {
+		fixture.detectChanges();
+
+		expect(fixture.nativeElement.textContent).not.toContain('Tracking Model');
 	});
 
 	it('creates an error toast when a job fails', async () => {

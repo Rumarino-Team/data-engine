@@ -88,6 +88,20 @@ describe('BackendService', () => {
 		expect((http.get as any).mock.calls[0][0]).toBe('http://127.0.0.1:8000/jobs/abc123');
 	});
 
+	it('starts prompt tracking without a model selector payload', () => {
+		const http = {
+			post: vi.fn(() => of({})),
+			get: vi.fn(),
+		} as unknown as HttpClient;
+		const service = new BackendService(http);
+
+		service.trackPromptPoints({ add_support_grid: true }).subscribe();
+
+		expect((http.post as any).mock.calls[0][0]).toBe('http://127.0.0.1:8000/tracking/track_prompt_points');
+		expect((http.post as any).mock.calls[0][1]).toEqual({ add_support_grid: true });
+		expect((http.post as any).mock.calls[0][1]).not.toHaveProperty('model_name');
+	});
+
 	it('saves a video session by name', () => {
 		const http = {
 			post: vi.fn(() => of({})),

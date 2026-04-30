@@ -83,7 +83,6 @@ export class VideoMaskerComponent implements OnDestroy {
 	hasManifestMasks = signal<boolean>(false);
 	saveName = signal<string>('');
 
-	trackingModel = signal<'cotracker3_online' | 'cotracker3_offline'>('cotracker3_online');
 	trackingOverlayStyle = signal<TrackingOverlayStyle>('short');
 	trackingUseSupportGrid = signal<boolean>(false);
 	trackedPoints = signal<TrackedPointSeries[]>([]);
@@ -1372,7 +1371,6 @@ export class VideoMaskerComponent implements OnDestroy {
 		const response = await this.runBackendJob<TrackPromptPointsResponse>(
 			'Tracking prompt points',
 			() => firstValueFrom(this.backend.trackPromptPoints({
-				model_name: this.trackingModel(),
 				add_support_grid: this.trackingUseSupportGrid()
 			})),
 		);
