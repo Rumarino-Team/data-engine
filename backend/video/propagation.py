@@ -406,7 +406,7 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
         "saved_mask_paths": saved_mask_paths_serializable,
         "online_mode": effective_online_mode,
         "batch_size": effective_batch_size,
+        "mask_manifest_path": state.mask_manifest_path,
         "state.mask_manifest_path": state.mask_manifest_path,
         "state_epoch": int(state.video_state_epoch),
     }
-

@@ -20,7 +20,41 @@ def serialize_job(job: Optional[dict[str, Any]] = None) -> Optional[dict[str, An
 def _active_job_exists() -> bool:
     return current_job is not None and current_job.get("status") in {"queued", "running"}
 
+def is_job_active() -> bool:
+    with current_job_lock:
+        return _active_job_exists()
+
+def require_no_active_job(operation_label: str = "operation") -> None:
+    if is_job_active():
+        raise HTTPException(status_code=409, detail="Another operation is already running.")
+
+def clear_current_job_result(job_id: str) -> bool:
+    with current_job_lock:
+        if current_job is None or current_job.get("job_id") != job_id:
+            return False
+        if current_job.get("status") not in {"completed", "failed"}:
+            return False
+        result = current_job.get("result")
+        if isinstance(result, dict):
+            current_job["result"] = {
+                key: result.get(key)
+                for key in (
+                    "message",
+                    "model_name",
+                    "num_points",
+                    "num_frames",
+                    "tracking_result_id",
+                    "state_epoch",
+                )
+                if key in result
+            }
+        else:
+            current_job["result"] = None
+        current_job["updated_at"] = utc_now_iso()
+        return True
+
 def _start_job(operation: str, *, stage: str, stage_label: str, message: str) -> dict[str, Any]:
+    global current_job
     with current_job_lock:
         if _active_job_exists():
             raise HTTPException(status_code=409, detail="Another operation is already running.")
@@ -100,9 +134,9 @@ def update_job(
             )
             del history[:-8]
 
-def _complete_job(result: dict[str, Any]) -> None:
+def _complete_job(job_id: str, result: dict[str, Any]) -> None:
     with current_job_lock:
-        if current_job is None:
+        if current_job is None or current_job.get("job_id") != job_id:
             return
         now = utc_now_iso()
         current_job.update(
@@ -123,9 +157,9 @@ def _complete_job(result: dict[str, Any]) -> None:
             }
         )
 
-def _fail_job(error_code: str, message: str, detail: Optional[str] = None) -> None:
+def _fail_job(job_id: str, error_code: str, message: str, detail: Optional[str] = None) -> None:
     with current_job_lock:
-        if current_job is None:
+        if current_job is None or current_job.get("job_id") != job_id:
             return
         now = utc_now_iso()
         current_job.update(
@@ -161,11 +195,11 @@ def _run_job(job_id: str, worker: Callable[[], dict[str, Any]]) -> None:
 
     try:
         result = worker()
-        _complete_job(result)
+        _complete_job(job_id, result)
     except Exception as error:
         logger.exception("Background job failed")
         error_code, message, detail = _job_error_from_exception(error)
-        _fail_job(error_code, message, detail)
+        _fail_job(job_id, error_code, message, detail)
 
 def queue_long_job(
     *,
@@ -184,4 +218,3 @@ def queue_long_job(
         "operation": job["operation"],
         "message": message,
     }
-

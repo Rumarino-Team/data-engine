@@ -19,19 +19,28 @@ BEDROOM_ZIP_URL = "https://dl.fbaipublicfiles.com/segment_anything_2/assets/bedr
 SCRIPT_DIR = Path(__file__).resolve().parent
 BACKEND_DIR = SCRIPT_DIR.parent
 PROJECT_ROOT = BACKEND_DIR.parent
+TEST_BEDROOM_DIR = SCRIPT_DIR / "bedroom"
+TEST_APPLE_DIR = SCRIPT_DIR / "apple"
 
 BEDROOM_DIR = Path(
     os.path.expandvars(
         os.path.expanduser(
-            os.getenv("DATA_ENGINE_BEDROOM_DIR", str(PROJECT_ROOT / "bedroom"))
+            os.getenv("DATA_ENGINE_BEDROOM_DIR", str(TEST_BEDROOM_DIR))
         )
     )
 )
 VIDEO_DIR = BEDROOM_DIR  # Will use bedroom frames for video tests
+APPLE_SOURCE_VIDEO_PATH = Path(
+    os.path.expandvars(
+        os.path.expanduser(
+            os.getenv("DATA_ENGINE_APPLE_SOURCE_VIDEO", str(PROJECT_ROOT / "apple.mp4"))
+        )
+    )
+)
 TRACKING_VIDEO_PATH = Path(
     os.path.expandvars(
         os.path.expanduser(
-            os.getenv("DATA_ENGINE_TRACKING_VIDEO", str(PROJECT_ROOT / "apple.mp4"))
+            os.getenv("DATA_ENGINE_TRACKING_VIDEO", str(TEST_APPLE_DIR / "apple.mp4"))
         )
     )
 )
@@ -128,6 +137,49 @@ def wait_for_job(job_start_response, timeout=JOB_TIMEOUT_SECONDS):
     return False, None
 
 
+def ensure_clean_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def ensure_apple_test_video() -> bool:
+    """Ensures apple.mp4 is available inside backend/tests/apple so outputs stay there."""
+    ensure_clean_dir(TEST_APPLE_DIR)
+    if TRACKING_VIDEO_PATH.exists():
+        return True
+    if not APPLE_SOURCE_VIDEO_PATH.exists():
+        print(f"Apple source video not found: {APPLE_SOURCE_VIDEO_PATH}")
+        return False
+    try:
+        shutil.copy2(APPLE_SOURCE_VIDEO_PATH, TRACKING_VIDEO_PATH)
+        print(f"Copied apple test video to: {TRACKING_VIDEO_PATH}")
+        return True
+    except Exception as error:
+        print(f"Failed to prepare apple test video: {error}")
+        return False
+
+
+def write_json_output(output_path: Path, payload: dict) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=True, indent=2)
+
+
+def copy_output_into_dir(output_video_path: str, output_dir: Path) -> str:
+    if not output_video_path:
+        return output_video_path
+    source_path = Path(output_video_path)
+    if not source_path.exists():
+        return output_video_path
+    output_dir.mkdir(parents=True, exist_ok=True)
+    target_path = output_dir / source_path.name
+    if source_path.resolve() == target_path.resolve():
+        return str(target_path)
+    if target_path.exists():
+        target_path.unlink()
+    shutil.move(str(source_path), str(target_path))
+    return str(target_path)
+
+
 def download_and_extract_bedroom():
     """Downloads and extracts the bedroom video frames if not already present."""
     if BEDROOM_DIR.exists() and BEDROOM_DIR.is_dir():
@@ -137,7 +189,8 @@ def download_and_extract_bedroom():
             return True
     
     print(f"Downloading bedroom.zip from {BEDROOM_ZIP_URL}...")
-    zip_path = PROJECT_ROOT / "bedroom.zip"
+    zip_path = SCRIPT_DIR / "bedroom.zip"
+    extract_root = SCRIPT_DIR
     
     try:
         # Download the file with progress indication
@@ -161,7 +214,7 @@ def download_and_extract_bedroom():
         # Extract the zip file
         print(f"Extracting {zip_path}...")
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(PROJECT_ROOT)
+            zip_ref.extractall(extract_root)
         
         print(f"Extraction complete!")
         
@@ -286,12 +339,53 @@ def propagate_in_video(start_frame_idx=None, max_frame_num_to_track=None, revers
     return False, None
 
 
+def track_prompt_points(add_support_grid=False):
+    """Runs prompt-point tracking from current SAM prompt state and fetches the disk-backed result."""
+    url = f"{BASE_URL}/tracking/track_prompt_points"
+    response = requests.post(url, json={"add_support_grid": bool(add_support_grid)})
+    if response.status_code != 200:
+        print(f"Failed to start prompt tracking. Status: {response.status_code}, Response: {response.text}")
+        return False, None
+
+    print("Prompt tracking job started.")
+    success, job_result = wait_for_job(response.json())
+    if not success or not isinstance(job_result, dict):
+        return False, job_result
+
+    result_id = job_result.get("tracking_result_id")
+    if not result_id:
+        print(f"Prompt tracking job did not return tracking_result_id: {job_result}")
+        return False, job_result
+
+    result_response = requests.get(f"{BASE_URL}/tracking/results/{result_id}")
+    if result_response.status_code != 200:
+        print(
+            f"Failed to fetch tracking result {result_id}. "
+            f"Status: {result_response.status_code}, Response: {result_response.text}"
+        )
+        return False, job_result
+
+    tracking_payload = result_response.json().get("result", {})
+    summary = {
+        "job_result": job_result,
+        "result_id": result_id,
+        "num_points": tracking_payload.get("num_points"),
+        "num_frames": tracking_payload.get("num_frames"),
+        "tracking_mode": tracking_payload.get("tracking_mode"),
+        "first_point": (tracking_payload.get("points") or [{}])[0],
+    }
+    output_path = BEDROOM_DIR / f"prompt_tracking_{result_id}.json"
+    write_json_output(output_path, summary)
+    print(f"Prompt tracking result fetched and summarized at: {output_path}")
+    return True, tracking_payload
+
+
 def restore_bedroom_masks_output(result_payload):
     """Copy propagated masks back to BEDROOM_DIR/masks to preserve legacy test output location."""
     if not isinstance(result_payload, dict):
         return False
 
-    manifest_path_raw = result_payload.get("mask_manifest_path")
+    manifest_path_raw = result_payload.get("mask_manifest_path") or result_payload.get("state.mask_manifest_path")
     if not manifest_path_raw:
         print("No mask manifest path returned; cannot restore bedroom mask output folder.")
         return False
@@ -426,15 +520,30 @@ def run_video_tests():
         print("\n✓ Video masking test completed successfully!")
     else:
         print("\n✗ Video masking test failed.")
+        reset_video_state()
+        return
+
+    print(f"\nRunning prompt-point tracking from bedroom prompts...")
+    success, tracking_result = track_prompt_points(add_support_grid=False)
+    if success:
+        print(
+            "\n✓ Bedroom prompt tracking test passed "
+            f"({tracking_result.get('num_points', 0)} pts × {tracking_result.get('num_frames', 0)} frames)"
+        )
+    else:
+        print("\n✗ Bedroom prompt tracking test failed.")
     
     # Reset video state for cleanup
     reset_video_state()
 
 
-def load_tracking_video(video_path, model_name="cotracker3_offline"):
+def load_tracking_video(video_path, model_name=None):
     """Calls the /tracking/load_video endpoint."""
     url = f"{BASE_URL}/tracking/load_video"
-    response = requests.post(url, json={"video_path": str(video_path), "model_name": model_name})
+    payload = {"video_path": str(video_path)}
+    if model_name is not None:
+        payload["model_name"] = model_name
+    response = requests.post(url, json=payload)
     if response.status_code == 200:
         response_data = response.json()
         print(f"Video loaded successfully: {video_path}")
@@ -446,14 +555,11 @@ def load_tracking_video(video_path, model_name="cotracker3_offline"):
     return response.status_code == 200, response.json() if response.status_code == 200 else None
 
 
-def _ensure_mode_labeled_output_path(output_video_path: str, expected_mode: str) -> str:
-    """Ensures the output filename includes the expected mode label.
-
-    If the backend already labels outputs (preferred), this is a no-op.
-    If the backend returns legacy unlabeled filenames, this renames the file
-    to include `_offline_` / `_online_` before the timestamp.
-    """
+def _ensure_mode_labeled_output_path(output_video_path: str, expected_mode: str | None) -> str:
+    """Ensures the output filename includes the expected mode label when requested."""
     if not output_video_path:
+        return output_video_path
+    if expected_mode is None:
         return output_video_path
 
     output_path = Path(output_video_path)
@@ -490,7 +596,7 @@ def _ensure_mode_labeled_output_path(output_video_path: str, expected_mode: str)
     return output_video_path
 
 
-def track_grid(grid_size=15, add_support_grid=True, expected_mode=None):
+def track_grid(grid_size=15, add_support_grid=True, expected_mode=None, output_dir=None):
     """Calls the /tracking/track_grid endpoint."""
     url = f"{BASE_URL}/tracking/track_grid"
     payload = {
@@ -504,6 +610,10 @@ def track_grid(grid_size=15, add_support_grid=True, expected_mode=None):
             response_data["output_video_path"] = _ensure_mode_labeled_output_path(
                 response_data.get("output_video_path", ""), expected_mode
             )
+        if output_dir:
+            response_data["output_video_path"] = copy_output_into_dir(
+                response_data.get("output_video_path", ""), Path(output_dir)
+            )
         print(f"Grid tracking completed successfully!")
         print(f"  Num points: {response_data.get('num_points', 0)}")
         print(f"  Num frames: {response_data.get('num_frames', 0)}")
@@ -513,7 +623,7 @@ def track_grid(grid_size=15, add_support_grid=True, expected_mode=None):
     return response.status_code == 200, response.json() if response.status_code == 200 else None
 
 
-def track_points(queries, add_support_grid=True, expected_mode=None):
+def track_points(queries, add_support_grid=True, expected_mode=None, output_dir=None):
     """Calls the /tracking/track_points endpoint."""
     url = f"{BASE_URL}/tracking/track_points"
     payload = {
@@ -527,6 +637,10 @@ def track_points(queries, add_support_grid=True, expected_mode=None):
             response_data["output_video_path"] = _ensure_mode_labeled_output_path(
                 response_data.get("output_video_path", ""), expected_mode
             )
+        if output_dir:
+            response_data["output_video_path"] = copy_output_into_dir(
+                response_data.get("output_video_path", ""), Path(output_dir)
+            )
         print(f"Point tracking completed successfully!")
         print(f"  Num points: {response_data.get('num_points', 0)}")
         print(f"  Num frames: {response_data.get('num_frames', 0)}")
@@ -536,120 +650,93 @@ def track_points(queries, add_support_grid=True, expected_mode=None):
     return response.status_code == 200, response.json() if response.status_code == 200 else None
 
 
-def _run_tracking_suite(model_name: str):
-    """Runs the tracking test suite for a specific CoTracker model variant.
-
-    Args:
-        model_name: "cotracker3_offline" or "cotracker3_online".
-    """
-    label = model_name.upper().replace("COTRACKER3_", "")
-    mode_key = "online" if "online" in model_name else "offline"
+def run_apple_tracking_tests():
+    """Runs apple.mp4 CoTracker tests using the current backend-supported model."""
     generated_outputs = []
 
-    print(f"\n{'─' * 50}")
-    print(f"  CoTracker mode: {label}  ({model_name})")
-    print(f"{'─' * 50}")
+    print("\n" + "=" * 60)
+    print("RUNNING APPLE TRACKING TESTS")
+    print("=" * 60)
 
-    # Check if tracking video exists
-    if not TRACKING_VIDEO_PATH.exists():
-        print(f"\nTracking video '{TRACKING_VIDEO_PATH}' not found. Skipping {label} tracking tests.")
+    if not ensure_apple_test_video():
         return
 
-    # Test 1: Load video with the requested model
-    print(f"\n--- {label} Test 1: Load tracking video ---")
-    success, result = load_tracking_video(TRACKING_VIDEO_PATH, model_name=model_name)
+    print(f"\n--- Apple Test 1: Load tracking video ---")
+    success, result = load_tracking_video(TRACKING_VIDEO_PATH)
 
     if not success:
-        print(f"Failed to load tracking video for {label}. Skipping remaining tests.")
-        return
-
-    # Verify the server loaded the correct model
-    if result and result.get("model_name") != model_name:
-        print(f"✗ Server loaded '{result.get('model_name')}' instead of '{model_name}'!")
+        print("Failed to load apple tracking video. Skipping remaining tests.")
         return
 
     time.sleep(1)
 
-    # Test 2: Track grid
-    print(f"\n--- {label} Test 2: Track grid of points ---")
-    success, result = track_grid(grid_size=10, add_support_grid=True, expected_mode=mode_key)
+    print(f"\n--- Apple Test 2: Track grid of points ---")
+    success, result = track_grid(grid_size=10, add_support_grid=True, output_dir=TEST_APPLE_DIR)
 
     if success:
         num_points = result.get("num_points", 0)
         num_frames = result.get("num_frames", 0)
         if result.get("output_video_path"):
             generated_outputs.append(result.get("output_video_path"))
-        print(f"\n✓ {label} grid tracking test passed  ({num_points} pts × {num_frames} frames)")
+        print(f"\n✓ Apple grid tracking test passed  ({num_points} pts × {num_frames} frames)")
     else:
-        print(f"\n✗ {label} grid tracking test failed.")
+        print(f"\n✗ Apple grid tracking test failed.")
 
     time.sleep(1)
 
-    # Test 3: Track specific query points (no support grid)
-    print(f"\n--- {label} Test 3: Track specific query points ---")
+    print(f"\n--- Apple Test 3: Restored legacy point tracking ---")
     queries = [
         [0, 400, 350],
         [10, 600, 500],
         [20, 750, 600],
         [30, 900, 200],
     ]
-    success, result = track_points(queries, add_support_grid=False, expected_mode=mode_key)
+    success, result = track_points(queries, add_support_grid=False, output_dir=TEST_APPLE_DIR)
 
     if success:
         num_points = result.get("num_points", 0)
         num_frames = result.get("num_frames", 0)
         if result.get("output_video_path"):
             generated_outputs.append(result.get("output_video_path"))
-        print(f"\n✓ {label} point tracking test passed  ({num_points} pts × {num_frames} frames)")
+        write_json_output(
+            TEST_APPLE_DIR / "apple_legacy_points_summary.json",
+            {
+                "queries": queries,
+                "num_points": num_points,
+                "num_frames": num_frames,
+                "output_video_path": result.get("output_video_path"),
+            },
+        )
+        print(f"\n✓ Apple legacy point tracking test passed  ({num_points} pts × {num_frames} frames)")
     else:
-        print(f"\n✗ {label} point tracking test failed.")
+        print(f"\n✗ Apple legacy point tracking test failed.")
 
     time.sleep(1)
 
-    # Test 4: Track points with support grid
-    print(f"\n--- {label} Test 4: Track points with support grid ---")
+    print(f"\n--- Apple Test 4: Track point with support grid ---")
     queries = [
         [0, 320, 240],
     ]
-    success, result = track_points(queries, add_support_grid=True, expected_mode=mode_key)
+    success, result = track_points(queries, add_support_grid=True, output_dir=TEST_APPLE_DIR)
 
     if success:
         num_points = result.get("num_points", 0)
         num_frames = result.get("num_frames", 0)
         if result.get("output_video_path"):
             generated_outputs.append(result.get("output_video_path"))
-        print(f"\n✓ {label} point tracking (+ support grid) test passed  ({num_points} pts × {num_frames} frames)")
+        print(f"\n✓ Apple point tracking (+ support grid) test passed  ({num_points} pts × {num_frames} frames)")
     else:
-        print(f"\n✗ {label} point tracking (+ support grid) test failed.")
+        print(f"\n✗ Apple point tracking (+ support grid) test failed.")
 
     if generated_outputs:
-        print(f"\n{label} generated outputs:")
+        print(f"\nApple generated outputs:")
         for output_path in generated_outputs:
             print(f"  - {output_path}")
 
 
-def run_tracking_tests_offline():
-    """Runs tracking tests using the offline CoTracker model."""
-    _run_tracking_suite("cotracker3_offline")
-
-
-def run_tracking_tests_online():
-    """Runs tracking tests using the online CoTracker model."""
-    _run_tracking_suite("cotracker3_online")
-
-
 def run_tracking_tests():
-    """Runs the full tracking test suite (both offline and online)."""
-    print("\n" + "=" * 60)
-    print("RUNNING TRACKING TESTS")
-    print("=" * 60)
-
-    run_tracking_tests_offline()
-    run_tracking_tests_online()
-
-    print("\n" + "=" * 60)
-    print("TRACKING TESTS COMPLETED")
-    print("=" * 60)
+    """Runs the current tracking integration suite."""
+    run_apple_tracking_tests()
 
 
 if __name__ == "__main__":

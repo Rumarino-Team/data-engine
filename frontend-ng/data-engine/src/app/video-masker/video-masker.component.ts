@@ -12,7 +12,8 @@ import {
 	JobStageHistoryEntry,
 	RestoredSessionPayload,
 	TrackPromptPointMetadata,
-	TrackPromptPointsResponse,
+	TrackPromptPointsJobResponse,
+	TrackPromptPointsResult,
 	VideoAddPointsOrBoxRequest,
 	VideoInitStateResponse,
 	VideoMaskObjectData,
@@ -114,6 +115,7 @@ export class VideoMaskerComponent implements OnDestroy {
 	private currentMaskObjects: { [objId: string]: VideoMaskObjectData } = {};
 	private healthTimerId: ReturnType<typeof setInterval> | null = null;
 	private nextToastId = 1;
+	private lastCompletedJobId: string | null = null;
 
 	constructor(
 		private backend: BackendService,
@@ -198,12 +200,14 @@ export class VideoMaskerComponent implements OnDestroy {
 		this.isLoading.set(true);
 		this.activeJobTitle.set(title);
 		this.activeJob.set(null);
+		this.lastCompletedJobId = null;
 		try {
 			const started = await startJob();
 			while (true) {
 				const response = await firstValueFrom(this.backend.getJob<T>(started.job_id));
 				this.activeJob.set(response.job);
 				if (response.job.status === 'completed') {
+					this.lastCompletedJobId = started.job_id;
 					return response.job.result as T;
 				}
 				if (response.job.status === 'failed') {
@@ -501,6 +505,10 @@ export class VideoMaskerComponent implements OnDestroy {
 		this.hasManifestMasks.set(Boolean(res.restored_session?.has_mask_manifest));
 		this.updateStateEpoch(res.state_epoch, 'video init');
 		this.restoreInteractiveSessionState(res.restored_session);
+		const restoredTrackingResultId = res.restored_session?.tracking_result?.result_id;
+		if (restoredTrackingResultId) {
+			await this.loadTrackingResult(restoredTrackingResultId, 'Restored tracking');
+		}
 		this.resetDebugState();
 		this.isInitialized.set(true);
 		const restoredWarnings = res.restored_session?.interactive_state_warnings || [];
@@ -1262,6 +1270,7 @@ export class VideoMaskerComponent implements OnDestroy {
 			this.drawCurrentFrame();
 		} catch (error) {
 			console.error(error);
+			this.showToast('error', 'Point update failed', this.getErrorMessage(error, 'Unable to update point mask.'));
 			const rollbackPointsMap = new Map(this.points());
 			const rollbackFramePointsMap = new Map(rollbackPointsMap.get(frameIdx) || new Map<number, Point[]>());
 			if (previousObjectPoints.length > 0) {
@@ -1309,11 +1318,17 @@ export class VideoMaskerComponent implements OnDestroy {
 		const id = this.selectedObjectId();
 		if (id === null) return;
 
-		this.backend.removeObject(id).subscribe(() => {
-			this.objects.update((existing) => existing.filter((entry) => entry.id !== id));
-			this.removeObjectFromFrameMaps(id);
-			this.selectedObjectId.set(this.objects().length > 0 ? this.objects()[0].id : null);
-			this.drawCurrentFrame();
+		this.backend.removeObject(id).subscribe({
+			next: () => {
+				this.objects.update((existing) => existing.filter((entry) => entry.id !== id));
+				this.removeObjectFromFrameMaps(id);
+				this.selectedObjectId.set(this.objects().length > 0 ? this.objects()[0].id : null);
+				this.drawCurrentFrame();
+			},
+			error: (error) => {
+				console.error(error);
+				this.showToast('error', 'Remove failed', this.getErrorMessage(error, 'Failed to remove object.'));
+			},
 		});
 	}
 
@@ -1362,13 +1377,36 @@ export class VideoMaskerComponent implements OnDestroy {
 			return;
 		}
 		this.updateStateEpoch(response.state_epoch, 'propagation');
-		this.hasManifestMasks.set(Boolean(response.mask_manifest_path));
+		const maskManifestPath = response.mask_manifest_path || response['state.mask_manifest_path'];
+		this.hasManifestMasks.set(Boolean(maskManifestPath));
 		this.maskDataCache.clear();
 		this.scheduleFrameLoad(this.targetFrameIdx());
 	}
 
+	private applyTrackingResult(result: TrackPromptPointsResult): void {
+		const trackedSeries: TrackedPointSeries[] = result.points.map((point, index) => ({
+			...point,
+			tracks: result.tracks[index] || [],
+			visibility: result.visibility[index] || []
+		}));
+		this.trackedPoints.set(trackedSeries);
+		this.drawCurrentFrame();
+	}
+
+	private async loadTrackingResult(resultId: string, sourceLabel: string): Promise<boolean> {
+		try {
+			const response = await firstValueFrom(this.backend.getTrackingResult(resultId));
+			this.applyTrackingResult(response.result);
+			return true;
+		} catch (error: any) {
+			console.error(error);
+			this.showToast('warning', 'Tracking result unavailable', this.getErrorMessage(error, `${sourceLabel} result could not be loaded.`));
+			return false;
+		}
+	}
+
 	async runTracking() {
-		const response = await this.runBackendJob<TrackPromptPointsResponse>(
+		const response = await this.runBackendJob<TrackPromptPointsJobResponse>(
 			'Tracking prompt points',
 			() => firstValueFrom(this.backend.trackPromptPoints({
 				add_support_grid: this.trackingUseSupportGrid()
@@ -1378,26 +1416,32 @@ export class VideoMaskerComponent implements OnDestroy {
 			return;
 		}
 		this.updateStateEpoch(response.state_epoch, 'tracking restore');
-
-		const trackedSeries: TrackedPointSeries[] = response.points.map((point, index) => ({
-			...point,
-			tracks: response.tracks[index] || [],
-			visibility: response.visibility[index] || []
-		}));
-		this.trackedPoints.set(trackedSeries);
-		this.drawCurrentFrame();
+		const loaded = await this.loadTrackingResult(response.tracking_result_id, 'Tracking');
+		if (loaded && this.lastCompletedJobId) {
+			try {
+				await firstValueFrom(this.backend.clearJobResult(this.lastCompletedJobId));
+			} catch (error) {
+				console.error(error);
+			}
+		}
 	}
 
 	clearMasks() {
-		this.backend.resetVideoState().subscribe((response) => {
-			this.updateStateEpoch(response?.state_epoch, 'reset');
-			this.hasManifestMasks.set(false);
-			this.trackedPoints.set([]);
-			this.masks.set(new Map());
-			this.points.set(new Map());
-			this.liveEditedObjectFrames.set(new Map());
-			this.maskDataCache.clear();
-			this.scheduleFrameLoad(this.targetFrameIdx());
+		this.backend.resetVideoState().subscribe({
+			next: (response) => {
+				this.updateStateEpoch(response?.state_epoch, 'reset');
+				this.hasManifestMasks.set(false);
+				this.trackedPoints.set([]);
+				this.masks.set(new Map());
+				this.points.set(new Map());
+				this.liveEditedObjectFrames.set(new Map());
+				this.maskDataCache.clear();
+				this.scheduleFrameLoad(this.targetFrameIdx());
+			},
+			error: (error) => {
+				console.error(error);
+				this.showToast('error', 'Clear failed', this.getErrorMessage(error, 'Failed to clear masks.'));
+			},
 		});
 	}
 

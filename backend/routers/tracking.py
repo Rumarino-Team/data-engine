@@ -7,6 +7,7 @@ from schemas.tracking import (
     TrackingPromptPointsRequest,
 )
 from tracking.prompt_tracking import start_prompt_tracking
+from tracking.results import load_prompt_tracking_result
 from tracking.service import load_tracking_video, track_grid, track_points
 
 
@@ -31,3 +32,8 @@ async def track_grid_route(request: TrackingGridRequest):
 @router.post("/tracking/track_points")
 async def track_points_route(request: TrackingPointsRequest):
     return await track_points(request)
+
+
+@router.get("/tracking/results/{result_id}")
+async def get_tracking_result(result_id: str):
+    return {"result": load_prompt_tracking_result(result_id)}

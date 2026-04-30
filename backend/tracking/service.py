@@ -6,6 +6,7 @@ from fastapi import HTTPException
 import torch
 import co_tracker as cot
 from core.config import DEFAULT_STREAMING_TRACK_FRAME_THRESHOLD
+from core.jobs import require_no_active_job
 from core.runtime import cleanup_cuda_memory
 from core.state import state
 from schemas.tracking import TrackingGridRequest, TrackingLoadVideoRequest, TrackingPointsRequest
@@ -40,6 +41,7 @@ def should_stream_tracking(num_frames: int) -> bool:
 async def load_tracking_video(request: TrackingLoadVideoRequest):
     """Load a video file for tracking."""
 
+    require_no_active_job("load tracking video")
     release_active_session(clear_tracker=False, clear_cache_session=True)
     bump_video_state_epoch()
     
@@ -66,6 +68,7 @@ async def load_tracking_video(request: TrackingLoadVideoRequest):
 async def track_grid(request: TrackingGridRequest):
     """Track a grid of points across the video."""
     
+    require_no_active_job("track grid")
     if state.tracker is None:
         return {"error": "Tracker not active. Call /tracking/load_video first."}
     
@@ -130,6 +133,7 @@ async def track_grid(request: TrackingGridRequest):
 async def track_points(request: TrackingPointsRequest):
     """Track specific query points across the video."""
     
+    require_no_active_job("track points")
     if state.tracker is None:
         return {"error": "Tracker not active. Call /tracking/load_video first."}
     
@@ -193,4 +197,3 @@ async def track_points(request: TrackingPointsRequest):
         "num_frames": tracks.shape[1],
         "output_video_path": str(output_path)
     }
-

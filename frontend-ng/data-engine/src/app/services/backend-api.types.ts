@@ -109,6 +109,10 @@ export interface RestoredSessionPayload {
 	interactive_state?: VideoSaveInteractiveState | null;
 	has_mask_manifest: boolean;
 	interactive_state_warnings?: string[];
+	tracking_result?: {
+		result_id: string;
+		summary?: Record<string, unknown>;
+	};
 }
 
 export interface VideoPropagateResponse {
@@ -120,6 +124,7 @@ export interface VideoPropagateResponse {
 	video_segments_returned_mask_values?: number;
 	video_segments_truncated?: boolean;
 	mask_manifest_path?: string;
+	'state.mask_manifest_path'?: string;
 	state_epoch?: number;
 }
 
@@ -146,17 +151,30 @@ export interface TrackPromptPointMetadata {
 	source_y: number;
 }
 
-export interface TrackPromptPointsResponse {
+export interface TrackPromptPointsJobResponse {
 	message: string;
 	model_name: string;
 	num_points: number;
 	num_frames: number;
+	add_support_grid_used?: boolean;
+	tracking_mode?: 'streaming' | 'in_memory';
+	streaming_frame_threshold?: number;
+	tracking_result_id: string;
+	state_epoch?: number;
+}
+
+export interface TrackPromptPointsResult {
+	version: number;
+	result_id: string;
+	model_name: string;
+	num_points: number;
+	num_frames: number;
+	add_support_grid_used?: boolean;
 	tracking_mode?: 'streaming' | 'in_memory';
 	streaming_frame_threshold?: number;
 	tracks: number[][][];
 	visibility: boolean[][];
 	points: TrackPromptPointMetadata[];
-	state_epoch?: number;
 }
 
 export type ApiHealthStatus = 'checking' | 'online' | 'offline';

@@ -11,6 +11,7 @@ from core.runtime import cleanup_cuda_memory
 from core.state import state
 from schemas.tracking import TrackingPromptPointsRequest
 from sessions.cache import bump_video_state_epoch
+from tracking.results import save_prompt_tracking_result
 from tracking.service import ensure_tracker_model, load_tracking_video_from_current_video_state, should_stream_tracking
 from video.prompts import restore_video_masker_from_prompt_events
 
@@ -246,6 +247,15 @@ def run_prompt_tracking_job(request: TrackingPromptPointsRequest) -> dict[str, A
         visibility = np.concatenate(visibility_batches, axis=0)
         return tracks, visibility
 
+    loaded_tracking_video_for_operation = False
+
+    def _clear_tracking_video_if_loaded_for_operation() -> None:
+        nonlocal loaded_tracking_video_for_operation
+        if loaded_tracking_video_for_operation:
+            state.tracking_video = None
+            state.tracking_video_path = None
+            loaded_tracking_video_for_operation = False
+
     try:
         query_array = np.asarray(positive_queries, dtype=np.float32)
         support_grid_used = bool(request.add_support_grid)
@@ -261,6 +271,7 @@ def run_prompt_tracking_job(request: TrackingPromptPointsRequest) -> dict[str, A
                 state.tracking_video_path = str(state.video_dir)
             else:
                 state.tracking_video, state.tracking_video_path = load_tracking_video_from_current_video_state()
+                loaded_tracking_video_for_operation = True
                 tracks, visibility = _track_queries_batched(
                     state.tracking_video,
                     query_array,
@@ -299,10 +310,12 @@ def run_prompt_tracking_job(request: TrackingPromptPointsRequest) -> dict[str, A
                     add_support_grid=False,
                 )
     except ValueError as error:
+        _clear_tracking_video_if_loaded_for_operation()
         _restore_masker_state(raise_on_error=False)
         raise HTTPException(status_code=400, detail=str(error)) from error
     except torch.OutOfMemoryError as error:
         cleanup_cuda_memory()
+        _clear_tracking_video_if_loaded_for_operation()
         _restore_masker_state(raise_on_error=False)
         raise HTTPException(
             status_code=507,
@@ -311,14 +324,17 @@ def run_prompt_tracking_job(request: TrackingPromptPointsRequest) -> dict[str, A
     except RuntimeError as error:
         if "out of memory" in str(error).lower():
             cleanup_cuda_memory()
+            _clear_tracking_video_if_loaded_for_operation()
             _restore_masker_state(raise_on_error=False)
             raise HTTPException(
                 status_code=507,
                 detail="CUDA out of memory during tracking. Try fewer prompt points or disable support grid.",
             ) from error
+        _clear_tracking_video_if_loaded_for_operation()
         _restore_masker_state(raise_on_error=False)
         raise HTTPException(status_code=500, detail=f"Prompt-point tracking failed: {error}") from error
     except Exception as error:
+        _clear_tracking_video_if_loaded_for_operation()
         _restore_masker_state(raise_on_error=False)
         raise HTTPException(status_code=500, detail=f"Prompt-point tracking failed: {error}") from error
 
@@ -332,6 +348,19 @@ def run_prompt_tracking_job(request: TrackingPromptPointsRequest) -> dict[str, A
         message="Restoring interactive masking state",
     )
     _restore_masker_state(raise_on_error=True)
+    _clear_tracking_video_if_loaded_for_operation()
+
+    tracking_result = save_prompt_tracking_result(
+        model_name=state.tracker.model_name,
+        num_points=int(tracks.shape[0]),
+        num_frames=int(tracks.shape[1]),
+        add_support_grid_used=support_grid_used,
+        tracking_mode=tracking_mode,
+        streaming_frame_threshold=int(DEFAULT_STREAMING_TRACK_FRAME_THRESHOLD),
+        points=point_metadata,
+        tracks=tracks.tolist(),
+        visibility=visibility.tolist(),
+    )
 
     return {
         "message": "Prompt-point tracking completed",
@@ -341,9 +370,6 @@ def run_prompt_tracking_job(request: TrackingPromptPointsRequest) -> dict[str, A
         "add_support_grid_used": support_grid_used,
         "tracking_mode": tracking_mode,
         "streaming_frame_threshold": int(DEFAULT_STREAMING_TRACK_FRAME_THRESHOLD),
-        "tracks": tracks.tolist(),
-        "visibility": visibility.tolist(),
-        "points": point_metadata,
+        "tracking_result_id": tracking_result["result_id"],
         "state_epoch": int(state.video_state_epoch),
     }
-

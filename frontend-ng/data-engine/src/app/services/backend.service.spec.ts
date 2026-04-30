@@ -5,14 +5,36 @@ import { BackendService } from './backend.service';
 
 describe('BackendService', () => {
 	const originalGlobalApiUrl = (globalThis as { __DATA_ENGINE_API_URL__?: string }).__DATA_ENGINE_API_URL__;
+	const originalLocalStorage = globalThis.localStorage;
+	let storage: Record<string, string>;
 
 	beforeEach(() => {
+		storage = {};
+		Object.defineProperty(globalThis, 'localStorage', {
+			value: {
+				getItem: vi.fn((key: string) => storage[key] ?? null),
+				setItem: vi.fn((key: string, value: string) => {
+					storage[key] = String(value);
+				}),
+				removeItem: vi.fn((key: string) => {
+					delete storage[key];
+				}),
+				clear: vi.fn(() => {
+					storage = {};
+				}),
+			},
+			configurable: true,
+		});
 		localStorage.clear();
 		delete (globalThis as { __DATA_ENGINE_API_URL__?: string }).__DATA_ENGINE_API_URL__;
 	});
 
 	afterEach(() => {
 		localStorage.clear();
+		Object.defineProperty(globalThis, 'localStorage', {
+			value: originalLocalStorage,
+			configurable: true,
+		});
 		if (originalGlobalApiUrl === undefined) {
 			delete (globalThis as { __DATA_ENGINE_API_URL__?: string }).__DATA_ENGINE_API_URL__;
 			return;
@@ -100,6 +122,31 @@ describe('BackendService', () => {
 		expect((http.post as any).mock.calls[0][0]).toBe('http://127.0.0.1:8000/tracking/track_prompt_points');
 		expect((http.post as any).mock.calls[0][1]).toEqual({ add_support_grid: true });
 		expect((http.post as any).mock.calls[0][1]).not.toHaveProperty('model_name');
+	});
+
+	it('fetches a persisted tracking result by id', () => {
+		const http = {
+			post: vi.fn(),
+			get: vi.fn(() => of({ result: {} })),
+		} as unknown as HttpClient;
+		const service = new BackendService(http);
+
+		service.getTrackingResult('abc123').subscribe();
+
+		expect((http.get as any).mock.calls[0][0]).toBe('http://127.0.0.1:8000/tracking/results/abc123');
+	});
+
+	it('clears a completed job result by id', () => {
+		const http = {
+			post: vi.fn(() => of({ cleared: true })),
+			get: vi.fn(),
+		} as unknown as HttpClient;
+		const service = new BackendService(http);
+
+		service.clearJobResult('job-1').subscribe();
+
+		expect((http.post as any).mock.calls[0][0]).toBe('http://127.0.0.1:8000/jobs/job-1/clear_result');
+		expect((http.post as any).mock.calls[0][1]).toEqual({});
 	});
 
 	it('saves a video session by name', () => {

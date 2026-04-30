@@ -1,4 +1,4 @@
-import logging, shutil
+import logging, shutil, uuid
 from pathlib import Path
 from typing import Any, Optional
 import cv2
@@ -7,17 +7,18 @@ from fastapi.responses import FileResponse
 import numpy as np
 import sam2_video_masker as svm
 from core.config import IMAGE_EXTENSIONS, SAVED_ROOT, VIDEO_EXTENSIONS
-from core.jobs import queue_long_job, update_job, utc_now_iso
+from core.jobs import queue_long_job, require_no_active_job, update_job, utc_now_iso
 from core.state import state
 from schemas.video import VideoAddMaskRequest, VideoAddPointsOrBoxRequest, VideoInitStateRequest, VideoSaveRequest
 from sessions.cache import bump_video_state_epoch, prepare_video_masker_for_video_init, reset_video_session_state
 from sessions.interactive_state import prompt_events_from_interactive_state, sanitize_interactive_state, validate_interactive_state_for_restore
-from sessions.metadata import current_masks_dir, current_session_path, merge_session_metadata, sanitize_save_name, write_session_metadata
+from sessions.metadata import current_masks_dir, current_session_path, load_session_metadata, merge_session_metadata, sanitize_save_name, write_session_metadata
 from sessions.paths import path_is_relative_to, resolve_input_path, resolve_saved_session_layout, validate_video_input_path
 from utils import load_mask_manifest, write_mask_manifest
 from video.io import copy_frames_directory_to_session, create_active_session, extract_video_to_session_frames
 from video.masks import mask_logits_to_2d_bool
 from video.prompts import record_prompt_event
+from tracking.results import restored_tracking_result_payload
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,9 @@ def initialize_video_state_from_resolved_input(
             "has_mask_manifest": bool(state.mask_manifest_path),
             "interactive_state_warnings": restore_warnings,
         }
+        tracking_result = restored_tracking_result_payload(session_dir, session_metadata)
+        if tracking_result is not None:
+            restored_session_payload["tracking_result"] = tracking_result
     else:
         session_dir = create_active_session(resolved_input_path)
         frames_dir = session_dir / "frames"
@@ -332,6 +336,7 @@ def run_video_init_job(request: VideoInitStateRequest) -> dict[str, Any]:
     return result
 
 async def reset_video_state():
+    require_no_active_job("video reset")
     if state.video_masker is None:
         return {"error": "Video masker not active."}
     state.video_masker.reset_state()
@@ -349,6 +354,7 @@ async def reset_video_state():
     }
 
 async def add_new_points_or_box(request: VideoAddPointsOrBoxRequest):
+    require_no_active_job("add points")
     if state.video_masker is None:
         return {"error": "Video masker not active."}
 
@@ -456,6 +462,7 @@ async def add_new_points_or_box(request: VideoAddPointsOrBoxRequest):
     }
 
 async def add_new_mask(request: VideoAddMaskRequest):
+    require_no_active_job("add mask")
     if state.video_masker is None:
         return {"error": "Video masker not active."}
     
@@ -476,6 +483,7 @@ async def add_new_mask(request: VideoAddMaskRequest):
     }
 
 async def save_video_session(request: VideoSaveRequest):
+    require_no_active_job("save session")
 
     session_path = current_session_path()
     if session_path is None or state.video_dir is None or not state.video_frame_files:
@@ -537,6 +545,7 @@ async def save_video_session(request: VideoSaveRequest):
     }
 
 async def clear_all_prompts_in_frame(frame_idx: int, obj_id: int):
+    require_no_active_job("clear prompts")
     if state.video_masker is None:
         return {"error": "Video masker not active."}
     state.video_masker.clear_all_prompts_in_frame(frame_idx, obj_id)
@@ -548,6 +557,7 @@ async def clear_all_prompts_in_frame(frame_idx: int, obj_id: int):
     return {"message": "Cleared all prompts in frame successfully"}
 
 async def remove_object(obj_id: int):
+    require_no_active_job("remove object")
     if state.video_masker is None:
         return {"error": "Video masker not active."}
     state.video_masker.remove_object(obj_id)
@@ -631,4 +641,3 @@ async def get_video_mask_frame(frame_idx: int):
     if not file_path.exists():
         raise HTTPException(status_code=404, detail=f"Mask frame not found: {file_path}")
     return FileResponse(str(file_path))
-

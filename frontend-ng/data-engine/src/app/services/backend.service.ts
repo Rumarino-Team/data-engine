@@ -10,6 +10,7 @@ import type {
 	JobResponse,
 	JobStartResponse,
 	TrackPromptPointsRequest,
+	TrackPromptPointsResult,
 	VideoAddPointsOrBoxRequest,
 	VideoAddPointsResponse,
 	VideoInitStateRequest,
@@ -65,6 +66,10 @@ export class BackendService {
 
 	getJob<T = unknown>(jobId: string): Observable<JobResponse<T>> {
 		return this.http.get<JobResponse<T>>(this.endpoint(`/jobs/${jobId}`));
+	}
+
+	clearJobResult(jobId: string): Observable<{ cleared: boolean }> {
+		return this.http.post<{ cleared: boolean }>(this.endpoint(`/jobs/${jobId}/clear_result`), {});
 	}
 
 	initVideoState(
@@ -128,5 +133,9 @@ export class BackendService {
 
 	trackPromptPoints(request: TrackPromptPointsRequest): Observable<JobStartResponse> {
 		return this.http.post<JobStartResponse>(this.endpoint('/tracking/track_prompt_points'), request);
+	}
+
+	getTrackingResult(resultId: string): Observable<{ result: TrackPromptPointsResult }> {
+		return this.http.get<{ result: TrackPromptPointsResult }>(this.endpoint(`/tracking/results/${resultId}`));
 	}
 }

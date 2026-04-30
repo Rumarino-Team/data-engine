@@ -1,5 +1,5 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { Subject, of } from 'rxjs';
+import { Subject, of, throwError } from 'rxjs';
 import { vi } from 'vitest';
 import { BackendService, VideoAddPointsResponse } from '../services/backend.service';
 import { DesktopBridgeService } from '../services/desktop-bridge.service';
@@ -14,6 +14,9 @@ describe('VideoMaskerComponent sync contract', () => {
 		initVideoState: ReturnType<typeof vi.fn>;
 		getJob: ReturnType<typeof vi.fn>;
 		trackPromptPoints: ReturnType<typeof vi.fn>;
+		propagateInVideo: ReturnType<typeof vi.fn>;
+		getTrackingResult: ReturnType<typeof vi.fn>;
+		clearJobResult: ReturnType<typeof vi.fn>;
 		getApiUrl: ReturnType<typeof vi.fn>;
 		setApiUrl: ReturnType<typeof vi.fn>;
 		resetApiUrl: ReturnType<typeof vi.fn>;
@@ -44,6 +47,9 @@ describe('VideoMaskerComponent sync contract', () => {
 			initVideoState: vi.fn(),
 			getJob: vi.fn(),
 			trackPromptPoints: vi.fn(),
+			propagateInVideo: vi.fn(),
+			getTrackingResult: vi.fn(),
+			clearJobResult: vi.fn(() => of({ cleared: true })),
 			getApiUrl: vi.fn(() => 'http://127.0.0.1:8000'),
 			setApiUrl: vi.fn((value: string) => value),
 			resetApiUrl: vi.fn(() => 'http://127.0.0.1:8000'),
@@ -66,6 +72,9 @@ describe('VideoMaskerComponent sync contract', () => {
 						initVideoState: backendMock.initVideoState,
 						getJob: backendMock.getJob,
 						trackPromptPoints: backendMock.trackPromptPoints,
+						propagateInVideo: backendMock.propagateInVideo,
+						getTrackingResult: backendMock.getTrackingResult,
+						clearJobResult: backendMock.clearJobResult,
 						getApiUrl: backendMock.getApiUrl,
 						setApiUrl: backendMock.setApiUrl,
 						resetApiUrl: backendMock.resetApiUrl,
@@ -157,6 +166,18 @@ describe('VideoMaskerComponent sync contract', () => {
 		await pendingRequest;
 
 		expect(component.liveEditedObjectFrames().get(5)?.has(1)).toBe(true);
+	});
+
+	it('rolls back optimistic point and shows a toast when point update conflicts', async () => {
+		backendMock.addNewPointsOrBox.mockReturnValue(
+			throwError(() => ({ error: { detail: 'Another operation is already running.' } })),
+		);
+
+		await component.addPoint(30, 40, 1, 5);
+
+		expect(component.points().get(5)?.get(1)?.length ?? 0).toBe(0);
+		expect(component.toasts()[0].title).toBe('Point update failed');
+		expect(component.toasts()[0].message).toBe('Another operation is already running.');
 	});
 
 	it('uses the native Tauri video picker when video mode is selected', async () => {
@@ -378,6 +399,139 @@ describe('VideoMaskerComponent sync contract', () => {
 		expect(component.masks().get(4)?.get(1)).toEqual([[true, false], [false, false]]);
 	});
 
+	it('restores persisted tracking result from saved-session init result', async () => {
+		backendMock.initVideoState.mockReturnValue(of({
+			job_id: 'job-restore-track',
+			status: 'queued',
+			operation: 'video_init',
+			message: 'queued',
+		}));
+		backendMock.getJob.mockReturnValue(of({
+			job: {
+				job_id: 'job-restore-track',
+				operation: 'video_init',
+				status: 'completed',
+				stage: 'completed',
+				stage_label: 'Completed',
+				progress: 1,
+				current: 10,
+				total: 10,
+				window_index: null,
+				window_count: null,
+				frame_idx: null,
+				stage_history: [],
+				message: 'done',
+				error: null,
+				started_at: 'now',
+				updated_at: 'now',
+				completed_at: 'now',
+				result: {
+					message: 'Video state initialized successfully',
+					num_frames: 10,
+					resolved_video_frames_dir: 'C:/backend/saved/review-run/frames',
+					source_video_path: null,
+					online_mode: true,
+					batch_size: 32,
+					offload_video_to_cpu: true,
+					offload_state_to_cpu: true,
+					state_epoch: 12,
+					source_type: 'saved_session',
+					restored_session: {
+						session_meta: { schema_version: 2 },
+						has_mask_manifest: true,
+						tracking_result: {
+							result_id: 'track-restored',
+							summary: { num_points: 1 },
+						},
+					},
+				},
+			},
+		}));
+		backendMock.getTrackingResult.mockReturnValue(of({
+			result: {
+				version: 1,
+				result_id: 'track-restored',
+				model_name: 'cotracker3_online',
+				num_points: 1,
+				num_frames: 2,
+				add_support_grid_used: false,
+				tracking_mode: 'streaming',
+				streaming_frame_threshold: 256,
+				tracks: [[[10, 20], [11, 21]]],
+				visibility: [[true, true]],
+				points: [{
+					point_id: 'p0_0',
+					obj_id: 1,
+					source_frame_idx: 0,
+					source_x: 10,
+					source_y: 20,
+				}],
+			},
+		}));
+		component.loadSourceMode.set('saved_session_dir');
+		component.videoDir.set('C:/backend/saved/review-run');
+
+		await component.initVideo();
+
+		expect(backendMock.getTrackingResult).toHaveBeenCalledWith('track-restored');
+		expect(component.trackedPoints()[0].tracks).toEqual([[10, 20], [11, 21]]);
+	});
+
+	it('keeps saved-session init successful when restored tracking result is unavailable', async () => {
+		backendMock.initVideoState.mockReturnValue(of({
+			job_id: 'job-restore-track-missing',
+			status: 'queued',
+			operation: 'video_init',
+			message: 'queued',
+		}));
+		backendMock.getJob.mockReturnValue(of({
+			job: {
+				job_id: 'job-restore-track-missing',
+				operation: 'video_init',
+				status: 'completed',
+				stage: 'completed',
+				stage_label: 'Completed',
+				progress: 1,
+				current: 10,
+				total: 10,
+				window_index: null,
+				window_count: null,
+				frame_idx: null,
+				stage_history: [],
+				message: 'done',
+				error: null,
+				started_at: 'now',
+				updated_at: 'now',
+				completed_at: 'now',
+				result: {
+					message: 'Video state initialized successfully',
+					num_frames: 10,
+					resolved_video_frames_dir: 'C:/backend/saved/review-run/frames',
+					source_video_path: null,
+					online_mode: true,
+					batch_size: 32,
+					offload_video_to_cpu: true,
+					offload_state_to_cpu: true,
+					state_epoch: 12,
+					source_type: 'saved_session',
+					restored_session: {
+						session_meta: { schema_version: 2 },
+						has_mask_manifest: true,
+						tracking_result: { result_id: 'missing-track' },
+					},
+				},
+			},
+		}));
+		backendMock.getTrackingResult.mockReturnValue(throwError(() => ({ error: { detail: 'missing' } })));
+		component.loadSourceMode.set('saved_session_dir');
+		component.videoDir.set('C:/backend/saved/review-run');
+
+		await component.initVideo();
+
+		expect(component.isInitialized()).toBe(true);
+		expect(component.toasts()[0].title).toBe('Tracking result unavailable');
+	});
+
 	it('runs CoTracker without sending a model selector value', async () => {
 		backendMock.trackPromptPoints.mockReturnValue(of({
 			job_id: 'job-track',
@@ -412,17 +566,31 @@ describe('VideoMaskerComponent sync contract', () => {
 					add_support_grid_used: true,
 					tracking_mode: 'streaming',
 					streaming_frame_threshold: 256,
-					tracks: [[[10, 20], [11, 21]]],
-					visibility: [[true, true]],
-					points: [{
-						point_id: 'p0_0',
-						obj_id: 1,
-						source_frame_idx: 0,
-						source_x: 10,
-						source_y: 20,
-					}],
+					tracking_result_id: 'track-1',
 					state_epoch: 3,
 				},
+			},
+		}));
+		backendMock.getTrackingResult.mockReturnValue(of({
+			result: {
+				version: 1,
+				result_id: 'track-1',
+				message: 'Prompt-point tracking completed',
+				model_name: 'cotracker3_online',
+				num_points: 1,
+				num_frames: 2,
+				add_support_grid_used: true,
+				tracking_mode: 'streaming',
+				streaming_frame_threshold: 256,
+				tracks: [[[10, 20], [11, 21]]],
+				visibility: [[true, true]],
+				points: [{
+					point_id: 'p0_0',
+					obj_id: 1,
+					source_frame_idx: 0,
+					source_x: 10,
+					source_y: 20,
+				}],
 			},
 		}));
 		component.trackingUseSupportGrid.set(true);
@@ -431,7 +599,59 @@ describe('VideoMaskerComponent sync contract', () => {
 
 		expect(backendMock.trackPromptPoints).toHaveBeenCalledWith({ add_support_grid: true });
 		expect(backendMock.trackPromptPoints.mock.calls[0][0]).not.toHaveProperty('model_name');
+		expect(backendMock.getTrackingResult).toHaveBeenCalledWith('track-1');
+		expect(backendMock.clearJobResult).toHaveBeenCalledWith('job-track');
 		expect(component.trackedPoints()[0].tracks).toEqual([[10, 20], [11, 21]]);
+	});
+
+	it('enables manifest mask loading after propagation with legacy manifest key', async () => {
+		backendMock.propagateInVideo.mockReturnValue(of({
+			job_id: 'job-propagate',
+			status: 'queued',
+			operation: 'mask_propagation',
+			message: 'queued',
+		}));
+		backendMock.getJob.mockReturnValue(of({
+			job: {
+				job_id: 'job-propagate',
+				operation: 'mask_propagation',
+				status: 'completed',
+				stage: 'completed',
+				stage_label: 'Completed',
+				progress: 1,
+				current: 2,
+				total: 2,
+				window_index: null,
+				window_count: null,
+				frame_idx: null,
+				stage_history: [],
+				message: 'done',
+				error: null,
+				started_at: 'now',
+				updated_at: 'now',
+				completed_at: 'now',
+				result: {
+					video_segments: {},
+					saved_mask_paths: {},
+					video_segments_total_frames: 2,
+					video_segments_returned_frames: 0,
+					video_segments_returned_mask_values: 0,
+					video_segments_truncated: false,
+					'state.mask_manifest_path': '/tmp/session/masks/manifest.json',
+					state_epoch: 3,
+				},
+			},
+		}));
+		component.isInitialized.set(true);
+		component.numFrames.set(2);
+
+		await component.propagate();
+
+		expect(component.hasManifestMasks()).toBe(true);
+		expect(backendMock.propagateInVideo).toHaveBeenCalledWith({
+			include_masks_in_response: false,
+			include_saved_mask_paths: false,
+		});
 	});
 
 	it('does not render a tracking model selector', () => {

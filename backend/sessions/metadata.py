@@ -58,6 +58,10 @@ def write_session_metadata(extra: Optional[dict[str, Any]] = None) -> None:
         "saved_at",
         "saved_path",
         "source_input_path",
+        "latest_tracking_result_id",
+        "latest_tracking_result_path",
+        "latest_tracking_result_updated_at",
+        "latest_tracking_result_summary",
     ):
         if key in existing_metadata:
             metadata[key] = existing_metadata[key]
@@ -109,4 +113,3 @@ def merge_session_metadata(
     if interactive_state is not None:
         merged["interactive_state"] = interactive_state
     return merged
-
