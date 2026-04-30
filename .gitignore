@@ -1,6 +1,9 @@
 __pycache__/
 *masks/
 video/
+!/backend/video/
+!/backend/video/**
+/backend/video/__pycache__/
 bedroom/
 build/
 apple_*
