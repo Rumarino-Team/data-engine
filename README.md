@@ -39,8 +39,11 @@ The frontend defaults to `http://127.0.0.1:8000` for backend requests and also e
 The Tauri app only wraps the Angular frontend. It does not bundle or launch the Python backend.
 
 ## Testing via C++
+Currently this part is behind the python backend so it isnt recommended to use
 
 1. Install `nlohmann_json` and `curl` dev packages via your package manager
+
+2. Change into `/cpp-backend-bindings`
 
 2. Run `mkdir build`
 
@@ -49,3 +52,7 @@ The Tauri app only wraps the Angular frontend. It does not bundle or launch the 
 4. Run `cmake --build build` to compile project
 
 5. Run `./build/src/BackendInterfaceTests` while the venv is sourced to test backend code
+
+
+## Structure
+TBA
