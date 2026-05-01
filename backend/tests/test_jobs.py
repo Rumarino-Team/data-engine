@@ -37,6 +37,10 @@ class JobTests(unittest.TestCase):
         self.assertEqual(serialized["job_id"], started["job_id"])
         self.assertEqual(serialized["status"], "completed")
         self.assertEqual(serialized["result"], {"ok": True})
+        self.assertIsNone(serialized["batch_current"])
+        self.assertIsNone(serialized["batch_total"])
+        self.assertIsNone(serialized["batch_index"])
+        self.assertIsNone(serialized["batch_count"])
 
     def test_starting_second_active_job_raises_409(self):
         release = threading.Event()
@@ -72,13 +76,26 @@ class JobTests(unittest.TestCase):
             message="queued",
             worker=lambda: (release.wait(1), {"ok": True})[1],
         )
-        jobs.update_job(stage="working", stage_label="Working", progress=0.25, message="working")
+        jobs.update_job(
+            stage="working",
+            stage_label="Working",
+            progress=0.25,
+            batch_current=8,
+            batch_total=32,
+            batch_index=1,
+            batch_count=4,
+            message="working",
+        )
         serialized = jobs.serialize_job()
         release.set()
 
         self.assertEqual(serialized["job_id"], started["job_id"])
         self.assertEqual(serialized["stage"], "working")
         self.assertEqual(serialized["progress"], 0.25)
+        self.assertEqual(serialized["batch_current"], 8)
+        self.assertEqual(serialized["batch_total"], 32)
+        self.assertEqual(serialized["batch_index"], 1)
+        self.assertEqual(serialized["batch_count"], 4)
 
     def test_failed_worker_sets_failed_status(self):
         def fail():

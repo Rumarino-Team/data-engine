@@ -16,8 +16,30 @@ from utils import build_empty_mask_manifest, prepare_video_masks_output, save_si
 from video.io import build_window_dir
 from video.masks import manifest_frame_payload
 from video.prompts import restore_video_masker_from_prompt_events
+from tracking.guidance import load_latest_tracking_guidance
 
 logger = logging.getLogger(__name__)
+
+def propagation_batch_progress(
+    *,
+    processed_before_frame: int,
+    window_total_frames: int,
+    batch_size: int,
+) -> dict[str, int]:
+    effective_batch_size = max(1, int(batch_size))
+    total_frames = max(1, int(window_total_frames))
+    processed_before = min(max(0, int(processed_before_frame)), total_frames - 1)
+    batch_index = (processed_before // effective_batch_size) + 1
+    batch_count = (total_frames + effective_batch_size - 1) // effective_batch_size
+    batch_start = (batch_index - 1) * effective_batch_size
+    batch_total = min(effective_batch_size, total_frames - batch_start)
+    batch_current = (processed_before - batch_start) + 1
+    return {
+        "batch_current": batch_current,
+        "batch_total": batch_total,
+        "batch_index": batch_index,
+        "batch_count": batch_count,
+    }
 
 async def start_propagation(request: VideoPropagateRequest):
     return queue_long_job(
@@ -37,6 +59,10 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
         stage="validating_prompts",
         stage_label="Validating prompts",
         progress=0.0,
+        batch_current=None,
+        batch_total=None,
+        batch_index=None,
+        batch_count=None,
         message="Validating mask propagation inputs",
     )
     if state.video_masker is None:
@@ -86,6 +112,10 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
                 "saved_mask_paths": {},
                 "online_mode": effective_online_mode,
                 "batch_size": effective_batch_size,
+                "tracked_points_used": False,
+                "tracked_points_skipped_reason": None,
+                "tracked_points_seeded_count": 0,
+                "tracked_points_seeded_frames": 0,
                 "state.mask_manifest_path": state.mask_manifest_path,
                 "state_epoch": int(state.video_state_epoch),
             }
@@ -105,6 +135,10 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
         progress=0.02,
         current=0,
         total=expected_total_frames,
+        batch_current=None,
+        batch_total=None,
+        batch_index=None,
+        batch_count=None,
         message="Preparing mask output directory",
     )
 
@@ -123,6 +157,18 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
         frame_width=int(first_frame.shape[1]),
     )
     manifest_frames: dict[str, Any] = manifest["frames"]
+    frame_height = int(first_frame.shape[0])
+    frame_width = int(first_frame.shape[1])
+
+    tracking_guidance = None
+    tracked_points_skipped_reason: Optional[str] = None
+    tracked_points_skip_should_warn = False
+    if request.use_tracked_points:
+        tracking_guidance = load_latest_tracking_guidance(num_frames=num_frames)
+        tracked_points_skipped_reason = tracking_guidance.skipped_reason
+        tracked_points_skip_should_warn = tracking_guidance.should_warn
+    total_tracked_points_seeded = 0
+    tracked_points_seeded_frames: set[int] = set()
 
     split_frame_idx = (start_frame_idx + end_frame_idx) // 2
     windows: list[tuple[int, int]] = [(start_frame_idx, split_frame_idx)]
@@ -154,6 +200,10 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
                 window_count=window_count,
                 frame_idx=window_start,
                 progress=_propagation_progress(len(processed_frames), expected_total_frames),
+                batch_current=None,
+                batch_total=None,
+                batch_index=None,
+                batch_count=None,
                 message=f"Preparing window {window_number} of {window_count}: frames {window_start}-{window_end}",
             )
             window_frame_paths = [Path(state.video_dir) / state.video_frame_files[idx] for idx in range(window_start, window_end + 1)]
@@ -170,6 +220,10 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
                     window_count=window_count,
                     frame_idx=source_frame_idx,
                     progress=_propagation_progress(len(processed_frames), expected_total_frames),
+                    batch_current=None,
+                    batch_total=None,
+                    batch_index=None,
+                    batch_count=None,
                     message=f"Linked {current} of {total} frames for window {window_number} of {window_count}",
                     append_history=current == 1 or current == total,
                 )
@@ -190,6 +244,10 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
                 window_count=window_count,
                 frame_idx=window_start,
                 progress=_propagation_progress(len(processed_frames), expected_total_frames),
+                batch_current=None,
+                batch_total=None,
+                batch_index=None,
+                batch_count=None,
                 message=f"Initializing SAM2 state for window {window_number} of {window_count}",
             )
 
@@ -211,6 +269,10 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
                 window_count=window_count,
                 frame_idx=window_start,
                 progress=_propagation_progress(len(processed_frames), expected_total_frames),
+                batch_current=None,
+                batch_total=None,
+                batch_index=None,
+                batch_count=None,
                 message=f"Seeding prompts for window {window_number} of {window_count}",
             )
 
@@ -224,6 +286,10 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
                     window_count=window_count,
                     frame_idx=boundary_frame_idx,
                     progress=_propagation_progress(len(processed_frames), expected_total_frames),
+                    batch_current=None,
+                    batch_total=None,
+                    batch_index=None,
+                    batch_count=None,
                     message=f"Seeding boundary masks for window {window_number} of {window_count}",
                 )
                 local_boundary_idx = int(boundary_frame_idx - window_start)
@@ -250,11 +316,49 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
                     box=event.get("box"),
                 )
 
+            if tracking_guidance is not None and tracking_guidance.points:
+                excluded_tracked_guidance: set[tuple[int, int]] = set()
+                if window_index > 0 and boundary_masks and boundary_frame_idx is not None:
+                    excluded_tracked_guidance.update(
+                        (int(boundary_frame_idx), int(obj_id))
+                        for obj_id in boundary_masks.keys()
+                    )
+                tracked_batches, seeded_count, seeded_frames = tracking_guidance.build_window_batches(
+                    window_start=window_start,
+                    window_end=window_end,
+                    propagation_start_frame_idx=start_frame_idx,
+                    frame_width=frame_width,
+                    frame_height=frame_height,
+                    keyframe_interval=request.tracked_point_keyframe_interval,
+                    max_points_per_object_per_frame=request.max_tracked_points_per_object_per_frame,
+                    excluded_frame_objects=excluded_tracked_guidance,
+                )
+                for local_frame_idx, obj_batches in sorted(tracked_batches.items()):
+                    for obj_id, points in sorted(obj_batches.items()):
+                        if not points:
+                            continue
+                        labels = [1] * len(points)
+                        state.video_masker.add_new_points_or_box(
+                            frame_idx=int(local_frame_idx),
+                            obj_id=int(obj_id),
+                            points=points,
+                            labels=labels,
+                            clear_old_points=False,
+                            box=None,
+                        )
+                total_tracked_points_seeded += seeded_count
+                tracked_points_seeded_frames.update(seeded_frames)
+
             local_start_frame = max(start_frame_idx, window_start) - window_start
             local_max_frames = (window_end - window_start + 1) - local_start_frame
+            window_output_start = max(start_frame_idx, window_start)
+            window_expected_frames = window_end - window_output_start + 1
+            if window_index > 0 and window_start in processed_frames:
+                window_expected_frames = max(0, window_expected_frames - 1)
+            processed_window_frames_count = 0
 
             def _on_window_frame(local_frame_idx: int, frame_masks: dict[int, np.ndarray]):
-                nonlocal saved_mask_frame_count, save_failures, boundary_masks, boundary_frame_idx
+                nonlocal saved_mask_frame_count, save_failures, boundary_masks, boundary_frame_idx, processed_window_frames_count
                 global_frame_idx = int(window_start + local_frame_idx)
                 if global_frame_idx < start_frame_idx or global_frame_idx > end_frame_idx:
                     return
@@ -272,6 +376,12 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
                     boundary_frame_idx = global_frame_idx
                     return
 
+                batch_progress = propagation_batch_progress(
+                    processed_before_frame=processed_window_frames_count,
+                    window_total_frames=max(1, window_expected_frames),
+                    batch_size=effective_batch_size,
+                )
+                processed_window_frames_count += 1
                 processed_frames.add(global_frame_idx)
                 update_job(
                     stage="propagating_window",
@@ -282,6 +392,10 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
                     window_count=window_count,
                     frame_idx=global_frame_idx,
                     progress=_propagation_progress(len(processed_frames), expected_total_frames),
+                    batch_current=batch_progress["batch_current"],
+                    batch_total=batch_progress["batch_total"],
+                    batch_index=batch_progress["batch_index"],
+                    batch_count=batch_progress["batch_count"],
                     message=f"Processed {len(processed_frames)} of {expected_total_frames} frames",
                     append_history=len(processed_frames) == 1 or len(processed_frames) == expected_total_frames,
                 )
@@ -332,6 +446,10 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
                 window_count=window_count,
                 frame_idx=window_end,
                 progress=_propagation_progress(len(processed_frames), expected_total_frames),
+                batch_current=None,
+                batch_total=None,
+                batch_index=None,
+                batch_count=None,
                 message=f"Finished window {window_number} of {window_count}",
             )
     except ValueError as error:
@@ -368,6 +486,10 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
         window_count=None,
         frame_idx=None,
         message="Saving mask manifest",
+        batch_current=None,
+        batch_total=None,
+        batch_index=None,
+        batch_count=None,
     )
 
     try:
@@ -382,6 +504,10 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
             window_count=None,
             frame_idx=None,
             message="Restoring interactive masking state",
+            batch_current=None,
+            batch_total=None,
+            batch_index=None,
+            batch_count=None,
         )
         restore_video_masker_from_prompt_events(
             online_mode=effective_online_mode,
@@ -406,6 +532,14 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
         "saved_mask_paths": saved_mask_paths_serializable,
         "online_mode": effective_online_mode,
         "batch_size": effective_batch_size,
+        "tracked_points_used": total_tracked_points_seeded > 0,
+        "tracked_points_skipped_reason": (
+            None
+            if total_tracked_points_seeded > 0 or not request.use_tracked_points or not tracked_points_skip_should_warn
+            else tracked_points_skipped_reason or "No CoTracker points were seeded during propagation."
+        ),
+        "tracked_points_seeded_count": total_tracked_points_seeded,
+        "tracked_points_seeded_frames": len(tracked_points_seeded_frames),
         "mask_manifest_path": state.mask_manifest_path,
         "state.mask_manifest_path": state.mask_manifest_path,
         "state_epoch": int(state.video_state_epoch),

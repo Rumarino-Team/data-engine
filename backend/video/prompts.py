@@ -31,13 +31,21 @@ def restore_video_masker_from_prompt_events(
     offload_video_to_cpu: Optional[bool],
     offload_state_to_cpu: Optional[bool],
     increment_epoch: bool = True,
+    progress_stage_override: Optional[str] = None,
+    progress_label_override: Optional[str] = None,
+    progress_message_prefix: Optional[str] = None,
 ) -> None:
 
     if state.video_dir is None:
         return
 
     def _on_progress(stage: str, label: str, progress: Optional[float], message: str) -> None:
-        update_job(stage=stage, stage_label=label, progress=progress, message=message)
+        update_job(
+            stage=progress_stage_override or stage,
+            stage_label=progress_label_override or label,
+            progress=progress,
+            message=f"{progress_message_prefix}: {message}" if progress_message_prefix else message,
+        )
 
     if state.video_masker is None:
         state.video_masker = svm.SAM2VideoMasker(progress_callback=_on_progress)
@@ -67,4 +75,3 @@ def restore_video_masker_from_prompt_events(
     if increment_epoch:
         bump_video_state_epoch()
         write_session_metadata()
-

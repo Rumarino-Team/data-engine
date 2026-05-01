@@ -69,11 +69,11 @@ def run_prompt_tracking_job(request: TrackingPromptPointsRequest) -> dict[str, A
     total_queries = len(positive_queries)
     update_job(
         stage="loading_tracker",
-        stage_label="Loading state.tracker",
+        stage_label="Loading tracker",
         progress=0.2,
         current=0,
         total=total_queries,
-        message=f"Preparing to track {total_queries} prompt points",
+        message=f"Preparing tracker for {total_queries} prompt points",
     )
 
     should_restore_video_masker = state.video_masker is not None and state.video_dir is not None
@@ -91,6 +91,9 @@ def run_prompt_tracking_job(request: TrackingPromptPointsRequest) -> dict[str, A
                 batch_size=restore_batch_size,
                 offload_video_to_cpu=restore_offload_video_to_cpu,
                 offload_state_to_cpu=restore_offload_state_to_cpu,
+                progress_stage_override="restoring_masker",
+                progress_label_override="Restoring interactive masking state",
+                progress_message_prefix="Restoring masking state after prompt tracking",
             )
         except Exception as error:
             logger.exception("Failed to restore interactive video masker state after prompt tracking")
@@ -112,11 +115,11 @@ def run_prompt_tracking_job(request: TrackingPromptPointsRequest) -> dict[str, A
         raise HTTPException(status_code=400, detail=str(error)) from error
     update_job(
         stage="loading_frames",
-        stage_label="Loading frames",
+        stage_label="Preparing tracking frames",
         progress=0.35,
         current=0,
         total=total_queries,
-        message="Loading video frames for tracking",
+        message="Preparing video frames for prompt tracking",
     )
 
     def _is_oom_runtime_error(error: RuntimeError) -> bool:
@@ -341,11 +344,11 @@ def run_prompt_tracking_job(request: TrackingPromptPointsRequest) -> dict[str, A
     cleanup_cuda_memory()
     update_job(
         stage="restoring_masker",
-        stage_label="Restoring masking state",
+        stage_label="Restoring interactive masking state",
         progress=0.95,
         current=int(tracks.shape[0]),
         total=total_queries,
-        message="Restoring interactive masking state",
+        message="Restoring masking state after prompt tracking",
     )
     _restore_masker_state(raise_on_error=True)
     _clear_tracking_video_if_loaded_for_operation()

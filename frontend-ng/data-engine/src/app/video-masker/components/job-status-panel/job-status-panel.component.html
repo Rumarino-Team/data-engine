@@ -2,42 +2,57 @@
   <div class="progress-panel">
     <div class="progress-title">{{ activeJobTitle || 'Processing' }}</div>
     <div class="progress-stage">{{ activeJob?.stage_label || 'Starting operation' }}</div>
-    <div
-      class="progress-context"
-      *ngIf="
-        activeJob?.window_count ||
-        (activeJob?.frame_idx !== null && activeJob?.frame_idx !== undefined)
-      "
-    >
-      <span *ngIf="activeJob?.window_count"
-        >Window {{ activeJob?.window_index }} of {{ activeJob?.window_count }}</span
-      >
-      <span *ngIf="activeJob?.frame_idx !== null && activeJob?.frame_idx !== undefined"
-        >Frame {{ activeJob?.frame_idx }}</span
-      >
+    <div class="progress-window" *ngIf="windowLabel()">{{ windowLabel() }}</div>
+
+    <div class="progress-bars" *ngIf="isPropagationJob(); else singleProgress">
+      <div class="progress-bar-block">
+        <div class="progress-bar-header">
+          <span class="progress-bar-label">Batch</span>
+          <span class="progress-bar-value" *ngIf="hasBatchProgress()"
+            >{{ activeJob?.batch_current }} / {{ activeJob?.batch_total }}</span
+          >
+        </div>
+        <div class="progress-track" [class.indeterminate]="!hasBatchProgress()">
+          <div class="progress-fill" [style.width.%]="batchProgressPercent()"></div>
+        </div>
+      </div>
+
+      <div class="progress-bar-block">
+        <div class="progress-bar-header">
+          <span class="progress-bar-label">Overall</span>
+          <span class="progress-bar-value">
+            <ng-container *ngIf="hasOverallCount()"
+              >{{ activeJob?.current }} / {{ activeJob?.total }}</ng-container
+            >
+            <ng-container *ngIf="activeJob?.progress !== null && activeJob?.progress !== undefined">
+              {{ overallProgressPercent() | number: '1.0-0' }}%
+            </ng-container>
+          </span>
+        </div>
+        <div
+          class="progress-track"
+          [class.indeterminate]="activeJob?.progress === null || activeJob?.progress === undefined"
+        >
+          <div class="progress-fill" [style.width.%]="overallProgressPercent()"></div>
+        </div>
+      </div>
     </div>
-    <div
-      class="progress-track"
-      [class.indeterminate]="activeJob?.progress === null || activeJob?.progress === undefined"
-    >
+
+    <ng-template #singleProgress>
       <div
-        class="progress-fill"
-        [style.width.%]="
-          activeJob?.progress !== null && activeJob?.progress !== undefined
-            ? (activeJob?.progress || 0) * 100
-            : 35
-        "
-      ></div>
-    </div>
-    <div class="progress-meta">
-      <span *ngIf="activeJob?.progress !== null && activeJob?.progress !== undefined"
-        >{{ (activeJob?.progress || 0) * 100 | number: '1.0-0' }}%</span
+        class="progress-track"
+        [class.indeterminate]="activeJob?.progress === null || activeJob?.progress === undefined"
       >
-      <span
-        *ngIf="activeJob?.current !== null && activeJob?.current !== undefined && activeJob?.total"
-        >{{ activeJob?.current }} / {{ activeJob?.total }}</span
-      >
-    </div>
+        <div class="progress-fill" [style.width.%]="overallProgressPercent()"></div>
+      </div>
+      <div class="progress-meta">
+        <span *ngIf="activeJob?.progress !== null && activeJob?.progress !== undefined"
+          >{{ overallProgressPercent() | number: '1.0-0' }}%</span
+        >
+        <span *ngIf="hasOverallCount()">{{ activeJob?.current }} / {{ activeJob?.total }}</span>
+      </div>
+    </ng-template>
+
     <div class="progress-message">
       {{ activeJob?.message || 'Waiting for backend job status...' }}
     </div>

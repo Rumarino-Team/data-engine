@@ -253,6 +253,13 @@ describe('VideoMaskerComponent sync contract', () => {
     expect(component.getLoadPathPlaceholder()).toContain('masks/');
   });
 
+  it('labels the prompt tracking action as Track Prompt Points', () => {
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.textContent).toContain('Track Prompt Points');
+    expect(fixture.nativeElement.textContent).not.toContain('Run CoTracker');
+  });
+
   it('starts a video init job, polls completion, and applies the result', async () => {
     backendMock.initVideoState.mockReturnValue(
       of({

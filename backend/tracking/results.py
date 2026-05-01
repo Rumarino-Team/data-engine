@@ -5,8 +5,10 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from core.state import state
 from core.jobs import utc_now_iso
 from sessions.metadata import current_session_path, write_session_metadata
+from tracking.guidance import tracked_prompt_keys
 from utils import load_mask_manifest, write_mask_manifest
 
 _RESULT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -46,15 +48,17 @@ def save_prompt_tracking_result(
     result_id = uuid.uuid4().hex
     created_at = utc_now_iso()
     payload = {
-        "version": 1,
+        "version": 2,
         "result_id": result_id,
         "created_at": created_at,
+        "state_epoch": int(state.video_state_epoch),
         "model_name": model_name,
         "num_points": int(num_points),
         "num_frames": int(num_frames),
         "add_support_grid_used": bool(add_support_grid_used),
         "tracking_mode": tracking_mode,
         "streaming_frame_threshold": int(streaming_frame_threshold),
+        "tracked_prompt_keys": tracked_prompt_keys(points),
         "points": points,
         "tracks": tracks,
         "visibility": visibility,

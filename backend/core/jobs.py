@@ -72,6 +72,10 @@ def _start_job(operation: str, *, stage: str, stage_label: str, message: str) ->
             "window_index": None,
             "window_count": None,
             "frame_idx": None,
+            "batch_current": None,
+            "batch_total": None,
+            "batch_index": None,
+            "batch_count": None,
             "stage_history": [],
             "message": message,
             "result": None,
@@ -93,6 +97,10 @@ def update_job(
     window_index: Any = _UNSET,
     window_count: Any = _UNSET,
     frame_idx: Any = _UNSET,
+    batch_current: Any = _UNSET,
+    batch_total: Any = _UNSET,
+    batch_index: Any = _UNSET,
+    batch_count: Any = _UNSET,
     message: Optional[str] = None,
     append_history: bool = True,
 ) -> None:
@@ -117,6 +125,14 @@ def update_job(
             current_job["window_count"] = None if window_count is None else int(window_count)
         if frame_idx is not _UNSET:
             current_job["frame_idx"] = None if frame_idx is None else int(frame_idx)
+        if batch_current is not _UNSET:
+            current_job["batch_current"] = None if batch_current is None else int(batch_current)
+        if batch_total is not _UNSET:
+            current_job["batch_total"] = None if batch_total is None else int(batch_total)
+        if batch_index is not _UNSET:
+            current_job["batch_index"] = None if batch_index is None else int(batch_index)
+        if batch_count is not _UNSET:
+            current_job["batch_count"] = None if batch_count is None else int(batch_count)
         if message is not None:
             current_job["message"] = message
         now = utc_now_iso()
@@ -149,6 +165,10 @@ def _complete_job(job_id: str, result: dict[str, Any]) -> None:
                 "window_index": None,
                 "window_count": None,
                 "frame_idx": None,
+                "batch_current": None,
+                "batch_total": None,
+                "batch_index": None,
+                "batch_count": None,
                 "message": "Operation completed",
                 "result": result,
                 "error": None,

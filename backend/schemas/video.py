@@ -25,6 +25,9 @@ class VideoPropagateRequest(BaseModel):
     reverse: bool = False
     batch_size: Optional[int] = None
     online_mode: Optional[bool] = None
+    use_tracked_points: bool = True
+    tracked_point_keyframe_interval: int = Field(default=8, ge=1)
+    max_tracked_points_per_object_per_frame: int = Field(default=16, ge=1)
     include_masks_in_response: bool = False
     include_saved_mask_paths: bool = False
     max_frames_in_response: Optional[int] = None

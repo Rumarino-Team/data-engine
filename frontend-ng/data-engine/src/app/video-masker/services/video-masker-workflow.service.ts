@@ -122,6 +122,9 @@ export class VideoMaskerWorkflowService {
     deps.updateStateEpoch(response.state_epoch, 'propagation');
     const maskManifestPath = response.mask_manifest_path || response['state.mask_manifest_path'];
     deps.setHasManifestMasks(Boolean(maskManifestPath));
+    if (response.tracked_points_skipped_reason) {
+      deps.showToast('warning', 'Tracking guidance skipped', response.tracked_points_skipped_reason);
+    }
     deps.clearMaskDataCache();
     deps.scheduleFrameLoad(deps.targetFrameIdx());
   }

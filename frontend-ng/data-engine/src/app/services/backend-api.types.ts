@@ -22,6 +22,9 @@ export interface VideoPropagateRequest {
   reverse?: boolean;
   batch_size?: number;
   online_mode?: boolean;
+  use_tracked_points?: boolean;
+  tracked_point_keyframe_interval?: number;
+  max_tracked_points_per_object_per_frame?: number;
   include_masks_in_response?: boolean;
   include_saved_mask_paths?: boolean;
   max_frames_in_response?: number;
@@ -125,6 +128,10 @@ export interface VideoPropagateResponse {
   video_segments_truncated?: boolean;
   mask_manifest_path?: string;
   'state.mask_manifest_path'?: string;
+  tracked_points_used?: boolean;
+  tracked_points_skipped_reason?: string | null;
+  tracked_points_seeded_count?: number;
+  tracked_points_seeded_frames?: number;
   state_epoch?: number;
 }
 
@@ -218,6 +225,10 @@ export interface BackendJob<T = unknown> {
   window_index: number | null;
   window_count: number | null;
   frame_idx: number | null;
+  batch_current: number | null;
+  batch_total: number | null;
+  batch_index: number | null;
+  batch_count: number | null;
   stage_history?: JobStageHistoryEntry[];
   message: string;
   result: T | null;
