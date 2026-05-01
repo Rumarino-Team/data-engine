@@ -56,6 +56,7 @@ describe('JobStatusPanelComponent', () => {
     expect(element.textContent).toContain('50%');
     expect(element.textContent).toContain('Window 1 of 2');
     expect(element.textContent).not.toContain('Frame 64');
+    expect(element.textContent).not.toContain('Recent activity');
     expect(element.querySelectorAll('.progress-track').length).toBe(2);
   });
 

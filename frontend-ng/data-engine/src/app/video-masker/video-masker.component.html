@@ -202,7 +202,7 @@
         </div>
       </div>
 
-      <div class="section debug-section" *ngIf="isInitialized()">
+      <div class="section debug-section" *ngIf="isInitialized() && showDebugUi">
         <h3>Sync Debug</h3>
         <div class="debug-grid">
           <span>Target frame</span><strong>{{ targetFrameIdx() }}</strong>
@@ -225,10 +225,7 @@
 
   <div class="bottom-bar" *ngIf="isInitialized()">
     <div class="scrubber">
-      <span
-        >Target: {{ targetFrameIdx() }} | Displayed: {{ displayedFrameIdx() }} /
-        {{ numFrames() - 1 }}</span
-      >
+      <span>Displayed: {{ displayedFrameIdx() }} / {{ numFrames() - 1 }}</span>
       <input
         type="range"
         [min]="0"
@@ -244,7 +241,6 @@
     [isLoading]="isLoading()"
     [activeJob]="activeJob()"
     [activeJobTitle]="activeJobTitle()"
-    [recentHistory]="recentJobHistory()"
   ></app-job-status-panel>
 
   <app-toast-stack [toasts]="toasts()" (dismiss)="dismissToast($event)"></app-toast-stack>

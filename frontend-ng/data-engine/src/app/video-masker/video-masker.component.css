@@ -491,21 +491,6 @@ button:disabled {
   font-size: 0.86rem;
 }
 
-.progress-history {
-  margin-top: 10px;
-  padding-top: 8px;
-  border-top: 1px solid #e0e0e0;
-  color: #666;
-  font-size: 0.8rem;
-  line-height: 1.35;
-}
-
-.progress-history-title {
-  margin-bottom: 4px;
-  color: #444;
-  font-weight: 700;
-}
-
 .toast-stack {
   position: fixed;
   right: 16px;

@@ -260,6 +260,18 @@ describe('VideoMaskerComponent sync contract', () => {
     expect(fixture.nativeElement.textContent).not.toContain('Run CoTracker');
   });
 
+  it('renders displayed frame text without target text next to the frame scrubber', () => {
+    component.isInitialized.set(true);
+    component.numFrames.set(12);
+    component.targetFrameIdx.set(4);
+    component.displayedFrameIdx.set(4);
+
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.textContent).not.toContain('Target:');
+    expect(fixture.nativeElement.textContent).toContain('Displayed: 4 / 11');
+  });
+
   it('starts a video init job, polls completion, and applies the result', async () => {
     backendMock.initVideoState.mockReturnValue(
       of({

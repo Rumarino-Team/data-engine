@@ -56,9 +56,5 @@
     <div class="progress-message">
       {{ activeJob?.message || 'Waiting for backend job status...' }}
     </div>
-    <div class="progress-history" *ngIf="recentHistory.length">
-      <div class="progress-history-title">Recent activity</div>
-      <div *ngFor="let entry of recentHistory">{{ entry.message }}</div>
-    </div>
   </div>
 </div>

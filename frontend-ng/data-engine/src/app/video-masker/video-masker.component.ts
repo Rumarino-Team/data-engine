@@ -1,4 +1,4 @@
-import { Component, ElementRef, OnDestroy, ViewChild } from '@angular/core';
+import { Component, ElementRef, OnDestroy, ViewChild, isDevMode } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { BackendService } from '../services/backend.service';
@@ -28,6 +28,7 @@ export class VideoMaskerComponent extends VideoMaskerFacade implements OnDestroy
   @ViewChild('canvas') declare canvasRef: ElementRef<HTMLCanvasElement>;
   @ViewChild('videoFileInput') declare videoFileInputRef?: ElementRef<HTMLInputElement>;
   @ViewChild('framesDirInput') declare framesDirInputRef?: ElementRef<HTMLInputElement>;
+  readonly showDebugUi = isDevMode();
 
   constructor(
     backend: BackendService,
