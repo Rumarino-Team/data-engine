@@ -1,0 +1,49 @@
+<div class="loading-overlay" *ngIf="isLoading">
+  <div class="progress-panel">
+    <div class="progress-title">{{ activeJobTitle || 'Processing' }}</div>
+    <div class="progress-stage">{{ activeJob?.stage_label || 'Starting operation' }}</div>
+    <div
+      class="progress-context"
+      *ngIf="
+        activeJob?.window_count ||
+        (activeJob?.frame_idx !== null && activeJob?.frame_idx !== undefined)
+      "
+    >
+      <span *ngIf="activeJob?.window_count"
+        >Window {{ activeJob?.window_index }} of {{ activeJob?.window_count }}</span
+      >
+      <span *ngIf="activeJob?.frame_idx !== null && activeJob?.frame_idx !== undefined"
+        >Frame {{ activeJob?.frame_idx }}</span
+      >
+    </div>
+    <div
+      class="progress-track"
+      [class.indeterminate]="activeJob?.progress === null || activeJob?.progress === undefined"
+    >
+      <div
+        class="progress-fill"
+        [style.width.%]="
+          activeJob?.progress !== null && activeJob?.progress !== undefined
+            ? (activeJob?.progress || 0) * 100
+            : 35
+        "
+      ></div>
+    </div>
+    <div class="progress-meta">
+      <span *ngIf="activeJob?.progress !== null && activeJob?.progress !== undefined"
+        >{{ (activeJob?.progress || 0) * 100 | number: '1.0-0' }}%</span
+      >
+      <span
+        *ngIf="activeJob?.current !== null && activeJob?.current !== undefined && activeJob?.total"
+        >{{ activeJob?.current }} / {{ activeJob?.total }}</span
+      >
+    </div>
+    <div class="progress-message">
+      {{ activeJob?.message || 'Waiting for backend job status...' }}
+    </div>
+    <div class="progress-history" *ngIf="recentHistory.length">
+      <div class="progress-history-title">Recent activity</div>
+      <div *ngFor="let entry of recentHistory">{{ entry.message }}</div>
+    </div>
+  </div>
+</div>
