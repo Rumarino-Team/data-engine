@@ -12,7 +12,7 @@ const std::string BASE_URL = "http://localhost:8000";
 const std::string BEDROOM_ZIP_URL =
     "https://dl.fbaipublicfiles.com/segment_anything_2/assets/bedroom.zip";
 const std::string BEDROOM_DIR = "tests/bedroom";
-const std::string TRACKING_VIDEO_PATH = "apple.mp4";  // relative to repo root
+const std::string TRACKING_VIDEO_PATH = "backend/tests/apple/apple.mp4";  // relative to repo root
 
 void runVideoTests(BackendInterface& backend) {
   std::cout

@@ -1,0 +1,16 @@
+<div class="toast-stack" *ngIf="toasts.length">
+  <div
+    *ngFor="let toast of toasts"
+    class="toast"
+    [class.error]="toast.severity === 'error'"
+    [class.warning]="toast.severity === 'warning'"
+    [class.info]="toast.severity === 'info'"
+    [class.success]="toast.severity === 'success'"
+  >
+    <div>
+      <strong>{{ toast.title }}</strong>
+      <p>{{ toast.message }}</p>
+    </div>
+    <button type="button" (click)="dismiss.emit(toast.id)" aria-label="Dismiss message">x</button>
+  </div>
+</div>

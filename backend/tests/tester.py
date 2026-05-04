@@ -1,34 +1,196 @@
 import base64
 import os
+import signal
 import subprocess
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
 import json
 import zipfile
+import shutil
 
 import requests
 import numpy as np
 
 # Configuration
-BASE_URL = "http://127.0.0.1:8000"
+BASE_URL = os.getenv("DATA_ENGINE_BASE_URL", "http://127.0.0.1:8000")
 BEDROOM_ZIP_URL = "https://dl.fbaipublicfiles.com/segment_anything_2/assets/bedroom.zip"
-BEDROOM_DIR = "bedroom"
-VIDEO_DIR = "bedroom"  # Will use bedroom frames for video tests
-TRACKING_VIDEO_PATH = "../../apple.mp4"
-API_FILE = "../api.py"
+SCRIPT_DIR = Path(__file__).resolve().parent
+BACKEND_DIR = SCRIPT_DIR.parent
+PROJECT_ROOT = BACKEND_DIR.parent
+TEST_BEDROOM_DIR = SCRIPT_DIR / "bedroom"
+TEST_APPLE_DIR = SCRIPT_DIR / "apple"
+
+BEDROOM_DIR = Path(
+    os.path.expandvars(
+        os.path.expanduser(
+            os.getenv("DATA_ENGINE_BEDROOM_DIR", str(TEST_BEDROOM_DIR))
+        )
+    )
+)
+VIDEO_DIR = BEDROOM_DIR  # Will use bedroom frames for video tests
+APPLE_SOURCE_VIDEO_PATH = Path(
+    os.path.expandvars(
+        os.path.expanduser(
+            os.getenv("DATA_ENGINE_APPLE_SOURCE_VIDEO", str(PROJECT_ROOT / "apple.mp4"))
+        )
+    )
+)
+TRACKING_VIDEO_PATH = Path(
+    os.path.expandvars(
+        os.path.expanduser(
+            os.getenv("DATA_ENGINE_TRACKING_VIDEO", str(TEST_APPLE_DIR / "apple.mp4"))
+        )
+    )
+)
+API_FILE = Path(
+    os.path.expandvars(
+        os.path.expanduser(
+            os.getenv("DATA_ENGINE_API_FILE", str(BACKEND_DIR / "api.py"))
+        )
+    )
+)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+ONLINE_MODE = _env_bool("DATA_ENGINE_ONLINE_MODE", True)
+ONLINE_BATCH_SIZE = int(os.getenv("DATA_ENGINE_BATCH_SIZE", "32"))
+OFFLOAD_VIDEO_TO_CPU = _env_bool("DATA_ENGINE_OFFLOAD_VIDEO_TO_CPU", True)
+OFFLOAD_STATE_TO_CPU = _env_bool("DATA_ENGINE_OFFLOAD_STATE_TO_CPU", False)
+JOB_POLL_INTERVAL_SECONDS = float(os.getenv("DATA_ENGINE_JOB_POLL_INTERVAL", "0.5"))
+JOB_TIMEOUT_SECONDS = float(os.getenv("DATA_ENGINE_JOB_TIMEOUT", "1800"))
+
+
+def _print_job_progress(job):
+    stage_label = job.get("stage_label") or job.get("stage") or "Working"
+    progress = job.get("progress")
+    current = job.get("current")
+    total = job.get("total")
+    window_index = job.get("window_index")
+    window_count = job.get("window_count")
+    frame_idx = job.get("frame_idx")
+    history = job.get("stage_history") or []
+    message = job.get("message") or ""
+
+    parts = [stage_label]
+    if window_index is not None and window_count:
+        parts.append(f"Window {window_index}/{window_count}")
+    if frame_idx is not None:
+        parts.append(f"Frame {frame_idx}")
+    if isinstance(progress, (int, float)):
+        parts.append(f"{progress * 100:5.1f}%")
+    if current is not None and total:
+        parts.append(f"{current}/{total}")
+    if message:
+        parts.append(message)
+    if history:
+        latest_history_message = history[-1].get("message")
+        if latest_history_message and latest_history_message != message:
+            parts.append(f"last: {latest_history_message}")
+
+    print("\r  " + " | ".join(parts), end="", flush=True)
+
+
+def wait_for_job(job_start_response, timeout=JOB_TIMEOUT_SECONDS):
+    """Polls a background job until it completes and returns its result payload."""
+    job_id = job_start_response.get("job_id")
+    if not job_id:
+        print(f"Invalid job start response: {job_start_response}")
+        return False, None
+
+    started = time.time()
+    last_status = None
+    while time.time() - started < timeout:
+        response = requests.get(f"{BASE_URL}/jobs/{job_id}")
+        if response.status_code != 200:
+            print(f"\nFailed to poll job {job_id}. Status: {response.status_code}, Response: {response.text}")
+            return False, None
+
+        job = response.json().get("job", {})
+        status = job.get("status")
+        if status != last_status:
+            print(f"\n  Job {job_id}: {status}")
+            last_status = status
+        _print_job_progress(job)
+
+        if status == "completed":
+            print()
+            return True, job.get("result")
+        if status == "failed":
+            print()
+            error = job.get("error") or {}
+            print(f"Job failed: {error.get('message', 'Unknown error')}")
+            if error.get("detail"):
+                print(f"  Detail: {error.get('detail')}")
+            return False, job
+
+        time.sleep(JOB_POLL_INTERVAL_SECONDS)
+
+    print(f"\nTimed out waiting for job {job_id} after {timeout:.1f}s.")
+    return False, None
+
+
+def ensure_clean_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def ensure_apple_test_video() -> bool:
+    """Ensures apple.mp4 is available inside backend/tests/apple so outputs stay there."""
+    ensure_clean_dir(TEST_APPLE_DIR)
+    if TRACKING_VIDEO_PATH.exists():
+        return True
+    if not APPLE_SOURCE_VIDEO_PATH.exists():
+        print(f"Apple source video not found: {APPLE_SOURCE_VIDEO_PATH}")
+        return False
+    try:
+        shutil.copy2(APPLE_SOURCE_VIDEO_PATH, TRACKING_VIDEO_PATH)
+        print(f"Copied apple test video to: {TRACKING_VIDEO_PATH}")
+        return True
+    except Exception as error:
+        print(f"Failed to prepare apple test video: {error}")
+        return False
+
+
+def write_json_output(output_path: Path, payload: dict) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=True, indent=2)
+
+
+def copy_output_into_dir(output_video_path: str, output_dir: Path) -> str:
+    if not output_video_path:
+        return output_video_path
+    source_path = Path(output_video_path)
+    if not source_path.exists():
+        return output_video_path
+    output_dir.mkdir(parents=True, exist_ok=True)
+    target_path = output_dir / source_path.name
+    if source_path.resolve() == target_path.resolve():
+        return str(target_path)
+    if target_path.exists():
+        target_path.unlink()
+    shutil.move(str(source_path), str(target_path))
+    return str(target_path)
 
 
 def download_and_extract_bedroom():
     """Downloads and extracts the bedroom video frames if not already present."""
-    if os.path.exists(BEDROOM_DIR) and os.path.isdir(BEDROOM_DIR):
+    if BEDROOM_DIR.exists() and BEDROOM_DIR.is_dir():
         # Check if directory has files
-        if os.listdir(BEDROOM_DIR):
+        if any(BEDROOM_DIR.iterdir()):
             print(f"Bedroom directory already exists with files. Skipping download.")
             return True
     
     print(f"Downloading bedroom.zip from {BEDROOM_ZIP_URL}...")
-    zip_path = "bedroom.zip"
+    zip_path = SCRIPT_DIR / "bedroom.zip"
+    extract_root = SCRIPT_DIR
     
     try:
         # Download the file with progress indication
@@ -38,7 +200,7 @@ def download_and_extract_bedroom():
         total_size = int(response.headers.get('content-length', 0))
         downloaded_size = 0
         
-        with open(zip_path, 'wb') as f:
+        with zip_path.open('wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
                 if chunk:
                     f.write(chunk)
@@ -52,12 +214,12 @@ def download_and_extract_bedroom():
         # Extract the zip file
         print(f"Extracting {zip_path}...")
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall('.')
+            zip_ref.extractall(extract_root)
         
         print(f"Extraction complete!")
         
         # Clean up the zip file
-        os.remove(zip_path)
+        zip_path.unlink(missing_ok=True)
         print(f"Cleaned up {zip_path}")
         
         return True
@@ -65,8 +227,7 @@ def download_and_extract_bedroom():
     except Exception as e:
         print(f"\nError downloading or extracting bedroom.zip: {e}")
         # Clean up partial downloads
-        if os.path.exists(zip_path):
-            os.remove(zip_path)
+        zip_path.unlink(missing_ok=True)
         return False
 
 
@@ -88,13 +249,23 @@ def wait_for_server(url, timeout=30):
 def init_video_state(video_dir):
     """Calls the /video/init_state endpoint."""
     url = f"{BASE_URL}/video/init_state"
-    payload = {"video_frames_dir": video_dir}
+    payload = {
+        "video_frames_dir": str(video_dir),
+        "online_mode": ONLINE_MODE,
+        "batch_size": ONLINE_BATCH_SIZE,
+        "offload_video_to_cpu": OFFLOAD_VIDEO_TO_CPU,
+        "offload_state_to_cpu": OFFLOAD_STATE_TO_CPU,
+    }
     response = requests.post(url, json=payload)
     if response.status_code == 200:
-        print(f"Video state initialized successfully for '{video_dir}'.")
+        print(f"Video init job started for '{video_dir}'.")
+        success, result = wait_for_job(response.json())
+        if success:
+            print(f"Video state initialized successfully for '{video_dir}'.")
+        return success
     else:
         print(f"Failed to initialize video state. Status: {response.status_code}, Response: {response.text}")
-    return response.status_code == 200
+    return False
 
 
 def reset_video_state():
@@ -138,20 +309,147 @@ def propagate_in_video(start_frame_idx=None, max_frame_num_to_track=None, revers
     payload = {
         "start_frame_idx": start_frame_idx,
         "max_frame_num_to_track": max_frame_num_to_track,
-        "reverse": reverse
+        "reverse": reverse,
+        "online_mode": ONLINE_MODE,
+        "batch_size": ONLINE_BATCH_SIZE,
+        "include_masks_in_response": False,
     }
     response = requests.post(url, json=payload)
     if response.status_code == 200:
-        response_data = response.json()
-        num_frames = len(response_data.get("video_segments", {}))
+        print("Propagation job started.")
+        success, response_data = wait_for_job(response.json())
+        if not success or response_data is None:
+            return False, response_data
+        online_mode = response_data.get("online_mode")
+        batch_size = response_data.get("batch_size")
+        if online_mode is not None:
+            print(f"Online batching: {'enabled' if online_mode else 'disabled'} (batch_size={batch_size})")
+        num_frames = response_data.get("video_segments_total_frames", len(response_data.get("video_segments", {})))
         saved_paths = response_data.get("saved_mask_paths", {})
         print(f"Propagation successful! Processed {num_frames} frames.")
+        returned_frames = response_data.get("video_segments_returned_frames", len(response_data.get("video_segments", {})))
+        if returned_frames:
+            print(f"Returned {returned_frames} frame masks in API response.")
         print(f"Saved masks for {len(saved_paths)} frames.")
         for frame_idx, paths in saved_paths.items():
             print(f"  Frame {frame_idx}: {paths}")
+        return True, response_data
     else:
         print(f"Failed to propagate. Status: {response.status_code}, Response: {response.text}")
-    return response.status_code == 200, response.json() if response.status_code == 200 else None
+    return False, None
+
+
+def track_prompt_points(add_support_grid=False):
+    """Runs prompt-point tracking from current SAM prompt state and fetches the disk-backed result."""
+    url = f"{BASE_URL}/tracking/track_prompt_points"
+    response = requests.post(url, json={"add_support_grid": bool(add_support_grid)})
+    if response.status_code != 200:
+        print(f"Failed to start prompt tracking. Status: {response.status_code}, Response: {response.text}")
+        return False, None
+
+    print("Prompt tracking job started.")
+    success, job_result = wait_for_job(response.json())
+    if not success or not isinstance(job_result, dict):
+        return False, job_result
+
+    result_id = job_result.get("tracking_result_id")
+    if not result_id:
+        print(f"Prompt tracking job did not return tracking_result_id: {job_result}")
+        return False, job_result
+
+    result_response = requests.get(f"{BASE_URL}/tracking/results/{result_id}")
+    if result_response.status_code != 200:
+        print(
+            f"Failed to fetch tracking result {result_id}. "
+            f"Status: {result_response.status_code}, Response: {result_response.text}"
+        )
+        return False, job_result
+
+    tracking_payload = result_response.json().get("result", {})
+    summary = {
+        "job_result": job_result,
+        "result_id": result_id,
+        "num_points": tracking_payload.get("num_points"),
+        "num_frames": tracking_payload.get("num_frames"),
+        "tracking_mode": tracking_payload.get("tracking_mode"),
+        "first_point": (tracking_payload.get("points") or [{}])[0],
+    }
+    output_path = BEDROOM_DIR / f"prompt_tracking_{result_id}.json"
+    write_json_output(output_path, summary)
+    print(f"Prompt tracking result fetched and summarized at: {output_path}")
+    return True, tracking_payload
+
+
+def restore_bedroom_masks_output(result_payload):
+    """Copy propagated masks back to BEDROOM_DIR/masks to preserve legacy test output location."""
+    if not isinstance(result_payload, dict):
+        return False
+
+    manifest_path_raw = result_payload.get("mask_manifest_path") or result_payload.get("state.mask_manifest_path")
+    if not manifest_path_raw:
+        print("No mask manifest path returned; cannot restore bedroom mask output folder.")
+        return False
+
+    manifest_path = Path(manifest_path_raw)
+    if not manifest_path.exists():
+        print(f"Mask manifest not found: {manifest_path}")
+        return False
+
+    source_masks_dir = manifest_path.parent
+    target_masks_dir = BEDROOM_DIR / "masks"
+
+    try:
+        if target_masks_dir.exists():
+            shutil.rmtree(target_masks_dir)
+        shutil.copytree(source_masks_dir, target_masks_dir)
+        print(f"Restored bedroom masks output to: {target_masks_dir}")
+        return True
+    except Exception as error:
+        print(f"Failed to restore bedroom masks output: {error}")
+        return False
+
+
+def stop_server_process(server_process):
+    """Stops FastAPI server process and its child processes reliably."""
+    if server_process is None:
+        return
+
+    if server_process.poll() is not None:
+        print("Server already stopped.")
+        return
+
+    try:
+        if os.name != "nt":
+            os.killpg(server_process.pid, signal.SIGTERM)
+        else:
+            server_process.terminate()
+    except ProcessLookupError:
+        print("Server process not found during shutdown.")
+        return
+
+    try:
+        server_process.wait(timeout=10)
+        print("Server shut down successfully.")
+        return
+    except subprocess.TimeoutExpired:
+        print("Server did not terminate in time, forcing kill.")
+    except KeyboardInterrupt:
+        print("Interrupted during shutdown, forcing kill.")
+
+    try:
+        if os.name != "nt":
+            os.killpg(server_process.pid, signal.SIGKILL)
+        else:
+            server_process.kill()
+    except ProcessLookupError:
+        pass
+
+    try:
+        server_process.wait(timeout=5)
+    except Exception:
+        pass
+
+    print("Server killed.")
 
 
 def run_video_tests():
@@ -161,7 +459,7 @@ def run_video_tests():
     print("=" * 60)
     
     # Check if video directory exists
-    if not os.path.exists(VIDEO_DIR):
+    if not VIDEO_DIR.exists():
         print(f"\nVideo directory '{VIDEO_DIR}' not found. Skipping video tests.")
         return
     
@@ -218,21 +516,38 @@ def run_video_tests():
     success, result = propagate_in_video()
     
     if success:
+        restore_bedroom_masks_output(result)
         print("\n✓ Video masking test completed successfully!")
     else:
         print("\n✗ Video masking test failed.")
+        reset_video_state()
+        return
+
+    print(f"\nRunning prompt-point tracking from bedroom prompts...")
+    success, tracking_result = track_prompt_points(add_support_grid=False)
+    if success:
+        print(
+            "\n✓ Bedroom prompt tracking test passed "
+            f"({tracking_result.get('num_points', 0)} pts × {tracking_result.get('num_frames', 0)} frames)"
+        )
+    else:
+        print("\n✗ Bedroom prompt tracking test failed.")
     
     # Reset video state for cleanup
     reset_video_state()
 
 
-def load_tracking_video(video_path):
+def load_tracking_video(video_path, model_name=None):
     """Calls the /tracking/load_video endpoint."""
     url = f"{BASE_URL}/tracking/load_video"
-    response = requests.post(url, json={"video_path": video_path})
+    payload = {"video_path": str(video_path)}
+    if model_name is not None:
+        payload["model_name"] = model_name
+    response = requests.post(url, json=payload)
     if response.status_code == 200:
         response_data = response.json()
         print(f"Video loaded successfully: {video_path}")
+        print(f"  Model: {response_data.get('model_name', 'N/A')}")
         print(f"  Shape: {response_data.get('shape', [])}")
         print(f"  Num frames: {response_data.get('num_frames', 0)}")
     else:
@@ -240,7 +555,48 @@ def load_tracking_video(video_path):
     return response.status_code == 200, response.json() if response.status_code == 200 else None
 
 
-def track_grid(grid_size=15, add_support_grid=True):
+def _ensure_mode_labeled_output_path(output_video_path: str, expected_mode: str | None) -> str:
+    """Ensures the output filename includes the expected mode label when requested."""
+    if not output_video_path:
+        return output_video_path
+    if expected_mode is None:
+        return output_video_path
+
+    output_path = Path(output_video_path)
+    name = output_path.name
+    opposite_mode = "online" if expected_mode == "offline" else "offline"
+
+    if f"_{expected_mode}_" in name:
+        return output_video_path
+
+    if f"_{opposite_mode}_" in name:
+        print(
+            f"Warning: Output file appears labeled as {opposite_mode}: {output_video_path}. "
+            f"Leaving filename unchanged."
+        )
+        return output_video_path
+
+    stem = output_path.stem
+    suffix = output_path.suffix
+
+    # Insert mode before trailing timestamp if present: ..._<ts>.mp4
+    prefix, sep, maybe_ts = stem.rpartition("_")
+    if sep and maybe_ts.isdigit() and prefix:
+        new_stem = f"{prefix}_{expected_mode}_{maybe_ts}"
+    else:
+        new_stem = f"{stem}_{expected_mode}"
+
+    new_path = output_path.with_name(f"{new_stem}{suffix}")
+
+    if output_path.exists() and new_path != output_path:
+        output_path.rename(new_path)
+        print(f"Renamed output file to include mode label: {new_path}")
+        return str(new_path)
+
+    return output_video_path
+
+
+def track_grid(grid_size=15, add_support_grid=True, expected_mode=None, output_dir=None):
     """Calls the /tracking/track_grid endpoint."""
     url = f"{BASE_URL}/tracking/track_grid"
     payload = {
@@ -250,6 +606,14 @@ def track_grid(grid_size=15, add_support_grid=True):
     response = requests.post(url, json=payload)
     if response.status_code == 200:
         response_data = response.json()
+        if expected_mode:
+            response_data["output_video_path"] = _ensure_mode_labeled_output_path(
+                response_data.get("output_video_path", ""), expected_mode
+            )
+        if output_dir:
+            response_data["output_video_path"] = copy_output_into_dir(
+                response_data.get("output_video_path", ""), Path(output_dir)
+            )
         print(f"Grid tracking completed successfully!")
         print(f"  Num points: {response_data.get('num_points', 0)}")
         print(f"  Num frames: {response_data.get('num_frames', 0)}")
@@ -259,7 +623,7 @@ def track_grid(grid_size=15, add_support_grid=True):
     return response.status_code == 200, response.json() if response.status_code == 200 else None
 
 
-def track_points(queries, add_support_grid=True):
+def track_points(queries, add_support_grid=True, expected_mode=None, output_dir=None):
     """Calls the /tracking/track_points endpoint."""
     url = f"{BASE_URL}/tracking/track_points"
     payload = {
@@ -269,6 +633,14 @@ def track_points(queries, add_support_grid=True):
     response = requests.post(url, json=payload)
     if response.status_code == 200:
         response_data = response.json()
+        if expected_mode:
+            response_data["output_video_path"] = _ensure_mode_labeled_output_path(
+                response_data.get("output_video_path", ""), expected_mode
+            )
+        if output_dir:
+            response_data["output_video_path"] = copy_output_into_dir(
+                response_data.get("output_video_path", ""), Path(output_dir)
+            )
         print(f"Point tracking completed successfully!")
         print(f"  Num points: {response_data.get('num_points', 0)}")
         print(f"  Num frames: {response_data.get('num_frames', 0)}")
@@ -278,72 +650,93 @@ def track_points(queries, add_support_grid=True):
     return response.status_code == 200, response.json() if response.status_code == 200 else None
 
 
-def run_tracking_tests():
-    """Runs the tracking test suite."""
+def run_apple_tracking_tests():
+    """Runs apple.mp4 CoTracker tests using the current backend-supported model."""
+    generated_outputs = []
+
     print("\n" + "=" * 60)
-    print("RUNNING TRACKING TESTS")
+    print("RUNNING APPLE TRACKING TESTS")
     print("=" * 60)
-    
-    # Check if tracking video exists
-    if not os.path.exists(TRACKING_VIDEO_PATH):
-        print(f"\nTracking video '{TRACKING_VIDEO_PATH}' not found. Skipping tracking tests.")
+
+    if not ensure_apple_test_video():
         return
-    
-    # Test 1: Load video
-    print(f"\n--- Test 1: Load tracking video ---")
+
+    print(f"\n--- Apple Test 1: Load tracking video ---")
     success, result = load_tracking_video(TRACKING_VIDEO_PATH)
-    
+
     if not success:
-        print("Failed to load tracking video. Skipping remaining tracking tests.")
+        print("Failed to load apple tracking video. Skipping remaining tests.")
         return
-    
+
     time.sleep(1)
-    
-    # Test 2: Track grid
-    print(f"\n--- Test 2: Track grid of points ---")
-    success, result = track_grid(grid_size=10, add_support_grid=True)
-    
+
+    print(f"\n--- Apple Test 2: Track grid of points ---")
+    success, result = track_grid(grid_size=10, add_support_grid=True, output_dir=TEST_APPLE_DIR)
+
     if success:
-        print("\n✓ Grid tracking test completed successfully!")
+        num_points = result.get("num_points", 0)
+        num_frames = result.get("num_frames", 0)
+        if result.get("output_video_path"):
+            generated_outputs.append(result.get("output_video_path"))
+        print(f"\n✓ Apple grid tracking test passed  ({num_points} pts × {num_frames} frames)")
     else:
-        print("\n✗ Grid tracking test failed.")
-    
+        print(f"\n✗ Apple grid tracking test failed.")
+
     time.sleep(1)
-    
-    # Test 3: Track specific points
-    print(f"\n--- Test 3: Track specific query points ---")
-    # Define some query points: [frame, x, y]
-    # Let's track a few points starting from frame 0
+
+    print(f"\n--- Apple Test 3: Restored legacy point tracking ---")
     queries = [
-        [0, 400, 350],  # Center point
-        [10, 600, 500],  # Upper-left area
-        [20, 750, 600],  # Lower-right area
-        [30, 900, 200]
+        [0, 400, 350],
+        [10, 600, 500],
+        [20, 750, 600],
+        [30, 900, 200],
     ]
-    success, result = track_points(queries, add_support_grid=False)
-    
+    success, result = track_points(queries, add_support_grid=False, output_dir=TEST_APPLE_DIR)
+
     if success:
-        print("\n✓ Point tracking test completed successfully!")
+        num_points = result.get("num_points", 0)
+        num_frames = result.get("num_frames", 0)
+        if result.get("output_video_path"):
+            generated_outputs.append(result.get("output_video_path"))
+        write_json_output(
+            TEST_APPLE_DIR / "apple_legacy_points_summary.json",
+            {
+                "queries": queries,
+                "num_points": num_points,
+                "num_frames": num_frames,
+                "output_video_path": result.get("output_video_path"),
+            },
+        )
+        print(f"\n✓ Apple legacy point tracking test passed  ({num_points} pts × {num_frames} frames)")
     else:
-        print("\n✗ Point tracking test failed.")
-    
+        print(f"\n✗ Apple legacy point tracking test failed.")
+
     time.sleep(1)
-    
-    # Test 4: Track points with support grid
-    print(f"\n--- Test 4: Track points with support grid ---")
+
+    print(f"\n--- Apple Test 4: Track point with support grid ---")
     queries = [
-        [0, 320, 240],  # Single point with support grid
+        [0, 320, 240],
     ]
-    success, result = track_points(queries, add_support_grid=True)
-    
+    success, result = track_points(queries, add_support_grid=True, output_dir=TEST_APPLE_DIR)
+
     if success:
-        print("\n✓ Point tracking with support grid completed successfully!")
+        num_points = result.get("num_points", 0)
+        num_frames = result.get("num_frames", 0)
+        if result.get("output_video_path"):
+            generated_outputs.append(result.get("output_video_path"))
+        print(f"\n✓ Apple point tracking (+ support grid) test passed  ({num_points} pts × {num_frames} frames)")
     else:
-        print("\n✗ Point tracking with support grid failed.")
-    
-    print("\n" + "=" * 60)
-    print("TRACKING TESTS COMPLETED")
-    print("=" * 60)
+        print(f"\n✗ Apple point tracking (+ support grid) test failed.")
+
+    if generated_outputs:
+        print(f"\nApple generated outputs:")
+        for output_path in generated_outputs:
+            print(f"  - {output_path}")
+
+
+def run_tracking_tests():
+    """Runs the current tracking integration suite."""
+    run_apple_tracking_tests()
 
 
 if __name__ == "__main__":
@@ -354,9 +747,17 @@ if __name__ == "__main__":
     if not download_and_extract_bedroom():
         print("Failed to download bedroom data. Exiting.")
         exit(1)
+
+    if not API_FILE.exists():
+        print(f"API file not found: {API_FILE}")
+        exit(1)
     
     # Start the FastAPI server as a background process
-    server_process = subprocess.Popen(["fastapi", "dev", API_FILE])
+    server_process = subprocess.Popen(
+        [sys.executable, "-m", "fastapi", "dev", str(API_FILE)],
+        cwd=str(BACKEND_DIR),
+        start_new_session=(os.name != "nt"),
+    )
     print(f"\nStarting FastAPI server with PID: {server_process.pid}...")
 
     try:
@@ -378,12 +779,4 @@ if __name__ == "__main__":
     finally:
         # Stop the server
         print("\nShutting down the server...")
-        server_process.terminate()
-        try:
-            # Wait for the process to terminate
-            server_process.wait(timeout=10)
-            print("Server shut down successfully.")
-        except subprocess.TimeoutExpired:
-            print("Server did not terminate in time, killing it.")
-            server_process.kill()
-            print("Server killed.")
+        stop_server_process(server_process)

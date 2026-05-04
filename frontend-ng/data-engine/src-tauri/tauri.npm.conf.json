@@ -1,0 +1,33 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Data Engine",
+  "version": "0.0.0",
+  "identifier": "com.rumarino.dataengine",
+  "build": {
+    "beforeDevCommand": "sh -c 'npm run start -- --host 127.0.0.1 --port 5173 &' && sleep 3",
+    "devUrl": "http://127.0.0.1:5173",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist/data-engine/browser"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Data Engine",
+        "width": 1600,
+        "height": 1000,
+        "minWidth": 1200,
+        "minHeight": 720,
+        "resizable": true
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["deb", "rpm"],
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.ico"
+    ]
+  }
+}

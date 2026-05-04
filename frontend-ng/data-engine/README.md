@@ -12,6 +12,37 @@ ng serve
 
 Once the server is running, open your browser and navigate to `http://localhost:4200/`. The application will automatically reload whenever you modify any of the source files.
 
+The frontend expects the FastAPI backend to be running separately and defaults to `http://127.0.0.1:8000`. You can override that URL from the compact API control in the top bar.
+
+## Desktop Tauri workflow
+
+The same Angular app can also run as a Tauri desktop application.
+
+1. Install dependencies with either Bun or npm:
+
+```bash
+bun install
+npm install
+```
+
+2. Start the backend separately.
+
+3. Start the desktop app in development:
+
+```bash
+bun run tauri:dev
+npm run tauri:dev:npm
+```
+
+4. Build a packaged desktop app:
+
+```bash
+bun run tauri:build
+npm run tauri:build:npm
+```
+
+The desktop build adds native file and directory pickers, but it still talks to the same HTTP backend API.
+
 ## Code scaffolding
 
 Angular CLI includes powerful code scaffolding tools. To generate a new component, run:

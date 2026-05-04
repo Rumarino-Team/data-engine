@@ -1,66 +1,247 @@
 <div class="video-masker-container">
-	<div class="top-bar">
-		<input type="text" [(ngModel)]="videoDir" placeholder="Enter video frames directory path"
-			[disabled]="isInitialized()">
-		<button (click)="initVideo()" [disabled]="isInitialized() || isLoading()">Load Video</button>
-	</div>
+  <div class="top-bar">
+    <select
+      class="load-source-select"
+      [ngModel]="loadSourceMode()"
+      (ngModelChange)="onLoadSourceModeChange($event)"
+      [disabled]="isInitialized() || isLoading()"
+    >
+      <option value="frames_dir">Frames Directory</option>
+      <option value="video_file">Video File</option>
+      <option value="saved_session_dir">Saved Session</option>
+    </select>
+    <input
+      type="text"
+      [ngModel]="videoDir()"
+      (ngModelChange)="onVideoDirChange($event)"
+      [placeholder]="getLoadPathPlaceholder()"
+      [disabled]="isInitialized() || isLoading()"
+    />
+    <button (click)="browseSelectedSource()" [disabled]="isInitialized() || isLoading()">
+      {{ getBrowseLabel() }}
+    </button>
+    <button (click)="initVideo()" [disabled]="isInitialized() || isLoading() || !videoDir().trim()">
+      Load
+    </button>
+    <div class="load-mode-hint" *ngIf="getLoadModeHint()">{{ getLoadModeHint() }}</div>
+    <div class="api-url-controls">
+      <span
+        class="api-status-pill"
+        [class.online]="apiHealthStatus() === 'online'"
+        [class.offline]="apiHealthStatus() === 'offline'"
+        [class.checking]="apiHealthStatus() === 'checking'"
+      >
+        {{
+          apiHealthStatus() === 'online'
+            ? 'Online'
+            : apiHealthStatus() === 'offline'
+              ? 'Offline'
+              : 'Checking'
+        }}
+      </span>
+      <input
+        type="text"
+        class="api-url-input"
+        [ngModel]="apiUrlInput()"
+        (ngModelChange)="onApiUrlChange($event)"
+        placeholder="Backend URL"
+        [disabled]="isLoading()"
+      />
+      <button
+        (click)="applyApiUrl()"
+        [disabled]="isLoading() || !apiUrlInput().trim() || !isApiUrlDirty()"
+      >
+        Apply API
+      </button>
+      <button
+        (click)="resetApiUrl()"
+        [disabled]="isLoading() || apiUrlInput() === 'http://127.0.0.1:8000'"
+      >
+        Reset API
+      </button>
+    </div>
 
-	<div class="main-area">
-		<div class="canvas-container">
-			<canvas #canvas (click)="onCanvasClick($event)"></canvas>
-		</div>
+    <input
+      #framesDirInput
+      type="file"
+      webkitdirectory
+      directory
+      multiple
+      hidden
+      (change)="onFramesDirSelected($event)"
+      [disabled]="isInitialized() || isLoading()"
+    />
+    <input
+      #videoFileInput
+      type="file"
+      accept=".mp4,.mov,.avi,.mkv,.webm,.m4v"
+      hidden
+      (change)="onVideoFileSelected($event)"
+      [disabled]="isInitialized() || isLoading()"
+    />
+  </div>
 
-		<div class="sidebar">
-			<div class="section">
-				<h3>Objects</h3>
-				<div class="object-list">
-					<div *ngFor="let obj of objects()" class="object-item"
-						[class.selected]="selectedObjectId() === obj.id" (click)="selectedObjectId.set(obj.id)">
-						<span class="color-indicator" [style.background-color]="obj.color"></span>
-						{{ obj.name }}
-					</div>
-				</div>
-				<div class="button-group">
-					<button (click)="addObject()">Add Object</button>
-					<button (click)="removeObject()" [disabled]="selectedObjectId() === null">Remove</button>
-				</div>
-			</div>
+  <div class="main-area">
+    <div class="canvas-container">
+      <canvas #canvas (click)="onCanvasClick($event)"></canvas>
+    </div>
 
-			<div class="section">
-				<h3>Tools</h3>
-				<div class="tool-group">
-					<label>
-						<input type="radio" name="mode" [value]="'positive'"
-							[checked]="interactionMode() === 'positive'" (change)="interactionMode.set('positive')">
-						Positive Point
-					</label>
-					<label>
-						<input type="radio" name="mode" [value]="'negative'"
-							[checked]="interactionMode() === 'negative'" (change)="interactionMode.set('negative')">
-						Negative Point
-					</label>
-				</div>
-			</div>
+    <div class="sidebar">
+      <div class="section">
+        <h3>Objects</h3>
+        <div class="object-list">
+          <div
+            *ngFor="let obj of objects()"
+            class="object-item"
+            [class.selected]="selectedObjectId() === obj.id"
+            (click)="selectedObjectId.set(obj.id)"
+          >
+            <span class="color-indicator" [style.background-color]="obj.color"></span>
+            {{ obj.name }}
+          </div>
+        </div>
+        <div class="button-group">
+          <button (click)="addObject()">Add Object</button>
+          <button (click)="removeObject()" [disabled]="selectedObjectId() === null">Remove</button>
+          <button (click)="removeAllObjects()" [disabled]="objects().length === 0">
+            Remove All Objects
+          </button>
+        </div>
+      </div>
 
-			<div class="section">
-				<h3>Actions</h3>
-				<button (click)="propagate()" [disabled]="!isInitialized() || isLoading()">Propagate Masks</button>
-				<button (click)="clearMasks()" [disabled]="!isInitialized() || isLoading()">Clear All Masks</button>
-				<button (click)="save()" [disabled]="!isInitialized()">Save (Placeholder)</button>
-			</div>
-		</div>
-	</div>
+      <div class="section">
+        <h3>Tools</h3>
+        <div class="tool-group">
+          <label [class.selected]="interactionMode() === 'positive'">
+            <input
+              type="radio"
+              name="mode"
+              [value]="'positive'"
+              [checked]="interactionMode() === 'positive'"
+              (change)="interactionMode.set('positive')"
+            />
+            Positive Point
+          </label>
+          <label [class.selected]="interactionMode() === 'negative'">
+            <input
+              type="radio"
+              name="mode"
+              [value]="'negative'"
+              [checked]="interactionMode() === 'negative'"
+              (change)="interactionMode.set('negative')"
+            />
+            Negative Point
+          </label>
+        </div>
+      </div>
 
-	<div class="bottom-bar" *ngIf="isInitialized()">
-		<div class="scrubber">
-			<span>Frame: {{ currentFrameIdx() }} / {{ numFrames() - 1 }}</span>
-			<input type="range" [min]="0" [max]="numFrames() - 1" [ngModel]="currentFrameIdx()"
-				(ngModelChange)="currentFrameIdx.set($event); loadFrame($event)">
-		</div>
-	</div>
+      <div class="section action-section">
+        <h3>Actions</h3>
+        <div class="action-panel">
+          <button
+            class="panel-action-btn"
+            (click)="runTracking()"
+            [disabled]="!isInitialized() || isLoading()"
+          >
+            Track Prompt Points
+          </button>
+          <button
+            class="panel-action-btn"
+            (click)="propagate()"
+            [disabled]="!isInitialized() || isLoading()"
+          >
+            Propagate Masks
+          </button>
+          <button
+            class="panel-action-btn panel-action-btn-danger"
+            (click)="clearMasks()"
+            [disabled]="!isInitialized() || isLoading()"
+          >
+            Clear All Masks
+          </button>
+        </div>
+        <label>
+          Tracking Overlay
+          <select
+            [ngModel]="trackingOverlayStyle()"
+            (ngModelChange)="trackingOverlayStyle.set($event)"
+            [disabled]="isLoading()"
+          >
+            <option value="point">Point Only</option>
+            <option value="short">Short Trail</option>
+            <option value="full">Full Trail</option>
+          </select>
+        </label>
+        <label class="inline-checkbox-label">
+          Use Support Grid
+          <input
+            type="checkbox"
+            [checked]="trackingUseSupportGrid()"
+            (change)="trackingUseSupportGrid.set($any($event.target).checked)"
+            [disabled]="isLoading()"
+          />
+        </label>
+        <div class="save-panel">
+          <label class="save-controls">
+            <span>Save Current Session</span>
+            <input
+              type="text"
+              [ngModel]="saveName()"
+              (ngModelChange)="onSaveNameChange($event)"
+              placeholder="Session Name"
+              [disabled]="!isInitialized() || isLoading()"
+            />
+          </label>
+          <button
+            class="action-button action-button-primary"
+            (click)="save()"
+            [disabled]="!isInitialized() || isLoading() || !saveName().trim()"
+          >
+            Save
+          </button>
+        </div>
+      </div>
 
-	<div class="loading-overlay" *ngIf="isLoading()">
-		<div class="loading-spinner"></div>
-		<div class="loading-text">Processing...</div>
-	</div>
+      <div class="section debug-section" *ngIf="isInitialized() && showDebugUi">
+        <h3>Sync Debug</h3>
+        <div class="debug-grid">
+          <span>Target frame</span><strong>{{ targetFrameIdx() }}</strong>
+          <span>Displayed frame</span><strong>{{ displayedFrameIdx() }}</strong>
+          <span>Last request frame</span><strong>{{ lastClickRequestFrameIdx() ?? 'n/a' }}</strong>
+          <span>Last response frame</span
+          ><strong>{{ lastBackendResponseFrameIdx() ?? 'n/a' }}</strong>
+          <span>Response frame file</span><strong>{{ lastBackendResponseFrameFile() }}</strong>
+          <span>State epoch</span><strong>{{ stateEpoch() }}</strong> <span>Response epoch</span
+          ><strong>{{ lastBackendResponseStateEpoch() ?? 'n/a' }}</strong> <span>Last object</span
+          ><strong>{{ lastDebugObjectId() ?? 'n/a' }}</strong> <span>Last pixel count</span
+          ><strong>{{ lastMaskPixelCount() ?? 'n/a' }}</strong> <span>Fallback used</span
+          ><strong>{{ lastFallbackUsed() ? 'yes' : 'no' }}</strong> <span>Last mask source</span
+          ><strong>{{ lastMaskSource() }}</strong>
+        </div>
+        <p class="debug-discard" *ngIf="lastDiscardReason()">{{ lastDiscardReason() }}</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="bottom-bar" *ngIf="isInitialized()">
+    <div class="scrubber">
+      <span>Displayed: {{ displayedFrameIdx() }} / {{ numFrames() - 1 }}</span>
+      <input
+        type="range"
+        [min]="0"
+        [max]="numFrames() - 1"
+        [ngModel]="targetFrameIdx()"
+        (ngModelChange)="onScrubberFrameChange($event)"
+        [disabled]="isLoading() || isPointRequestInFlight()"
+      />
+    </div>
+  </div>
+
+  <app-job-status-panel
+    [isLoading]="isLoading()"
+    [activeJob]="activeJob()"
+    [activeJobTitle]="activeJobTitle()"
+  ></app-job-status-panel>
+
+  <app-toast-stack [toasts]="toasts()" (dismiss)="dismissToast($event)"></app-toast-stack>
 </div>

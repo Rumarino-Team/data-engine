@@ -1,0 +1,18 @@
+[package]
+name = "data-engine-desktop"
+version = "0.0.0"
+description = "Desktop wrapper for the Data Engine Angular frontend"
+authors = ["Rumarino Team"]
+edition = "2021"
+
+[lib]
+name = "data_engine_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+
