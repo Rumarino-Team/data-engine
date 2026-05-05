@@ -7,8 +7,6 @@ on:
       - ".github/workflows/frontend-ng-ci.yml"
   push:
     branches: [main]
-    tags:
-      - "v*"
     paths:
       - "frontend-ng/data-engine/**"
       - ".github/workflows/frontend-ng-ci.yml"
@@ -100,14 +98,22 @@ jobs:
 
   publish-release:
     needs: tauri-build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: release-artifacts
 
-      - name: Create GitHub Release and upload assets
+      - name: Publish rolling prerelease
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: Release
+          name: Rolling Release (main)
+          prerelease: true
+          make_latest: false
           files: release-artifacts/**/*
+          generate_release_notes: false
+          body: |
+            Rolling prerelease from `main`.
+            Commit: ${{ github.sha }}
