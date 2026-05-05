@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "sh -c 'bun run start -- --host 127.0.0.1 --port 5173 &' && sleep 3",
     "devUrl": "http://127.0.0.1:5173",
-    "beforeBuildCommand": "bun run build",
+    "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist/data-engine/browser"
   },
   "app": {
