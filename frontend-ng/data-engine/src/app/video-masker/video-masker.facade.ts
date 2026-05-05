@@ -224,19 +224,21 @@ export class VideoMaskerFacade implements OnDestroy {
       return {};
     }
     const maxFrame = this.numFrames() - 1;
-    const fallbackFrame = this.frameRendererService.clampFrameIndex(this.targetFrameIdx(), maxFrame);
-    const normalizedStart = this.frameRendererService.clampFrameIndex(
-      start ?? end ?? fallbackFrame,
-      maxFrame,
-    );
-    const normalizedEnd = this.frameRendererService.clampFrameIndex(
-      end ?? start ?? fallbackFrame,
-      maxFrame,
-    );
-    return {
-      start_frame_idx: Math.min(normalizedStart, normalizedEnd),
-      end_frame_idx: Math.max(normalizedStart, normalizedEnd),
-    };
+    const normalizedStart =
+      start === null ? null : this.frameRendererService.clampFrameIndex(start, maxFrame);
+    const normalizedEnd =
+      end === null ? null : this.frameRendererService.clampFrameIndex(end, maxFrame);
+
+    if (normalizedStart !== null && normalizedEnd !== null) {
+      return {
+        start_frame_idx: Math.min(normalizedStart, normalizedEnd),
+        end_frame_idx: Math.max(normalizedStart, normalizedEnd),
+      };
+    }
+    if (normalizedStart !== null) {
+      return { start_frame_idx: normalizedStart };
+    }
+    return { end_frame_idx: normalizedEnd! };
   }
 
   private markObjectAsLiveEdited(frameIdx: number, objId: number): void {
@@ -1003,6 +1005,18 @@ export class VideoMaskerFacade implements OnDestroy {
     }
     const maxFrame = this.numFrames() - 1;
     this.targetFrameIdx.set(this.frameRendererService.clampFrameIndex(parsed, maxFrame));
+  }
+
+  rangeMarkerLeft(frameIdx: number | null): string {
+    if (frameIdx === null) {
+      return '0%';
+    }
+    const maxFrame = this.numFrames() - 1;
+    if (maxFrame <= 0) {
+      return '0%';
+    }
+    const normalized = this.frameRendererService.clampFrameIndex(frameIdx, maxFrame);
+    return `${(normalized / maxFrame) * 100}%`;
   }
 
   setRangeStartToPlayhead(): void {

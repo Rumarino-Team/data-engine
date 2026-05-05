@@ -270,14 +270,30 @@
   <div class="bottom-bar" *ngIf="isInitialized()">
     <div class="scrubber">
       <span class="scrubber-frame-label">Displayed: {{ displayedFrameIdx() }} / {{ numFrames() - 1 }}</span>
-      <input
-        type="range"
-        [min]="0"
-        [max]="numFrames() - 1"
-        [ngModel]="targetFrameIdx()"
-        (ngModelChange)="onScrubberFrameChange($event)"
-        [disabled]="isLoading() || isPointRequestInFlight()"
-      />
+      <div class="scrubber-range-wrap">
+        <div class="scrubber-track-overlay" aria-hidden="true">
+          <span
+            *ngIf="rangeStartFrameIdx() !== null"
+            class="range-marker range-marker-start"
+            [style.left]="rangeMarkerLeft(rangeStartFrameIdx())"
+            title="Start frame"
+          ></span>
+          <span
+            *ngIf="rangeEndFrameIdx() !== null"
+            class="range-marker range-marker-end"
+            [style.left]="rangeMarkerLeft(rangeEndFrameIdx())"
+            title="End frame"
+          ></span>
+        </div>
+        <input
+          type="range"
+          [min]="0"
+          [max]="numFrames() - 1"
+          [ngModel]="targetFrameIdx()"
+          (ngModelChange)="onScrubberFrameChange($event)"
+          [disabled]="isLoading() || isPointRequestInFlight()"
+        />
+      </div>
       <div class="frame-range-controls">
         <span class="range-readout">
           {{ rangeStartFrameIdx() ?? '-' }} to {{ rangeEndFrameIdx() ?? '-' }}
