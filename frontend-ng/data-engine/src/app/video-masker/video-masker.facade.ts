@@ -1,4 +1,4 @@
-import { ElementRef, Injectable, OnDestroy, effect, inject } from '@angular/core';
+import { ElementRef, Injectable, OnDestroy, effect, inject, signal } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
 import {
   BackendService,
@@ -55,6 +55,7 @@ export class VideoMaskerFacade implements OnDestroy {
 
   objects = this.store.objects;
   selectedObjectId = this.store.selectedObjectId;
+  editingObjectId = signal<number | null>(null);
   selectedPoint = this.store.selectedPoint;
   interactionMode = this.store.interactionMode;
 
@@ -981,6 +982,32 @@ export class VideoMaskerFacade implements OnDestroy {
 
   addObject() {
     this.commandsService.addObject({
+      backend: this.backend,
+      getObjects: () => this.objects(),
+      setObjects: (objects) => this.objects.set(objects as any),
+      getSelectedObjectId: () => this.selectedObjectId(),
+      setSelectedObjectId: (value) => this.selectedObjectId.set(value),
+      getMasksMap: () => this.masks(),
+      setMasksMap: (map) => this.masks.set(map),
+      getPointsMap: () => this.points(),
+      setPointsMap: (map) => this.points.set(map),
+      getTrackedPoints: () => this.trackedPoints(),
+      setTrackedPoints: (series) => this.trackedPoints.set(series as any),
+      getLiveEditedObjectFrames: () => this.liveEditedObjectFrames(),
+      setLiveEditedObjectFrames: (map) => this.liveEditedObjectFrames.set(map),
+      updateStateEpoch: (epoch, source) => this.updateStateEpoch(epoch, source),
+      refreshManifestMasks: () => this.refreshManifestMasks(),
+      randomColor: () => this.getRandomColor(),
+      redraw: () => this.drawCurrentFrame(),
+      showError: (title, fallbackMessage, error) => {
+        console.error(error);
+        this.showToast('error', title, this.getErrorMessage(error, fallbackMessage));
+      },
+    });
+  }
+
+  renameObject(id: number, newName: string) {
+    this.commandsService.renameObject(id, newName, {
       backend: this.backend,
       getObjects: () => this.objects(),
       setObjects: (objects) => this.objects.set(objects as any),

@@ -167,6 +167,12 @@ export class VideoMaskerCommandsService {
     }
   }
 
+  renameObject(id: number, newName: string, deps: ObjectCommandsDeps): void {
+    const trimmed = newName.trim();
+    if (!trimmed) return;
+    deps.setObjects(deps.getObjects().map((entry) => entry.id === id ? { ...entry, name: trimmed } : entry));
+  }
+
   addObject(deps: ObjectCommandsDeps): void {
     const newId = Math.max(0, ...deps.getObjects().map((entry) => entry.id)) + 1;
     deps.setObjects([...deps.getObjects(), { id: newId, name: `Object ${newId}`, color: deps.randomColor() }]);

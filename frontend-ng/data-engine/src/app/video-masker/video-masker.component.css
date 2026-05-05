@@ -193,6 +193,17 @@ canvas {
   height: 12px;
   border-radius: 50%;
   display: inline-block;
+  flex-shrink: 0;
+}
+
+.object-name-input {
+  flex: 1;
+  min-width: 0;
+  font-size: inherit;
+  padding: 0 2px;
+  border: 1px solid #4f6fe8;
+  border-radius: 3px;
+  outline: none;
 }
 
 .button-group {

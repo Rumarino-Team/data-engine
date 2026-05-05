@@ -95,9 +95,24 @@
             [class.selected]="selectedObjectId() === obj.id"
             (click)="selectObject(obj.id)"
           >
-            <div class="object-row">
-              <span class="color-indicator" [style.background-color]="obj.color"></span>
-              <span>{{ obj.name }}</span>
+            <div class="object-row" (click)="$event.stopPropagation()">
+              <span class="color-indicator" [style.background-color]="obj.color" (click)="selectObject(obj.id)"></span>
+              <input
+                *ngIf="editingObjectId() === obj.id"
+                class="object-name-input"
+                type="text"
+                [value]="obj.name"
+                (blur)="renameObject(obj.id, $any($event.target).value); editingObjectId.set(null)"
+                (keydown.enter)="renameObject(obj.id, $any($event.target).value); editingObjectId.set(null)"
+                (keydown.escape)="editingObjectId.set(null)"
+                (click)="$event.stopPropagation()"
+                autofocus
+              />
+              <span
+                *ngIf="editingObjectId() !== obj.id"
+                (click)="selectObject(obj.id)"
+                (dblclick)="editingObjectId.set(obj.id); $event.stopPropagation()"
+              >{{ obj.name }}</span>
             </div>
             <div
               class="point-layer-list"
