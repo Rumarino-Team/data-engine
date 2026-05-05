@@ -104,7 +104,7 @@ describe('VideoMaskerCommandsService', () => {
     const backend = {
       addNewPointsOrBox: vi.fn(() => throwError(() => new Error('stale'))),
     } as unknown as BackendService;
-    let objects: Array<{ id: number; name: string; color: string }> = [];
+    const objects: Array<{ id: number; name: string; color: string }> = [];
     let points = new Map<number, Map<number, any[]>>([
       [1, new Map([[1, [{ x: 9, y: 9, label: 1 }]]])],
     ]);
