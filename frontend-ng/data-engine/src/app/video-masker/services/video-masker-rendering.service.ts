@@ -1,5 +1,4 @@
 import { Injectable } from '@angular/core';
-import { VideoMaskObjectData } from '../../services/backend.service';
 import { MaskObject, Point, TrackedPointSeries } from './video-masker-state.store';
 
 @Injectable({ providedIn: 'root' })
@@ -32,7 +31,10 @@ export class VideoMaskerRenderingService {
     tempCanvas.width = width;
     tempCanvas.height = height;
     tempCanvas.getContext('2d')?.putImageData(imageData, 0, 0);
+    const previousSmoothing = ctx.imageSmoothingEnabled;
+    ctx.imageSmoothingEnabled = false;
     ctx.drawImage(tempCanvas, 0, 0, ctx.canvas.width, ctx.canvas.height);
+    ctx.imageSmoothingEnabled = previousSmoothing;
   }
 
   normalizeMask2d(mask: unknown): boolean[][] | null {
@@ -62,52 +64,31 @@ export class VideoMaskerRenderingService {
     return false;
   }
 
-  drawMaskFromRle(ctx: CanvasRenderingContext2D, maskData: VideoMaskObjectData, color: string): void {
-    const size = maskData.size;
-    if (!Array.isArray(size) || size.length !== 2) {
-      return;
-    }
-    const height = Number(size[0]);
-    const width = Number(size[1]);
-    if (!Number.isFinite(height) || !Number.isFinite(width) || height <= 0 || width <= 0) {
-      return;
-    }
-
-    const imageData = ctx.createImageData(width, height);
-    const data = imageData.data;
-    const [r, g, b] = this.hexToRgb(color);
-
-    for (const run of maskData.rle || []) {
-      if (!Array.isArray(run) || run.length !== 2) {
-        continue;
-      }
-      const start = Math.max(0, Number(run[0]) | 0);
-      const length = Math.max(0, Number(run[1]) | 0);
-      const end = Math.min(width * height, start + length);
-      for (let index = start; index < end; index++) {
-        const pixelOffset = index * 4;
-        data[pixelOffset] = r;
-        data[pixelOffset + 1] = g;
-        data[pixelOffset + 2] = b;
-        data[pixelOffset + 3] = 120;
-      }
-    }
-
-    const tempCanvas = document.createElement('canvas');
-    tempCanvas.width = width;
-    tempCanvas.height = height;
-    tempCanvas.getContext('2d')?.putImageData(imageData, 0, 0);
-    ctx.drawImage(tempCanvas, 0, 0, ctx.canvas.width, ctx.canvas.height);
+  drawPreparedMaskOverlay(
+    ctx: CanvasRenderingContext2D,
+    overlay: ImageBitmap | HTMLCanvasElement,
+  ): void {
+    const previousSmoothing = ctx.imageSmoothingEnabled;
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(overlay, 0, 0, ctx.canvas.width, ctx.canvas.height);
+    ctx.imageSmoothingEnabled = previousSmoothing;
   }
 
-  drawPoint(ctx: CanvasRenderingContext2D, point: Point): void {
+  drawPoint(ctx: CanvasRenderingContext2D, point: Point, selected = false): void {
     ctx.beginPath();
-    ctx.arc(point.x, point.y, 5, 0, 2 * Math.PI);
+    ctx.arc(point.x, point.y, selected ? 7 : 5, 0, 2 * Math.PI);
     ctx.fillStyle = point.label === 1 ? '#00ff00' : '#ff0000';
     ctx.fill();
     ctx.strokeStyle = 'white';
-    ctx.lineWidth = 2;
+    ctx.lineWidth = selected ? 3 : 2;
     ctx.stroke();
+    if (selected) {
+      ctx.beginPath();
+      ctx.arc(point.x, point.y, 10, 0, 2 * Math.PI);
+      ctx.strokeStyle = '#111111';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
   }
 
   drawTrackingOverlay(

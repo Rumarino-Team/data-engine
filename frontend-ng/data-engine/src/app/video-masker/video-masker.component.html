@@ -23,7 +23,6 @@
     <button (click)="initVideo()" [disabled]="isInitialized() || isLoading() || !videoDir().trim()">
       Load
     </button>
-    <div class="load-mode-hint" *ngIf="getLoadModeHint()">{{ getLoadModeHint() }}</div>
     <div class="api-url-controls">
       <span
         class="api-status-pill"
@@ -94,15 +93,45 @@
             *ngFor="let obj of objects()"
             class="object-item"
             [class.selected]="selectedObjectId() === obj.id"
-            (click)="selectedObjectId.set(obj.id)"
+            (click)="selectObject(obj.id)"
           >
-            <span class="color-indicator" [style.background-color]="obj.color"></span>
-            {{ obj.name }}
+            <div class="object-row">
+              <span class="color-indicator" [style.background-color]="obj.color"></span>
+              <span>{{ obj.name }}</span>
+            </div>
+            <div
+              class="point-layer-list"
+              *ngIf="pointLayersForObject(obj.id).length > 0"
+              (click)="$event.stopPropagation()"
+            >
+              <button
+                type="button"
+                class="point-layer"
+                *ngFor="let layer of pointLayersForObject(obj.id)"
+                [class.selected]="isSelectedPoint(layer.frameIdx, obj.id, layer.pointIdx)"
+                (click)="selectPoint(layer.frameIdx, obj.id, layer.pointIdx)"
+              >
+                <span
+                  class="point-layer-dot"
+                  [class.negative]="layer.point.label === 0"
+                ></span>
+                <span>Point {{ layer.pointIdx + 1 }}</span>
+                <span class="point-layer-meta">
+                  {{ layer.point.label === 1 ? 'Positive' : 'Negative' }}
+                </span>
+              </button>
+            </div>
           </div>
         </div>
         <div class="button-group">
           <button (click)="addObject()">Add Object</button>
-          <button (click)="removeObject()" [disabled]="selectedObjectId() === null">Remove</button>
+          <button
+            (click)="removeSelectedPoint()"
+            [disabled]="selectedPoint() === null || isPointRequestInFlight()"
+          >
+            Remove Point
+          </button>
+          <button (click)="removeObject()" [disabled]="selectedObjectId() === null">Remove Object</button>
           <button (click)="removeAllObjects()" [disabled]="objects().length === 0">
             Remove All Objects
           </button>

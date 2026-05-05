@@ -4,9 +4,15 @@ import { describe, expect, it, vi } from 'vitest';
 import { BackendService } from '../services/backend.service';
 import { DesktopBridgeService } from '../services/desktop-bridge.service';
 import { FrameRendererService } from './services/frame-renderer.service';
+import { MaskOverlayCacheService } from './services/mask-overlay-cache.service';
 import { MaskStateService } from './services/mask-state.service';
 import { ToastService } from './services/toast.service';
 import { VideoJobsService } from './services/video-jobs.service';
+import { VideoMaskerCommandsService } from './services/video-masker-commands.service';
+import { VideoMaskerFramePipelineService } from './services/video-masker-frame-pipeline.service';
+import { VideoMaskerRenderingService } from './services/video-masker-rendering.service';
+import { VideoMaskerSessionStateService } from './services/video-masker-session-state.service';
+import { VideoMaskerWorkflowService } from './services/video-masker-workflow.service';
 import { VideoSessionService } from './services/video-session.service';
 import { VideoMaskerFacade } from './video-masker.facade';
 
@@ -34,7 +40,42 @@ describe('VideoMaskerFacade', () => {
         FrameRendererService,
         MaskStateService,
         ToastService,
-        VideoMaskerFacade,
+        {
+          provide: VideoMaskerFacade,
+          useFactory: (
+            backend: BackendService,
+            desktopBridge: DesktopBridgeService,
+            toastService: ToastService,
+            jobsService: VideoJobsService,
+            maskStateService: MaskStateService,
+            videoSessionService: VideoSessionService,
+            frameRendererService: FrameRendererService,
+          ) =>
+            new VideoMaskerFacade(
+              backend,
+              desktopBridge,
+              toastService,
+              jobsService,
+              maskStateService,
+              videoSessionService,
+              frameRendererService,
+              new VideoMaskerSessionStateService(),
+              new VideoMaskerRenderingService(),
+              new VideoMaskerCommandsService(),
+              new VideoMaskerWorkflowService(),
+              new VideoMaskerFramePipelineService(frameRendererService, new MaskOverlayCacheService()),
+              new MaskOverlayCacheService(),
+            ),
+          deps: [
+            BackendService,
+            DesktopBridgeService,
+            ToastService,
+            VideoJobsService,
+            MaskStateService,
+            VideoSessionService,
+            FrameRendererService,
+          ],
+        },
       ],
     });
 
@@ -68,7 +109,42 @@ describe('VideoMaskerFacade', () => {
         FrameRendererService,
         MaskStateService,
         ToastService,
-        VideoMaskerFacade,
+        {
+          provide: VideoMaskerFacade,
+          useFactory: (
+            backend: BackendService,
+            desktopBridge: DesktopBridgeService,
+            toastService: ToastService,
+            jobsService: VideoJobsService,
+            maskStateService: MaskStateService,
+            videoSessionService: VideoSessionService,
+            frameRendererService: FrameRendererService,
+          ) =>
+            new VideoMaskerFacade(
+              backend,
+              desktopBridge,
+              toastService,
+              jobsService,
+              maskStateService,
+              videoSessionService,
+              frameRendererService,
+              new VideoMaskerSessionStateService(),
+              new VideoMaskerRenderingService(),
+              new VideoMaskerCommandsService(),
+              new VideoMaskerWorkflowService(),
+              new VideoMaskerFramePipelineService(frameRendererService, new MaskOverlayCacheService()),
+              new MaskOverlayCacheService(),
+            ),
+          deps: [
+            BackendService,
+            DesktopBridgeService,
+            ToastService,
+            VideoJobsService,
+            MaskStateService,
+            VideoSessionService,
+            FrameRendererService,
+          ],
+        },
       ],
     });
 

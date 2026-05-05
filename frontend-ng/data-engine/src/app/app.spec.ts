@@ -1,5 +1,8 @@
 import { TestBed } from '@angular/core/testing';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { App } from './app';
+
+await (globalThis as any).resolveAngularTestResources();
 
 describe('App', () => {
   beforeEach(async () => {

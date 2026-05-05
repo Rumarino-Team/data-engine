@@ -146,6 +146,16 @@ export interface VideoMaskDataResponse {
   objects: { [obj_id: string]: VideoMaskObjectData };
 }
 
+export interface VideoMaskDataWindowResponse {
+  start_frame_idx: number;
+  end_frame_idx: number;
+  frames: {
+    [frame_idx: string]: {
+      objects: { [obj_id: string]: VideoMaskObjectData };
+    };
+  };
+}
+
 export interface TrackPromptPointsRequest {
   add_support_grid?: boolean;
 }

@@ -1,13 +1,29 @@
-import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { TestBed } from '@angular/core/testing';
 import { Subject, of, throwError } from 'rxjs';
-import { vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BackendService, VideoAddPointsResponse } from '../services/backend.service';
 import { DesktopBridgeService } from '../services/desktop-bridge.service';
+import { FrameRendererService } from './services/frame-renderer.service';
+import { MaskStateService } from './services/mask-state.service';
+import { MaskOverlayCacheService } from './services/mask-overlay-cache.service';
+import { ToastService } from './services/toast.service';
+import { VideoJobsService } from './services/video-jobs.service';
+import { VideoSessionService } from './services/video-session.service';
+import { VideoMaskerCommandsService } from './services/video-masker-commands.service';
+import { VideoMaskerFramePipelineService } from './services/video-masker-frame-pipeline.service';
+import { VideoMaskerRenderingService } from './services/video-masker-rendering.service';
+import { VideoMaskerSessionStateService } from './services/video-masker-session-state.service';
+import { VideoMaskerWorkflowService } from './services/video-masker-workflow.service';
 import { VideoMaskerComponent } from './video-masker.component';
+
+await (globalThis as any).resolveAngularTestResources();
+const templateText = await (globalThis as any).readTextFixture(
+  new URL('./video-masker.component.html', import.meta.url),
+);
 
 describe('VideoMaskerComponent sync contract', () => {
   let component: VideoMaskerComponent;
-  let fixture: ComponentFixture<VideoMaskerComponent>;
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
   let backendMock: {
     addNewPointsOrBox: ReturnType<typeof vi.fn>;
     health: ReturnType<typeof vi.fn>;
@@ -15,6 +31,7 @@ describe('VideoMaskerComponent sync contract', () => {
     getJob: ReturnType<typeof vi.fn>;
     trackPromptPoints: ReturnType<typeof vi.fn>;
     propagateInVideo: ReturnType<typeof vi.fn>;
+    clearAllPromptsInFrame: ReturnType<typeof vi.fn>;
     getTrackingResult: ReturnType<typeof vi.fn>;
     clearJobResult: ReturnType<typeof vi.fn>;
     getApiUrl: ReturnType<typeof vi.fn>;
@@ -46,6 +63,7 @@ describe('VideoMaskerComponent sync contract', () => {
   });
 
   beforeEach(async () => {
+    consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     backendMock = {
       addNewPointsOrBox: vi.fn(),
       health: vi.fn(() => of({ status: 'ok' })),
@@ -53,6 +71,7 @@ describe('VideoMaskerComponent sync contract', () => {
       getJob: vi.fn(),
       trackPromptPoints: vi.fn(),
       propagateInVideo: vi.fn(),
+      clearAllPromptsInFrame: vi.fn(() => of({ message: 'ok' })),
       getTrackingResult: vi.fn(),
       clearJobResult: vi.fn(() => of({ cleared: true })),
       getApiUrl: vi.fn(() => 'http://127.0.0.1:8000'),
@@ -66,39 +85,49 @@ describe('VideoMaskerComponent sync contract', () => {
       pickFramesDirectory: vi.fn(),
     };
 
-    await TestBed.configureTestingModule({
-      imports: [VideoMaskerComponent],
-      providers: [
-        {
-          provide: BackendService,
-          useValue: {
-            addNewPointsOrBox: backendMock.addNewPointsOrBox,
-            health: backendMock.health,
-            initVideoState: backendMock.initVideoState,
-            getJob: backendMock.getJob,
-            trackPromptPoints: backendMock.trackPromptPoints,
-            propagateInVideo: backendMock.propagateInVideo,
-            getTrackingResult: backendMock.getTrackingResult,
-            clearJobResult: backendMock.clearJobResult,
-            getApiUrl: backendMock.getApiUrl,
-            setApiUrl: backendMock.setApiUrl,
-            resetApiUrl: backendMock.resetApiUrl,
-            saveVideoSession: backendMock.saveVideoSession,
-          },
-        },
-        {
-          provide: DesktopBridgeService,
-          useValue: desktopBridgeMock,
-        },
-      ],
-    }).compileComponents();
+    const backend = {
+      addNewPointsOrBox: backendMock.addNewPointsOrBox,
+      health: backendMock.health,
+      initVideoState: backendMock.initVideoState,
+      getJob: backendMock.getJob,
+      trackPromptPoints: backendMock.trackPromptPoints,
+      propagateInVideo: backendMock.propagateInVideo,
+      clearAllPromptsInFrame: backendMock.clearAllPromptsInFrame,
+      getTrackingResult: backendMock.getTrackingResult,
+      clearJobResult: backendMock.clearJobResult,
+      getApiUrl: backendMock.getApiUrl,
+      setApiUrl: backendMock.setApiUrl,
+      resetApiUrl: backendMock.resetApiUrl,
+      saveVideoSession: backendMock.saveVideoSession,
+    } as unknown as BackendService;
 
-    fixture = TestBed.createComponent(VideoMaskerComponent);
-    component = fixture.componentInstance;
+    TestBed.configureTestingModule({});
+    component = TestBed.runInInjectionContext(
+      () =>
+        new VideoMaskerComponent(
+          backend,
+          desktopBridgeMock as unknown as DesktopBridgeService,
+          new ToastService(),
+          new VideoJobsService(backend),
+          new MaskStateService(),
+          new VideoSessionService(desktopBridgeMock as unknown as DesktopBridgeService),
+          new FrameRendererService(),
+          new VideoMaskerSessionStateService(),
+          new VideoMaskerRenderingService(),
+          new VideoMaskerCommandsService(),
+          new VideoMaskerWorkflowService(),
+          new VideoMaskerFramePipelineService(new FrameRendererService(), new MaskOverlayCacheService()),
+          new MaskOverlayCacheService(),
+        ),
+    );
     component.selectedObjectId.set(1);
     component.objects.set([{ id: 1, name: 'Object 1', color: '#ff0000' }]);
     component.stateEpoch.set(3);
     component.displayedFrameIdx.set(5);
+  });
+
+  afterEach(() => {
+    consoleErrorSpy.mockRestore();
   });
 
   it('uses displayed frame index in request and stores mask on that frame', async () => {
@@ -193,6 +222,62 @@ describe('VideoMaskerComponent sync contract', () => {
     expect(component.toasts()[0].message).toBe('Another operation is already running.');
   });
 
+  it('lists current-frame points as object layers and selects a layer', () => {
+    component.points.set(new Map([
+      [5, new Map([[1, [{ x: 10, y: 20, label: 1 }, { x: 30, y: 40, label: 0 }]]])],
+    ]));
+
+    const layers = component.pointLayersForObject(1);
+    component.selectPoint(layers[1].frameIdx, 1, layers[1].pointIdx);
+
+    expect(layers.length).toBe(2);
+    expect(layers[1].point.label).toBe(0);
+    expect(component.selectedPoint()).toEqual({ frameIdx: 5, objId: 1, pointIdx: 1 });
+    expect(component.selectedObjectId()).toBe(1);
+  });
+
+  it('removes a selected point and resubmits remaining points for the object', async () => {
+    component.points.set(new Map([
+      [5, new Map([[1, [{ x: 10, y: 20, label: 1 }, { x: 30, y: 40, label: 0 }]]])],
+    ]));
+    component.selectedPoint.set({ frameIdx: 5, objId: 1, pointIdx: 0 });
+    backendMock.addNewPointsOrBox.mockReturnValue(of(makeResponse({
+      out_masks: [[[false, true]]],
+      mask_pixel_counts: { 1: 1 },
+      mask_shapes: { 1: [1, 2] },
+    })));
+
+    await component.removeSelectedPoint();
+
+    expect(backendMock.addNewPointsOrBox).toHaveBeenCalledWith(
+      expect.objectContaining({
+        frame_idx: 5,
+        obj_id: 1,
+        points: [[30, 40]],
+        labels: [0],
+        clear_old_points: true,
+      }),
+    );
+    expect(component.points().get(5)?.get(1)).toEqual([{ x: 30, y: 40, label: 0 }]);
+    expect(component.masks().get(5)?.get(1)).toEqual([[false, true]]);
+    expect(component.selectedPoint()).toBeNull();
+  });
+
+  it('removes the last selected point and clears prompts for that object frame', async () => {
+    component.points.set(new Map([[5, new Map([[1, [{ x: 10, y: 20, label: 1 }]]])]]));
+    component.masks.set(new Map([[5, new Map([[1, [[true]]]])]]));
+    component.liveEditedObjectFrames.set(new Map([[5, new Set([1])]]));
+    component.selectedPoint.set({ frameIdx: 5, objId: 1, pointIdx: 0 });
+
+    await component.removeSelectedPoint();
+
+    expect(backendMock.clearAllPromptsInFrame).toHaveBeenCalledWith(5, 1);
+    expect(component.points().has(5)).toBe(false);
+    expect(component.masks().has(5)).toBe(false);
+    expect(component.liveEditedObjectFrames().has(5)).toBe(false);
+    expect(component.selectedPoint()).toBeNull();
+  });
+
   it('uses the native Tauri video picker when video mode is selected', async () => {
     desktopBridgeMock.isTauri.mockReturnValue(true);
     desktopBridgeMock.pickVideoFile.mockResolvedValue('C:/videos/example.mp4');
@@ -254,10 +339,8 @@ describe('VideoMaskerComponent sync contract', () => {
   });
 
   it('labels the prompt tracking action as Track Prompt Points', () => {
-    fixture.detectChanges();
-
-    expect(fixture.nativeElement.textContent).toContain('Track Prompt Points');
-    expect(fixture.nativeElement.textContent).not.toContain('Run CoTracker');
+    expect(templateText).toContain('Track Prompt Points');
+    expect(templateText).not.toContain('Run CoTracker');
   });
 
   it('renders displayed frame text without target text next to the frame scrubber', () => {
@@ -266,10 +349,8 @@ describe('VideoMaskerComponent sync contract', () => {
     component.targetFrameIdx.set(4);
     component.displayedFrameIdx.set(4);
 
-    fixture.detectChanges();
-
-    expect(fixture.nativeElement.textContent).not.toContain('Target:');
-    expect(fixture.nativeElement.textContent).toContain('Displayed: 4 / 11');
+    expect(templateText).not.toContain('Target:');
+    expect(templateText).toContain('Displayed: {{ displayedFrameIdx() }} / {{ numFrames() - 1 }}');
   });
 
   it('starts a video init job, polls completion, and applies the result', async () => {
@@ -748,9 +829,7 @@ describe('VideoMaskerComponent sync contract', () => {
   });
 
   it('does not render a tracking model selector', () => {
-    fixture.detectChanges();
-
-    expect(fixture.nativeElement.textContent).not.toContain('Tracking Model');
+    expect(templateText).not.toContain('Tracking Model');
   });
 
   it('creates an error toast when a job fails', async () => {

@@ -20,6 +20,7 @@ import type {
   VideoAddPointsResponse,
   VideoInitStateRequest,
   VideoMaskDataResponse,
+  VideoMaskDataWindowResponse,
   VideoPropagateRequest,
   VideoSaveInteractiveState,
   VideoSaveRequest,
@@ -143,6 +144,24 @@ export class BackendService {
 
   getVideoMaskData(frameIdx: number): Observable<VideoMaskDataResponse> {
     return this.http.get<VideoMaskDataResponse>(this.endpoint(`/video/mask_data/${frameIdx}`));
+  }
+
+  getVideoMaskDataWindow(
+    startFrameIdx: number,
+    endFrameIdx: number,
+    objectIds?: number[],
+  ): Observable<VideoMaskDataWindowResponse> {
+    const params: Record<string, string> = {
+      start_frame_idx: String(startFrameIdx),
+      end_frame_idx: String(endFrameIdx),
+    };
+    if (objectIds && objectIds.length > 0) {
+      params['object_ids'] = objectIds.join(',');
+    }
+    return this.http.get<VideoMaskDataWindowResponse>(
+      this.endpoint('/video/mask_data_window'),
+      { params },
+    );
   }
 
   trackPromptPoints(request: TrackPromptPointsRequest): Observable<JobStartResponse> {

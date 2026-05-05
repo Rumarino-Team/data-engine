@@ -6,7 +6,6 @@ import {
   JobStageHistoryEntry,
   RestoredSessionPayload,
   TrackPromptPointsResult,
-  VideoMaskObjectData,
   VideoSaveInteractiveState,
 } from '../services/backend.service';
 import { DesktopBridgeService } from '../services/desktop-bridge.service';
@@ -20,7 +19,9 @@ import { VideoMaskerRenderingService } from './services/video-masker-rendering.s
 import { VideoMaskerCommandsService } from './services/video-masker-commands.service';
 import { VideoMaskerWorkflowService } from './services/video-masker-workflow.service';
 import { FramePipelineState, VideoMaskerFramePipelineService } from './services/video-masker-frame-pipeline.service';
+import { MaskOverlayCacheService } from './services/mask-overlay-cache.service';
 import {
+  Point,
   TrackedPointSeries,
   VideoMaskerStateStore,
 } from './services/video-masker-state.store';
@@ -54,6 +55,7 @@ export class VideoMaskerFacade implements OnDestroy {
 
   objects = this.store.objects;
   selectedObjectId = this.store.selectedObjectId;
+  selectedPoint = this.store.selectedPoint;
   interactionMode = this.store.interactionMode;
 
   masks = this.store.masks;
@@ -88,10 +90,9 @@ export class VideoMaskerFacade implements OnDestroy {
     pendingFrameIdx: null,
     frameLoadAnimationId: null,
     frameImageCache: new Map<number, HTMLImageElement>(),
-    maskDataCache: new Map<number, { [objId: string]: VideoMaskObjectData }>(),
     maxFrameCacheSize: 24,
     currentBaseImage: null,
-    currentMaskObjects: {},
+    previousFrameIdx: null,
   };
   private healthTimerId: ReturnType<typeof setInterval> | null = null;
   private lastCompletedJobId: string | null = null;
@@ -109,11 +110,13 @@ export class VideoMaskerFacade implements OnDestroy {
     protected commandsService: VideoMaskerCommandsService,
     protected workflowService: VideoMaskerWorkflowService,
     protected framePipelineService: VideoMaskerFramePipelineService,
+    protected maskOverlayCache: MaskOverlayCacheService,
   ) {
     this.apiUrlInput.set(this.backend.getApiUrl());
 
     effect(() => {
       if (this.isInitialized()) {
+        this.reconcileSelectedPoint();
         this.scheduleFrameLoad(this.targetFrameIdx());
       }
     });
@@ -295,9 +298,6 @@ export class VideoMaskerFacade implements OnDestroy {
     return this.videoSessionService.getBrowseLabel(this.loadSourceMode());
   }
 
-  getLoadModeHint(): string {
-    return this.videoSessionService.getLoadModeHint(this.loadSourceMode());
-  }
 
   applyApiUrl() {
     this.apiUrlInput.set(this.backend.setApiUrl(this.apiUrlInput()));
@@ -419,7 +419,7 @@ export class VideoMaskerFacade implements OnDestroy {
       runBackendJob: (title, startJob) => this.runBackendJob(title, startJob),
       updateStateEpoch: (epoch, source) => this.updateStateEpoch(epoch, source),
       setHasManifestMasks: (value) => this.hasManifestMasks.set(value),
-      clearMaskDataCache: () => this.framePipelineState.maskDataCache.clear(),
+      invalidateMaskCache: () => this.maskOverlayCache.clearAll(),
       scheduleFrameLoad: (frameIdx) => this.scheduleFrameLoad(frameIdx),
       targetFrameIdx: () => this.targetFrameIdx(),
       setTrackedPoints: (next) => this.trackedPoints.set(next as any),
@@ -436,6 +436,7 @@ export class VideoMaskerFacade implements OnDestroy {
         this.masks.set(new Map());
         this.points.set(new Map());
         this.liveEditedObjectFrames.set(new Map());
+        this.selectedPoint.set(null);
       },
       getVideoDir: () => this.videoDir(),
       setVideoDir: (value) => this.videoDir.set(value),
@@ -621,6 +622,61 @@ export class VideoMaskerFacade implements OnDestroy {
 
   private clearFrameCaches(): void {
     this.framePipelineService.clearFrameCaches(this.framePipelineState);
+    this.maskOverlayCache.clearAll();
+  }
+
+  selectObject(objectId: number): void {
+    this.selectedObjectId.set(objectId);
+    const selectedPoint = this.selectedPoint();
+    if (selectedPoint && selectedPoint.objId !== objectId) {
+      this.selectedPoint.set(null);
+    }
+  }
+
+  pointLayersForObject(objectId: number): Array<{ frameIdx: number; pointIdx: number; point: Point }> {
+    const frameIdx = this.displayedFrameIdx();
+    if (frameIdx < 0) {
+      return [];
+    }
+    return (this.points().get(frameIdx)?.get(objectId) || []).map((point, pointIdx) => ({
+      frameIdx,
+      pointIdx,
+      point,
+    }));
+  }
+
+  selectPoint(frameIdx: number, objId: number, pointIdx: number): void {
+    this.selectedObjectId.set(objId);
+    this.selectedPoint.set({ frameIdx, objId, pointIdx });
+  }
+
+  isSelectedPoint(frameIdx: number, objId: number, pointIdx: number): boolean {
+    const selectedPoint = this.selectedPoint();
+    return Boolean(
+      selectedPoint &&
+        selectedPoint.frameIdx === frameIdx &&
+        selectedPoint.objId === objId &&
+        selectedPoint.pointIdx === pointIdx,
+    );
+  }
+
+  private reconcileSelectedPoint(): void {
+    const selectedPoint = this.selectedPoint();
+    if (!selectedPoint) {
+      return;
+    }
+    const pointExists = Boolean(
+      this.points().get(selectedPoint.frameIdx)?.get(selectedPoint.objId)?.[selectedPoint.pointIdx],
+    );
+    const objectExists = this.objects().some((entry) => entry.id === selectedPoint.objId);
+    if (!pointExists || !objectExists || selectedPoint.frameIdx !== this.displayedFrameIdx()) {
+      this.selectedPoint.set(null);
+    }
+  }
+
+  private refreshManifestMasks(): void {
+    this.maskOverlayCache.clearAll();
+    this.scheduleFrameLoad(this.targetFrameIdx());
   }
 
   private scheduleFrameLoad(frameIdx: number) {
@@ -643,9 +699,12 @@ export class VideoMaskerFacade implements OnDestroy {
     return {
       canvasRef: this.canvasRef,
       getVideoFrameUrl: (frameIdx: number) => this.backend.getVideoFrameUrl(frameIdx),
-      getVideoMaskData: async (frameIdx: number) => firstValueFrom(this.backend.getVideoMaskData(frameIdx)),
       hasManifestMasks: () => this.hasManifestMasks(),
       numFrames: () => this.numFrames(),
+      objects: () => this.objects(),
+      liveEditedObjectIdsForFrame: (frameIdx: number) => (
+        this.liveEditedObjectFrames().get(frameIdx) ?? new Set<number>()
+      ),
       draw: (image: HTMLImageElement, frameIdx: number) => this.draw(image, frameIdx),
       onDisplayedFrame: (frameIdx: number) => this.displayedFrameIdx.set(frameIdx),
       setIsFrameLoading: (loading: boolean) => this.isFrameLoading.set(loading),
@@ -663,14 +722,14 @@ export class VideoMaskerFacade implements OnDestroy {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(img, 0, 0);
 
-    if (this.hasManifestMasks() && Object.keys(this.framePipelineState.currentMaskObjects).length > 0) {
-      for (const [objIdStr, maskData] of Object.entries(this.framePipelineState.currentMaskObjects)) {
-        const objId = parseInt(objIdStr, 10);
-        if (liveEditedObjectIds.has(objId)) {
-          continue;
-        }
-        const obj = this.objects().find((candidate) => candidate.id === objId);
-        this.renderingService.drawMaskFromRle(ctx, maskData, obj?.color || '#ff9800');
+    if (this.hasManifestMasks()) {
+      const overlay = this.maskOverlayCache.getPreparedOverlay(
+        frameIdx,
+        this.objects(),
+        liveEditedObjectIds,
+      );
+      if (overlay) {
+        this.renderingService.drawPreparedMaskOverlay(ctx, overlay.bitmap);
       }
     }
 
@@ -689,8 +748,14 @@ export class VideoMaskerFacade implements OnDestroy {
 
     const framePoints = this.points().get(frameIdx);
     if (framePoints) {
-      framePoints.forEach((frameObjPoints) => {
-        frameObjPoints.forEach((point) => this.renderingService.drawPoint(ctx, point));
+      framePoints.forEach((frameObjPoints, objId) => {
+        frameObjPoints.forEach((point, pointIdx) => {
+          this.renderingService.drawPoint(
+            ctx,
+            point,
+            this.isSelectedPoint(frameIdx, objId, pointIdx),
+          );
+        });
       });
     }
 
@@ -706,7 +771,7 @@ export class VideoMaskerFacade implements OnDestroy {
         maskSource = 'live';
       } else if (
         !this.isObjectLiveEdited(frameIdx, selectedObjectId) &&
-        Boolean(this.framePipelineState.currentMaskObjects[String(selectedObjectId)])
+        this.maskOverlayCache.hasMaskForObject(frameIdx, selectedObjectId)
       ) {
         maskSource = 'manifest';
       }
@@ -761,6 +826,7 @@ export class VideoMaskerFacade implements OnDestroy {
 
     await this.commandsService.addPoint({
       backend: this.backend,
+      getObjects: () => this.objects(),
       frameIdx,
       label,
       objId,
@@ -814,6 +880,96 @@ export class VideoMaskerFacade implements OnDestroy {
     });
   }
 
+  async removeSelectedPoint(): Promise<void> {
+    const selectedPoint = this.selectedPoint();
+    if (!selectedPoint || this.isPointRequestInFlight()) {
+      return;
+    }
+    const framePointsMap = this.points().get(selectedPoint.frameIdx);
+    const objectPoints = framePointsMap?.get(selectedPoint.objId) || [];
+    if (!objectPoints[selectedPoint.pointIdx]) {
+      this.selectedPoint.set(null);
+      return;
+    }
+
+    const remainingPoints = objectPoints.filter((_, index) => index !== selectedPoint.pointIdx);
+    this.isPointRequestInFlight.set(true);
+    try {
+      if (remainingPoints.length > 0) {
+        const response = await firstValueFrom(
+          this.backend.addNewPointsOrBox({
+            frame_idx: selectedPoint.frameIdx,
+            obj_id: selectedPoint.objId,
+            points: remainingPoints.map((point) => [point.x, point.y]),
+            labels: remainingPoints.map((point) => point.label),
+            clear_old_points: true,
+          }),
+        );
+        if ((response as any)?.error) {
+          throw new Error((response as any).error);
+        }
+        this.updateStateEpoch(response.state_epoch, 'remove point');
+        this.replaceObjectPoints(selectedPoint.frameIdx, selectedPoint.objId, remainingPoints);
+        const masksMap = new Map(this.masks());
+        const frameMasksMap = new Map(
+          masksMap.get(selectedPoint.frameIdx) || new Map<number, boolean[][]>(),
+        );
+        response.out_obj_ids.forEach((id, index) => {
+          if (this.objects().some((entry) => entry.id === id)) {
+            frameMasksMap.set(id, response.out_masks[index]);
+          }
+        });
+        masksMap.set(selectedPoint.frameIdx, frameMasksMap);
+        this.masks.set(masksMap);
+        this.markObjectAsLiveEdited(selectedPoint.frameIdx, selectedPoint.objId);
+      } else {
+        await firstValueFrom(
+          this.backend.clearAllPromptsInFrame(selectedPoint.frameIdx, selectedPoint.objId),
+        );
+        this.replaceObjectPoints(selectedPoint.frameIdx, selectedPoint.objId, []);
+        const masksMap = new Map(this.masks());
+        const frameMasksMap = new Map(
+          masksMap.get(selectedPoint.frameIdx) || new Map<number, boolean[][]>(),
+        );
+        frameMasksMap.delete(selectedPoint.objId);
+        if (frameMasksMap.size > 0) {
+          masksMap.set(selectedPoint.frameIdx, frameMasksMap);
+        } else {
+          masksMap.delete(selectedPoint.frameIdx);
+        }
+        this.masks.set(masksMap);
+        this.unmarkObjectAsLiveEdited(selectedPoint.frameIdx, selectedPoint.objId);
+      }
+      this.selectedPoint.set(null);
+      this.drawCurrentFrame();
+    } catch (error) {
+      console.error(error);
+      this.showToast(
+        'error',
+        'Remove point failed',
+        this.getErrorMessage(error, 'Unable to remove selected point.'),
+      );
+    } finally {
+      this.isPointRequestInFlight.set(false);
+    }
+  }
+
+  private replaceObjectPoints(frameIdx: number, objId: number, points: Point[]): void {
+    const pointsMap = new Map(this.points());
+    const framePointsMap = new Map(pointsMap.get(frameIdx) || new Map<number, Point[]>());
+    if (points.length > 0) {
+      framePointsMap.set(objId, points);
+    } else {
+      framePointsMap.delete(objId);
+    }
+    if (framePointsMap.size > 0) {
+      pointsMap.set(frameIdx, framePointsMap);
+    } else {
+      pointsMap.delete(frameIdx);
+    }
+    this.points.set(pointsMap);
+  }
+
   onScrubberFrameChange(value: number | string) {
     const parsed = Number(value);
     if (!Number.isFinite(parsed)) {
@@ -836,7 +992,10 @@ export class VideoMaskerFacade implements OnDestroy {
       setPointsMap: (map) => this.points.set(map),
       getTrackedPoints: () => this.trackedPoints(),
       setTrackedPoints: (series) => this.trackedPoints.set(series as any),
+      getLiveEditedObjectFrames: () => this.liveEditedObjectFrames(),
       setLiveEditedObjectFrames: (map) => this.liveEditedObjectFrames.set(map),
+      updateStateEpoch: (epoch, source) => this.updateStateEpoch(epoch, source),
+      refreshManifestMasks: () => this.refreshManifestMasks(),
       randomColor: () => this.getRandomColor(),
       redraw: () => this.drawCurrentFrame(),
       showError: (title, fallbackMessage, error) => {
@@ -859,7 +1018,10 @@ export class VideoMaskerFacade implements OnDestroy {
       setPointsMap: (map) => this.points.set(map),
       getTrackedPoints: () => this.trackedPoints(),
       setTrackedPoints: (series) => this.trackedPoints.set(series as any),
+      getLiveEditedObjectFrames: () => this.liveEditedObjectFrames(),
       setLiveEditedObjectFrames: (map) => this.liveEditedObjectFrames.set(map),
+      updateStateEpoch: (epoch, source) => this.updateStateEpoch(epoch, source),
+      refreshManifestMasks: () => this.refreshManifestMasks(),
       randomColor: () => this.getRandomColor(),
       redraw: () => this.drawCurrentFrame(),
       showError: (title, fallbackMessage, error) => {
@@ -882,7 +1044,10 @@ export class VideoMaskerFacade implements OnDestroy {
       setPointsMap: (map) => this.points.set(map),
       getTrackedPoints: () => this.trackedPoints(),
       setTrackedPoints: (series) => this.trackedPoints.set(series as any),
+      getLiveEditedObjectFrames: () => this.liveEditedObjectFrames(),
       setLiveEditedObjectFrames: (map) => this.liveEditedObjectFrames.set(map),
+      updateStateEpoch: (epoch, source) => this.updateStateEpoch(epoch, source),
+      refreshManifestMasks: () => this.refreshManifestMasks(),
       randomColor: () => this.getRandomColor(),
       redraw: () => this.drawCurrentFrame(),
       showError: (title, fallbackMessage, error) => {
@@ -898,7 +1063,7 @@ export class VideoMaskerFacade implements OnDestroy {
       runBackendJob: (title, startJob) => this.runBackendJob(title, startJob),
       updateStateEpoch: (epoch, source) => this.updateStateEpoch(epoch, source),
       setHasManifestMasks: (value) => this.hasManifestMasks.set(value),
-      clearMaskDataCache: () => this.framePipelineState.maskDataCache.clear(),
+      invalidateMaskCache: () => this.maskOverlayCache.clearAll(),
       scheduleFrameLoad: (frameIdx) => this.scheduleFrameLoad(frameIdx),
       targetFrameIdx: () => this.targetFrameIdx(),
       setTrackedPoints: (next) => this.trackedPoints.set(next as any),
@@ -951,7 +1116,7 @@ export class VideoMaskerFacade implements OnDestroy {
       runBackendJob: (title, startJob) => this.runBackendJob(title, startJob),
       updateStateEpoch: (epoch, source) => this.updateStateEpoch(epoch, source),
       setHasManifestMasks: (value) => this.hasManifestMasks.set(value),
-      clearMaskDataCache: () => this.framePipelineState.maskDataCache.clear(),
+      invalidateMaskCache: () => this.maskOverlayCache.clearAll(),
       scheduleFrameLoad: (frameIdx) => this.scheduleFrameLoad(frameIdx),
       targetFrameIdx: () => this.targetFrameIdx(),
       setTrackedPoints: (next) => this.trackedPoints.set(next as any),
@@ -978,7 +1143,7 @@ export class VideoMaskerFacade implements OnDestroy {
       runBackendJob: (title, startJob) => this.runBackendJob(title, startJob),
       updateStateEpoch: (epoch, source) => this.updateStateEpoch(epoch, source),
       setHasManifestMasks: (value) => this.hasManifestMasks.set(value),
-      clearMaskDataCache: () => this.framePipelineState.maskDataCache.clear(),
+      invalidateMaskCache: () => this.maskOverlayCache.clearAll(),
       scheduleFrameLoad: (frameIdx) => this.scheduleFrameLoad(frameIdx),
       targetFrameIdx: () => this.targetFrameIdx(),
       setTrackedPoints: (next) => this.trackedPoints.set(next as any),
@@ -1005,7 +1170,7 @@ export class VideoMaskerFacade implements OnDestroy {
       runBackendJob: (title, startJob) => this.runBackendJob(title, startJob),
       updateStateEpoch: (epoch, source) => this.updateStateEpoch(epoch, source),
       setHasManifestMasks: (value) => this.hasManifestMasks.set(value),
-      clearMaskDataCache: () => this.framePipelineState.maskDataCache.clear(),
+      invalidateMaskCache: () => this.maskOverlayCache.clearAll(),
       scheduleFrameLoad: (frameIdx) => this.scheduleFrameLoad(frameIdx),
       targetFrameIdx: () => this.targetFrameIdx(),
       setTrackedPoints: (next) => this.trackedPoints.set(next as any),

@@ -4,6 +4,8 @@ from pathlib import Path
 import shutil
 import hashlib
 import json
+import os
+import uuid
 from typing import Any, Callable, Optional
 
 
@@ -396,8 +398,16 @@ def build_empty_mask_manifest(
 
 def write_mask_manifest(manifest_path: Path, manifest: dict[str, Any]) -> None:
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    with manifest_path.open("w", encoding="utf-8") as handle:
-        json.dump(manifest, handle, ensure_ascii=True, separators=(",", ":"))
+    temp_path = manifest_path.with_name(f".{manifest_path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temp_path.open("w", encoding="utf-8") as handle:
+            json.dump(manifest, handle, ensure_ascii=True, separators=(",", ":"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, manifest_path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink(missing_ok=True)
 
 
 def load_mask_manifest(manifest_path: Path) -> dict[str, Any]:

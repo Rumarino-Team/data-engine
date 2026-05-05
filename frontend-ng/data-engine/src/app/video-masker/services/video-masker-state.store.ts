@@ -23,6 +23,12 @@ export interface Point {
   label: number;
 }
 
+export interface SelectedPointRef {
+  frameIdx: number;
+  objId: number;
+  pointIdx: number;
+}
+
 export interface TrackedPointSeries extends TrackPromptPointMetadata {
   tracks: number[][];
   visibility: boolean[];
@@ -41,6 +47,7 @@ export class VideoMaskerStateStore {
 
   objects = signal<MaskObject[]>([]);
   selectedObjectId = signal<number | null>(null);
+  selectedPoint = signal<SelectedPointRef | null>(null);
   interactionMode = signal<'positive' | 'negative'>('positive');
 
   masks = signal<Map<number, Map<number, boolean[][]>>>(new Map());

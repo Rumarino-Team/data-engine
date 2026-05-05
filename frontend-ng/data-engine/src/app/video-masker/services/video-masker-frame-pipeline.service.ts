@@ -1,24 +1,25 @@
 import { ElementRef, Injectable } from '@angular/core';
-import { VideoMaskObjectData } from '../../services/backend.service';
 import { FrameRendererService } from './frame-renderer.service';
+import { MaskOverlayCacheService } from './mask-overlay-cache.service';
+import { MaskObject } from './video-masker-state.store';
 
 export interface FramePipelineState {
   frameLoadToken: number;
   pendingFrameIdx: number | null;
   frameLoadAnimationId: number | null;
   frameImageCache: Map<number, HTMLImageElement>;
-  maskDataCache: Map<number, { [objId: string]: VideoMaskObjectData }>;
   maxFrameCacheSize: number;
   currentBaseImage: HTMLImageElement | null;
-  currentMaskObjects: { [objId: string]: VideoMaskObjectData };
+  previousFrameIdx: number | null;
 }
 
 export interface FramePipelineDeps {
   canvasRef?: ElementRef<HTMLCanvasElement>;
   getVideoFrameUrl: (frameIdx: number) => string;
-  getVideoMaskData: (frameIdx: number) => Promise<{ objects?: { [objId: string]: VideoMaskObjectData }; error?: unknown }>;
   hasManifestMasks: () => boolean;
   numFrames: () => number;
+  objects: () => MaskObject[];
+  liveEditedObjectIdsForFrame: (frameIdx: number) => Set<number>;
   draw: (image: HTMLImageElement, frameIdx: number) => void;
   onDisplayedFrame: (frameIdx: number) => void;
   setIsFrameLoading: (loading: boolean) => void;
@@ -26,13 +27,15 @@ export interface FramePipelineDeps {
 
 @Injectable({ providedIn: 'root' })
 export class VideoMaskerFramePipelineService {
-  constructor(private frameRendererService: FrameRendererService) {}
+  constructor(
+    private frameRendererService: FrameRendererService,
+    private maskOverlayCache: MaskOverlayCacheService,
+  ) {}
 
   clearFrameCaches(state: FramePipelineState): void {
     state.frameImageCache.clear();
-    state.maskDataCache.clear();
     state.currentBaseImage = null;
-    state.currentMaskObjects = {};
+    state.previousFrameIdx = null;
     state.frameLoadToken++;
     if (state.frameLoadAnimationId !== null) {
       cancelAnimationFrame(state.frameLoadAnimationId);
@@ -61,7 +64,6 @@ export class VideoMaskerFramePipelineService {
     }
 
     const token = ++state.frameLoadToken;
-    state.currentMaskObjects = {};
     const cachedImage = state.frameImageCache.get(frameIdx);
     if (cachedImage?.complete) {
       await this.paintLoadedFrame(cachedImage, frameIdx, token, state, deps);
@@ -120,12 +122,8 @@ export class VideoMaskerFramePipelineService {
     deps.onDisplayedFrame(frameIdx);
     deps.setIsFrameLoading(false);
     this.preloadNeighborFrames(frameIdx, state, deps);
-
-    await this.loadMaskDataForFrame(frameIdx, token, state, deps);
-    if (token !== state.frameLoadToken) {
-      return;
-    }
-    deps.draw(image, frameIdx);
+    this.prefetchMaskOverlay(image, frameIdx, token, state, deps);
+    state.previousFrameIdx = frameIdx;
   }
 
   private cacheFrameImage(frameIdx: number, image: HTMLImageElement, state: FramePipelineState): void {
@@ -133,9 +131,7 @@ export class VideoMaskerFramePipelineService {
       state.frameImageCache.delete(frameIdx);
     }
     state.frameImageCache.set(frameIdx, image);
-    this.frameRendererService.evictWithLimit(state.frameImageCache, state.maxFrameCacheSize, (oldestKey) => {
-      state.maskDataCache.delete(oldestKey);
-    });
+    this.frameRendererService.evictWithLimit(state.frameImageCache, state.maxFrameCacheSize);
   }
 
   private preloadNeighborFrames(frameIdx: number, state: FramePipelineState, deps: FramePipelineDeps): void {
@@ -160,36 +156,36 @@ export class VideoMaskerFramePipelineService {
     }
   }
 
-  private async loadMaskDataForFrame(
+  private prefetchMaskOverlay(
+    image: HTMLImageElement,
     frameIdx: number,
     token: number,
     state: FramePipelineState,
     deps: FramePipelineDeps,
-  ): Promise<void> {
-    if (!deps.hasManifestMasks()) {
-      state.currentMaskObjects = {};
+  ): void {
+    const canvas = deps.canvasRef?.nativeElement;
+    if (!canvas || !deps.hasManifestMasks() || deps.objects().length === 0) {
       return;
     }
-    const cachedMaskData = state.maskDataCache.get(frameIdx);
-    if (cachedMaskData) {
-      state.currentMaskObjects = cachedMaskData;
-      return;
-    }
-
-    try {
-      const response = await deps.getVideoMaskData(frameIdx);
-      if (token !== state.frameLoadToken) {
-        return;
+    void this.maskOverlayCache.prefetchAroundFrame({
+      frameIdx,
+      previousFrameIdx: state.previousFrameIdx,
+      numFrames: deps.numFrames(),
+      objects: deps.objects(),
+      hasManifestMasks: deps.hasManifestMasks(),
+      liveEditedObjectIds: deps.liveEditedObjectIdsForFrame(frameIdx),
+      canvasWidth: canvas.width,
+      canvasHeight: canvas.height,
+      onOverlayReady: (readyFrameIdx) => {
+        if (
+          readyFrameIdx !== frameIdx ||
+          token !== state.frameLoadToken ||
+          state.currentBaseImage !== image
+        ) {
+          return;
+        }
+        deps.draw(image, frameIdx);
       }
-      if ((response as any)?.error) {
-        state.currentMaskObjects = {};
-        return;
-      }
-      state.currentMaskObjects = response.objects || {};
-      state.maskDataCache.set(frameIdx, state.currentMaskObjects);
-    } catch (error) {
-      console.error(error);
-      state.currentMaskObjects = {};
-    }
+    });
   }
 }

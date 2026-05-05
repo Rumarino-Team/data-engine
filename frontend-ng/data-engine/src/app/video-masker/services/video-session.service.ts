@@ -28,16 +28,6 @@ export class VideoSessionService {
     }
   }
 
-  getLoadModeHint(mode: LoadSourceMode): string {
-    if (mode === 'saved_session_dir') {
-      return 'Choose a saved session directory containing session.json, frames/, and masks/.';
-    }
-    if (mode === 'video_file') {
-      return 'Choose a video file; backend will extract frames and create a new session.';
-    }
-    return 'Choose a directory that already contains extracted video frames.';
-  }
-
   async browse(mode: LoadSourceMode): Promise<string | null> {
     if (!this.desktopBridge.isTauri()) {
       return null;

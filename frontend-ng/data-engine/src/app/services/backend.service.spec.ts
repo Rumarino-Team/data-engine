@@ -78,6 +78,27 @@ describe('BackendService', () => {
     expect((http.get as any).mock.calls[0][0]).toBe('http://localhost:9001/video/mask_data/3');
   });
 
+  it('fetches mask data windows with object filters', () => {
+    const http = {
+      post: vi.fn(),
+      get: vi.fn(() => of({})),
+    } as unknown as HttpClient;
+    const service = new BackendService(http);
+
+    service.getVideoMaskDataWindow(2, 8, [1, 5]).subscribe();
+
+    expect((http.get as any).mock.calls[0][0]).toBe(
+      'http://127.0.0.1:8000/video/mask_data_window',
+    );
+    expect((http.get as any).mock.calls[0][1]).toEqual({
+      params: {
+        start_frame_idx: '2',
+        end_frame_idx: '8',
+        object_ids: '1,5',
+      },
+    });
+  });
+
   it('resets the API URL back to localhost and clears persisted override', () => {
     const http = { post: vi.fn(), get: vi.fn() } as unknown as HttpClient;
     const service = new BackendService(http);

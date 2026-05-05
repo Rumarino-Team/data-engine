@@ -16,6 +16,7 @@ import { VideoMaskerRenderingService } from './services/video-masker-rendering.s
 import { VideoMaskerCommandsService } from './services/video-masker-commands.service';
 import { VideoMaskerWorkflowService } from './services/video-masker-workflow.service';
 import { VideoMaskerFramePipelineService } from './services/video-masker-frame-pipeline.service';
+import { MaskOverlayCacheService } from './services/mask-overlay-cache.service';
 
 @Component({
   selector: 'app-video-masker',
@@ -43,6 +44,7 @@ export class VideoMaskerComponent extends VideoMaskerFacade implements OnDestroy
     commandsService: VideoMaskerCommandsService,
     workflowService: VideoMaskerWorkflowService,
     framePipelineService: VideoMaskerFramePipelineService,
+    maskOverlayCache: MaskOverlayCacheService,
   ) {
     super(
       backend,
@@ -57,6 +59,7 @@ export class VideoMaskerComponent extends VideoMaskerFacade implements OnDestroy
       commandsService,
       workflowService,
       framePipelineService,
+      maskOverlayCache,
     );
   }
 

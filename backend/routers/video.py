@@ -13,6 +13,7 @@ from video.service import (
     add_new_points_or_box,
     clear_all_prompts_in_frame,
     get_mask_data,
+    get_mask_data_window,
     get_mask_manifest,
     get_video_frame,
     get_video_info,
@@ -80,6 +81,21 @@ async def get_mask_manifest_route():
 @router.get("/video/mask_data/{frame_idx}")
 async def get_mask_data_route(frame_idx: int):
     return await get_mask_data(frame_idx)
+
+
+@router.get("/video/mask_data_window")
+async def get_mask_data_window_route(
+    start_frame_idx: int,
+    end_frame_idx: int,
+    object_ids: str | None = None,
+    include_empty: bool = False,
+):
+    return await get_mask_data_window(
+        start_frame_idx=start_frame_idx,
+        end_frame_idx=end_frame_idx,
+        object_ids=object_ids,
+        include_empty=include_empty,
+    )
 
 
 @router.get("/video/frame/{frame_idx}")

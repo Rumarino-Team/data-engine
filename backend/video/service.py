@@ -337,17 +337,18 @@ def run_video_init_job(request: VideoInitStateRequest) -> dict[str, Any]:
 
 async def reset_video_state():
     require_no_active_job("video reset")
-    if state.video_masker is None:
-        return {"error": "Video masker not active."}
-    state.video_masker.reset_state()
-    reset_video_session_state()
-    masks_dir = current_masks_dir()
-    if masks_dir is not None:
-        shutil.rmtree(masks_dir, ignore_errors=True)
-        masks_dir.mkdir(parents=True, exist_ok=True)
-    state.mask_manifest_path = None
-    state_epoch = bump_video_state_epoch()
-    write_session_metadata()
+    with state.video_state_lock:
+        if state.video_masker is None:
+            return {"error": "Video masker not active."}
+        state.video_masker.reset_state()
+        reset_video_session_state()
+        masks_dir = current_masks_dir()
+        if masks_dir is not None:
+            shutil.rmtree(masks_dir, ignore_errors=True)
+            masks_dir.mkdir(parents=True, exist_ok=True)
+        state.mask_manifest_path = None
+        state_epoch = bump_video_state_epoch()
+        write_session_metadata()
     return {
         "message": "Video state reset successfully",
         "state_epoch": state_epoch,
@@ -355,132 +356,132 @@ async def reset_video_state():
 
 async def add_new_points_or_box(request: VideoAddPointsOrBoxRequest):
     require_no_active_job("add points")
-    if state.video_masker is None:
-        return {"error": "Video masker not active."}
+    with state.video_state_lock:
+        if state.video_masker is None:
+            return {"error": "Video masker not active."}
 
-    if not state.video_frame_files:
-        raise HTTPException(status_code=400, detail="No video frames available. Call /video/init_state first.")
-    if request.frame_idx < 0 or request.frame_idx >= len(state.video_frame_files):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Frame index out of bounds: {request.frame_idx}. Expected 0..{len(state.video_frame_files) - 1}.",
-        )
-
-    out_frame_idx, out_obj_ids, out_mask_logits = state.video_masker.add_new_points_or_box(
-        frame_idx=request.frame_idx,
-        obj_id=request.obj_id,
-        points=request.points,
-        labels=request.labels,
-        clear_old_points=request.clear_old_points,
-        box=request.box
-    )
-    returned_frame_idx = int(out_frame_idx)
-    if returned_frame_idx != int(request.frame_idx):
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Frame mismatch in SAM2 response: "
-                f"request_frame_idx={int(request.frame_idx)} response_frame_idx={returned_frame_idx}"
-            ),
-        )
-
-    normalized_obj_ids = [int(obj_id) for obj_id in out_obj_ids]
-    if len(normalized_obj_ids) != len(out_mask_logits):
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Invalid SAM2 response: "
-                f"{len(normalized_obj_ids)} object IDs but {len(out_mask_logits)} mask tensors."
-            ),
-        )
-
-    masks_list: list[list[list[bool]]] = []
-    mask_pixel_counts: dict[int, int] = {}
-    mask_shapes: dict[int, list[int]] = {}
-    for index, obj_id in enumerate(normalized_obj_ids):
-        mask_2d = mask_logits_to_2d_bool(out_mask_logits[index])
-        masks_list.append(mask_2d.tolist())
-        mask_pixel_counts[int(obj_id)] = int(np.count_nonzero(mask_2d))
-        mask_shapes[int(obj_id)] = [int(mask_2d.shape[0]), int(mask_2d.shape[1])]
-
-    selected_obj_id = int(request.obj_id)
-    selected_obj_index = normalized_obj_ids.index(selected_obj_id) if selected_obj_id in normalized_obj_ids else None
-    selected_obj_pixels = int(mask_pixel_counts.get(selected_obj_id, 0))
-    has_positive_prompt = any(int(label) == 1 for label in (request.labels or []))
-    used_single_frame_fallback = False
-
-    # Some interactive clicks return an empty mask before memory preflight/consolidation.
-    # If the selected object mask is empty, run a 1-frame propagate pass as a bounded fallback.
-    if selected_obj_index is not None and selected_obj_pixels == 0 and has_positive_prompt:
-        try:
-            fallback_segments = state.video_masker.propagate_in_video(
-                start_frame_idx=int(request.frame_idx),
-                max_frame_num_to_track=1,
-                reverse=False,
-                batch_size=1,
-                online_mode=state.video_masker.online_mode,
-                collect_segments=True,
-            )
-            fallback_frame_masks = fallback_segments.get(int(request.frame_idx), {})
-            fallback_mask = fallback_frame_masks.get(selected_obj_id)
-            if fallback_mask is not None:
-                fallback_mask_2d = np.asarray(fallback_mask).astype(bool)
-                fallback_mask_2d = np.squeeze(fallback_mask_2d)
-                if fallback_mask_2d.ndim == 2:
-                    fallback_pixels = int(np.count_nonzero(fallback_mask_2d))
-                    if fallback_pixels > 0:
-                        masks_list[selected_obj_index] = fallback_mask_2d.tolist()
-                        mask_pixel_counts[selected_obj_id] = fallback_pixels
-                        mask_shapes[selected_obj_id] = [int(fallback_mask_2d.shape[0]), int(fallback_mask_2d.shape[1])]
-                        used_single_frame_fallback = True
-        except Exception:
-            logger.exception(
-                "Single-frame interactive fallback failed for frame=%s obj=%s",
-                int(request.frame_idx),
-                selected_obj_id,
+        if not state.video_frame_files:
+            raise HTTPException(status_code=400, detail="No video frames available. Call /video/init_state first.")
+        if request.frame_idx < 0 or request.frame_idx >= len(state.video_frame_files):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Frame index out of bounds: {request.frame_idx}. Expected 0..{len(state.video_frame_files) - 1}.",
             )
 
-    record_prompt_event(request)
-    logger.info(
-        "Interactive mask response frame=%s obj=%s pixels=%s fallback=%s",
-        int(request.frame_idx),
-        selected_obj_id,
-        int(mask_pixel_counts.get(selected_obj_id, 0)),
-        used_single_frame_fallback,
-    )
+        out_frame_idx, out_obj_ids, out_mask_logits = state.video_masker.add_new_points_or_box(
+            frame_idx=request.frame_idx,
+            obj_id=request.obj_id,
+            points=request.points,
+            labels=request.labels,
+            clear_old_points=request.clear_old_points,
+            box=request.box
+        )
+        returned_frame_idx = int(out_frame_idx)
+        if returned_frame_idx != int(request.frame_idx):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Frame mismatch in SAM2 response: "
+                    f"request_frame_idx={int(request.frame_idx)} response_frame_idx={returned_frame_idx}"
+                ),
+            )
 
-    return {
-        "request_frame_idx": int(request.frame_idx),
-        "frame_idx": returned_frame_idx,
-        "frame_file": state.video_frame_files[returned_frame_idx],
-        "out_obj_ids": normalized_obj_ids,
-        "out_masks": masks_list,
-        "mask_pixel_counts": mask_pixel_counts,
-        "mask_shapes": mask_shapes,
-        "single_frame_fallback_used": used_single_frame_fallback,
-        "state_epoch": int(state.video_state_epoch),
-    }
+        normalized_obj_ids = [int(obj_id) for obj_id in out_obj_ids]
+        if len(normalized_obj_ids) != len(out_mask_logits):
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Invalid SAM2 response: "
+                    f"{len(normalized_obj_ids)} object IDs but {len(out_mask_logits)} mask tensors."
+                ),
+            )
+
+        masks_list: list[list[list[bool]]] = []
+        mask_pixel_counts: dict[int, int] = {}
+        mask_shapes: dict[int, list[int]] = {}
+        for index, obj_id in enumerate(normalized_obj_ids):
+            mask_2d = mask_logits_to_2d_bool(out_mask_logits[index])
+            masks_list.append(mask_2d.tolist())
+            mask_pixel_counts[int(obj_id)] = int(np.count_nonzero(mask_2d))
+            mask_shapes[int(obj_id)] = [int(mask_2d.shape[0]), int(mask_2d.shape[1])]
+
+        selected_obj_id = int(request.obj_id)
+        selected_obj_index = normalized_obj_ids.index(selected_obj_id) if selected_obj_id in normalized_obj_ids else None
+        selected_obj_pixels = int(mask_pixel_counts.get(selected_obj_id, 0))
+        has_positive_prompt = any(int(label) == 1 for label in (request.labels or []))
+        used_single_frame_fallback = False
+
+        # Some interactive clicks return an empty mask before memory preflight/consolidation.
+        # If the selected object mask is empty, run a 1-frame propagate pass as a bounded fallback.
+        if selected_obj_index is not None and selected_obj_pixels == 0 and has_positive_prompt:
+            try:
+                fallback_segments = state.video_masker.propagate_in_video(
+                    start_frame_idx=int(request.frame_idx),
+                    max_frame_num_to_track=1,
+                    reverse=False,
+                    batch_size=1,
+                    online_mode=state.video_masker.online_mode,
+                    collect_segments=True,
+                )
+                fallback_frame_masks = fallback_segments.get(int(request.frame_idx), {})
+                fallback_mask = fallback_frame_masks.get(selected_obj_id)
+                if fallback_mask is not None:
+                    fallback_mask_2d = np.asarray(fallback_mask).astype(bool)
+                    fallback_mask_2d = np.squeeze(fallback_mask_2d)
+                    if fallback_mask_2d.ndim == 2:
+                        fallback_pixels = int(np.count_nonzero(fallback_mask_2d))
+                        if fallback_pixels > 0:
+                            masks_list[selected_obj_index] = fallback_mask_2d.tolist()
+                            mask_pixel_counts[selected_obj_id] = fallback_pixels
+                            mask_shapes[selected_obj_id] = [int(fallback_mask_2d.shape[0]), int(fallback_mask_2d.shape[1])]
+                            used_single_frame_fallback = True
+            except Exception:
+                logger.exception(
+                    "Single-frame interactive fallback failed for frame=%s obj=%s",
+                    int(request.frame_idx),
+                    selected_obj_id,
+                )
+
+        record_prompt_event(request)
+        logger.info(
+            "Interactive mask response frame=%s obj=%s pixels=%s fallback=%s",
+            int(request.frame_idx),
+            selected_obj_id,
+            int(mask_pixel_counts.get(selected_obj_id, 0)),
+            used_single_frame_fallback,
+        )
+
+        return {
+            "request_frame_idx": int(request.frame_idx),
+            "frame_idx": returned_frame_idx,
+            "frame_file": state.video_frame_files[returned_frame_idx],
+            "out_obj_ids": normalized_obj_ids,
+            "out_masks": masks_list,
+            "mask_pixel_counts": mask_pixel_counts,
+            "mask_shapes": mask_shapes,
+            "single_frame_fallback_used": used_single_frame_fallback,
+            "state_epoch": int(state.video_state_epoch),
+        }
 
 async def add_new_mask(request: VideoAddMaskRequest):
     require_no_active_job("add mask")
-    if state.video_masker is None:
-        return {"error": "Video masker not active."}
-    
-    # Convert mask from list to numpy array
-    mask = np.array(request.mask, dtype=bool)
-    
-    frame_idx, out_obj_ids, out_mask_logits = state.video_masker.add_new_mask(
-        frame_idx=request.frame_idx,
-        obj_id=request.obj_id,
-        mask=mask
-    )
-    
-    masks_list = [mask_logits_to_2d_bool(out_mask_logits[i]).tolist() for i in range(len(out_obj_ids))]
-    return {
-        "frame_idx": frame_idx,
-        "out_obj_ids": out_obj_ids,
-        "out_masks": masks_list
-    }
+    with state.video_state_lock:
+        if state.video_masker is None:
+            return {"error": "Video masker not active."}
+
+        mask = np.array(request.mask, dtype=bool)
+        frame_idx, out_obj_ids, out_mask_logits = state.video_masker.add_new_mask(
+            frame_idx=request.frame_idx,
+            obj_id=request.obj_id,
+            mask=mask
+        )
+
+        masks_list = [mask_logits_to_2d_bool(out_mask_logits[i]).tolist() for i in range(len(out_obj_ids))]
+        return {
+            "frame_idx": frame_idx,
+            "out_obj_ids": out_obj_ids,
+            "out_masks": masks_list
+        }
 
 async def save_video_session(request: VideoSaveRequest):
     require_no_active_job("save session")
@@ -546,27 +547,54 @@ async def save_video_session(request: VideoSaveRequest):
 
 async def clear_all_prompts_in_frame(frame_idx: int, obj_id: int):
     require_no_active_job("clear prompts")
-    if state.video_masker is None:
-        return {"error": "Video masker not active."}
-    state.video_masker.clear_all_prompts_in_frame(frame_idx, obj_id)
-    state.video_prompt_events = [
-        event
-        for event in state.video_prompt_events
-        if not (int(event["frame_idx"]) == int(frame_idx) and int(event["obj_id"]) == int(obj_id))
-    ]
-    return {"message": "Cleared all prompts in frame successfully"}
+    with state.video_state_lock:
+        if state.video_masker is None:
+            return {"error": "Video masker not active."}
+        state.video_masker.clear_all_prompts_in_frame(frame_idx, obj_id)
+        state.video_prompt_events = [
+            event
+            for event in state.video_prompt_events
+            if not (int(event["frame_idx"]) == int(frame_idx) and int(event["obj_id"]) == int(obj_id))
+        ]
+        return {"message": "Cleared all prompts in frame successfully"}
 
 async def remove_object(obj_id: int):
     require_no_active_job("remove object")
-    if state.video_masker is None:
-        return {"error": "Video masker not active."}
-    state.video_masker.remove_object(obj_id)
-    state.video_prompt_events = [
-        event
-        for event in state.video_prompt_events
-        if int(event["obj_id"]) != int(obj_id)
-    ]
-    return {"message": "Object removed successfully"}
+    with state.video_state_lock:
+        if state.video_masker is None:
+            return {"error": "Video masker not active."}
+        removed_obj_id = int(obj_id)
+        state.video_masker.remove_object(removed_obj_id)
+        state.video_prompt_events = [
+            event
+            for event in state.video_prompt_events
+            if int(event["obj_id"]) != removed_obj_id
+        ]
+
+        manifest_path = Path(state.mask_manifest_path) if state.mask_manifest_path else None
+        manifest_object_removed = False
+        if manifest_path is not None and manifest_path.exists():
+            try:
+                manifest = load_mask_manifest(manifest_path)
+                for frame_payload in manifest.get("frames", {}).values():
+                    objects_payload = frame_payload.get("objects")
+                    if isinstance(objects_payload, dict) and objects_payload.pop(str(removed_obj_id), None) is not None:
+                        manifest_object_removed = True
+                if manifest_object_removed:
+                    write_mask_manifest(manifest_path, manifest)
+            except Exception:
+                logger.exception("Failed to prune object %s from mask manifest", removed_obj_id)
+
+        state_epoch = bump_video_state_epoch()
+        write_session_metadata()
+        return {
+            "message": "Object removed successfully",
+            "obj_id": removed_obj_id,
+            "manifest_object_removed": manifest_object_removed,
+            "mask_manifest_path": state.mask_manifest_path,
+            "state.mask_manifest_path": state.mask_manifest_path,
+            "state_epoch": state_epoch,
+        }
 
 async def get_video_info():
     return {
@@ -594,15 +622,69 @@ async def get_mask_manifest():
         "state.mask_manifest_path": str(manifest_path),
     }
 
+def _current_mask_manifest_path() -> Optional[Path]:
+    if state.video_dir is None:
+        return None
+    masks_dir = current_masks_dir()
+    return Path(state.mask_manifest_path) if state.mask_manifest_path else (
+        masks_dir / "manifest.json" if masks_dir is not None else Path(state.video_dir) / "masks" / "manifest.json"
+    )
+
+
+def _parse_mask_object_ids(object_ids: Optional[str]) -> Optional[set[int]]:
+    if object_ids is None or object_ids.strip() == "":
+        return None
+
+    parsed: set[int] = set()
+    for raw_token in object_ids.split(","):
+        token = raw_token.strip()
+        if token == "":
+            continue
+        try:
+            object_id = int(token)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=f"Invalid object id: {token}") from error
+        if object_id <= 0:
+            raise HTTPException(status_code=400, detail=f"Invalid object id: {token}")
+        parsed.add(object_id)
+    return parsed
+
+
+def _clamp_frame_window(start_frame_idx: int, end_frame_idx: int, num_frames: int) -> tuple[int, int]:
+    if num_frames <= 0:
+        return int(start_frame_idx), int(end_frame_idx)
+    clamped_start = min(max(int(start_frame_idx), 0), num_frames - 1)
+    clamped_end = min(max(int(end_frame_idx), 0), num_frames - 1)
+    return clamped_start, clamped_end
+
+
+def manifest_frame_objects(
+    manifest: dict[str, Any],
+    frame_idx: int,
+    object_ids: Optional[set[int]] = None,
+) -> dict[str, Any]:
+    frame_payload = manifest.get("frames", {}).get(str(frame_idx), {"objects": {}})
+    objects_payload = frame_payload.get("objects", {})
+    if not isinstance(objects_payload, dict):
+        return {}
+    if object_ids is None:
+        return objects_payload
+    allowed_ids = {str(object_id) for object_id in object_ids}
+    return {
+        obj_id: mask_payload
+        for obj_id, mask_payload in objects_payload.items()
+        if obj_id in allowed_ids
+    }
+
+
 async def get_mask_data(frame_idx: int):
     if state.video_dir is None:
         return {"error": "Video not initialized"}
     if frame_idx < 0:
         return {"error": "Frame index out of bounds"}
 
-    masks_dir = current_masks_dir()
-    manifest_path = Path(state.mask_manifest_path) if state.mask_manifest_path else (masks_dir / "manifest.json" if masks_dir is not None else Path(state.video_dir) / "masks" / "manifest.json")
-    if not manifest_path.exists():
+    manifest_path = _current_mask_manifest_path()
+    if manifest_path is None or not manifest_path.exists():
         return {"frame_idx": frame_idx, "objects": {}}
 
     manifest = load_mask_manifest(manifest_path)
@@ -610,11 +692,60 @@ async def get_mask_data(frame_idx: int):
     if frame_idx >= num_frames:
         return {"error": "Frame index out of bounds"}
 
-    frame_payload = manifest.get("frames", {}).get(str(frame_idx), {"objects": {}})
-    objects_payload = frame_payload.get("objects", {})
     return {
         "frame_idx": int(frame_idx),
-        "objects": objects_payload,
+        "objects": manifest_frame_objects(manifest, int(frame_idx)),
+    }
+
+
+async def get_mask_data_window(
+    start_frame_idx: int,
+    end_frame_idx: int,
+    object_ids: Optional[str] = None,
+    include_empty: bool = False,
+):
+    if state.video_dir is None:
+        return {"error": "Video not initialized"}
+    if start_frame_idx < 0 or end_frame_idx < 0:
+        raise HTTPException(status_code=400, detail="Frame indexes must be non-negative.")
+
+    parsed_object_ids = _parse_mask_object_ids(object_ids)
+    if end_frame_idx < start_frame_idx:
+        raise HTTPException(status_code=400, detail="end_frame_idx must be >= start_frame_idx.")
+
+    manifest_path = _current_mask_manifest_path()
+    if manifest_path is None or not manifest_path.exists():
+        clamped_start, clamped_end = _clamp_frame_window(
+            start_frame_idx,
+            end_frame_idx,
+            len(state.video_frame_files),
+        )
+        return {
+            "start_frame_idx": clamped_start,
+            "end_frame_idx": clamped_end,
+            "frames": {},
+        }
+
+    manifest = load_mask_manifest(manifest_path)
+    num_frames = int(manifest.get("num_frames", 0))
+    if num_frames <= 0:
+        return {
+            "start_frame_idx": int(start_frame_idx),
+            "end_frame_idx": int(end_frame_idx),
+            "frames": {},
+        }
+
+    clamped_start, clamped_end = _clamp_frame_window(start_frame_idx, end_frame_idx, num_frames)
+    frames: dict[str, Any] = {}
+    for frame_idx in range(clamped_start, clamped_end + 1):
+        objects_payload = manifest_frame_objects(manifest, frame_idx, parsed_object_ids)
+        if objects_payload or include_empty:
+            frames[str(frame_idx)] = {"objects": objects_payload}
+
+    return {
+        "start_frame_idx": clamped_start,
+        "end_frame_idx": clamped_end,
+        "frames": frames,
     }
 
 async def get_video_frame(frame_idx: int):

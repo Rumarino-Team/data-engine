@@ -15,7 +15,7 @@ interface WorkflowDeps {
   runBackendJob: <T>(title: string, startJob: () => Promise<{ job_id: string }>) => Promise<T | null>;
   updateStateEpoch: (epoch: number | undefined, source: string) => void;
   setHasManifestMasks: (value: boolean) => void;
-  clearMaskDataCache: () => void;
+  invalidateMaskCache: () => void;
   scheduleFrameLoad: (frameIdx: number) => void;
   targetFrameIdx: () => number;
   setTrackedPoints: (next: any[]) => void;
@@ -125,7 +125,7 @@ export class VideoMaskerWorkflowService {
     if (response.tracked_points_skipped_reason) {
       deps.showToast('warning', 'Tracking guidance skipped', response.tracked_points_skipped_reason);
     }
-    deps.clearMaskDataCache();
+    deps.invalidateMaskCache();
     deps.scheduleFrameLoad(deps.targetFrameIdx());
   }
 
@@ -158,7 +158,7 @@ export class VideoMaskerWorkflowService {
         deps.setHasManifestMasks(false);
         deps.setTrackedPoints([]);
         deps.resetInteractiveMaps();
-        deps.clearMaskDataCache();
+        deps.invalidateMaskCache();
         deps.scheduleFrameLoad(deps.targetFrameIdx());
       },
       error: (error) => {

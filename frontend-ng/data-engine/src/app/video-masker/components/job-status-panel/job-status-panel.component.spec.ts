@@ -1,6 +1,9 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { BackendJob } from '../../../services/backend.service';
 import { JobStatusPanelComponent } from './job-status-panel.component';
+
+await (globalThis as any).resolveAngularTestResources();
 
 describe('JobStatusPanelComponent', () => {
   let fixture: ComponentFixture<JobStatusPanelComponent>;

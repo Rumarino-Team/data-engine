@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
+import threading
 import numpy as np
 
 @dataclass
@@ -18,5 +19,6 @@ class BackendState:
     active_session_dir: Optional[Path] = None
     active_session_id: Optional[str] = None
     active_session_saved_name: Optional[str] = None
+    video_state_lock: threading.RLock = field(default_factory=threading.RLock)
 
 state = BackendState()
