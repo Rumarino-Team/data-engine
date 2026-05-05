@@ -269,7 +269,7 @@
 
   <div class="bottom-bar" *ngIf="isInitialized()">
     <div class="scrubber">
-      <span>Displayed: {{ displayedFrameIdx() }} / {{ numFrames() - 1 }}</span>
+      <span class="scrubber-frame-label">Displayed: {{ displayedFrameIdx() }} / {{ numFrames() - 1 }}</span>
       <input
         type="range"
         [min]="0"
@@ -278,6 +278,32 @@
         (ngModelChange)="onScrubberFrameChange($event)"
         [disabled]="isLoading() || isPointRequestInFlight()"
       />
+      <div class="frame-range-controls">
+        <span class="range-readout">
+          {{ rangeStartFrameIdx() ?? '-' }} to {{ rangeEndFrameIdx() ?? '-' }}
+        </span>
+        <button
+          type="button"
+          (click)="setRangeStartToPlayhead()"
+          [disabled]="isLoading() || isPointRequestInFlight()"
+        >
+          Set Start
+        </button>
+        <button
+          type="button"
+          (click)="setRangeEndToPlayhead()"
+          [disabled]="isLoading() || isPointRequestInFlight()"
+        >
+          Set End
+        </button>
+        <button
+          type="button"
+          (click)="clearFrameRange()"
+          [disabled]="isLoading() || isPointRequestInFlight() || (rangeStartFrameIdx() === null && rangeEndFrameIdx() === null)"
+        >
+          Clear
+        </button>
+      </div>
     </div>
   </div>
 

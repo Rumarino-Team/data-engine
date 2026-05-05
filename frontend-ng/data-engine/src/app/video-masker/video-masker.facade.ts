@@ -51,6 +51,8 @@ export class VideoMaskerFacade implements OnDestroy {
   numFrames = this.store.numFrames;
   targetFrameIdx = this.store.targetFrameIdx;
   displayedFrameIdx = this.store.displayedFrameIdx;
+  rangeStartFrameIdx = this.store.rangeStartFrameIdx;
+  rangeEndFrameIdx = this.store.rangeEndFrameIdx;
   stateEpoch = this.store.stateEpoch;
 
   objects = this.store.objects;
@@ -213,6 +215,28 @@ export class VideoMaskerFacade implements OnDestroy {
       );
     }
     this.stateEpoch.set(resolution.normalizedEpoch);
+  }
+
+  private selectedFrameRangeRequest(): { start_frame_idx?: number; end_frame_idx?: number } {
+    const start = this.rangeStartFrameIdx();
+    const end = this.rangeEndFrameIdx();
+    if (start === null && end === null) {
+      return {};
+    }
+    const maxFrame = this.numFrames() - 1;
+    const fallbackFrame = this.frameRendererService.clampFrameIndex(this.targetFrameIdx(), maxFrame);
+    const normalizedStart = this.frameRendererService.clampFrameIndex(
+      start ?? end ?? fallbackFrame,
+      maxFrame,
+    );
+    const normalizedEnd = this.frameRendererService.clampFrameIndex(
+      end ?? start ?? fallbackFrame,
+      maxFrame,
+    );
+    return {
+      start_frame_idx: Math.min(normalizedStart, normalizedEnd),
+      end_frame_idx: Math.max(normalizedStart, normalizedEnd),
+    };
   }
 
   private markObjectAsLiveEdited(frameIdx: number, objId: number): void {
@@ -438,6 +462,7 @@ export class VideoMaskerFacade implements OnDestroy {
         this.points.set(new Map());
         this.liveEditedObjectFrames.set(new Map());
         this.selectedPoint.set(null);
+        this.clearFrameRange();
       },
       getVideoDir: () => this.videoDir(),
       setVideoDir: (value) => this.videoDir.set(value),
@@ -980,6 +1005,23 @@ export class VideoMaskerFacade implements OnDestroy {
     this.targetFrameIdx.set(this.frameRendererService.clampFrameIndex(parsed, maxFrame));
   }
 
+  setRangeStartToPlayhead(): void {
+    this.rangeStartFrameIdx.set(
+      this.frameRendererService.clampFrameIndex(this.targetFrameIdx(), this.numFrames() - 1),
+    );
+  }
+
+  setRangeEndToPlayhead(): void {
+    this.rangeEndFrameIdx.set(
+      this.frameRendererService.clampFrameIndex(this.targetFrameIdx(), this.numFrames() - 1),
+    );
+  }
+
+  clearFrameRange(): void {
+    this.rangeStartFrameIdx.set(null);
+    this.rangeEndFrameIdx.set(null);
+  }
+
   addObject() {
     this.commandsService.addObject({
       backend: this.backend,
@@ -1093,6 +1135,7 @@ export class VideoMaskerFacade implements OnDestroy {
       invalidateMaskCache: () => this.maskOverlayCache.clearAll(),
       scheduleFrameLoad: (frameIdx) => this.scheduleFrameLoad(frameIdx),
       targetFrameIdx: () => this.targetFrameIdx(),
+      selectedFrameRange: () => this.selectedFrameRangeRequest(),
       setTrackedPoints: (next) => this.trackedPoints.set(next as any),
       drawCurrentFrame: () => this.drawCurrentFrame(),
       showToast: (severity, title, message) => this.showToast(severity, title, message),
@@ -1146,6 +1189,7 @@ export class VideoMaskerFacade implements OnDestroy {
       invalidateMaskCache: () => this.maskOverlayCache.clearAll(),
       scheduleFrameLoad: (frameIdx) => this.scheduleFrameLoad(frameIdx),
       targetFrameIdx: () => this.targetFrameIdx(),
+      selectedFrameRange: () => this.selectedFrameRangeRequest(),
       setTrackedPoints: (next) => this.trackedPoints.set(next as any),
       drawCurrentFrame: () => this.drawCurrentFrame(),
       showToast: (severity, title, message) => this.showToast(severity, title, message),

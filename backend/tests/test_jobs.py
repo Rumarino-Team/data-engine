@@ -144,6 +144,40 @@ class JobTests(unittest.TestCase):
         self.assertTrue(jobs.clear_current_job_result(started["job_id"]))
         self.assertEqual(jobs.serialize_job()["result"], {"message": "done", "tracking_result_id": "abc"})
 
+    def test_thread_start_failure_marks_job_failed(self):
+        original_start = threading.Thread.start
+
+        def fail_start(self):
+            raise RuntimeError("thread unavailable")
+
+        threading.Thread.start = fail_start
+        try:
+            with self.assertRaises(HTTPException) as context:
+                jobs.queue_long_job(
+                    operation="video_init",
+                    stage="queued",
+                    stage_label="Queued",
+                    message="queued",
+                    worker=lambda: {"ok": True},
+                )
+        finally:
+            threading.Thread.start = original_start
+
+        self.assertEqual(context.exception.status_code, 500)
+        serialized = jobs.serialize_job()
+        self.assertEqual(serialized["status"], "failed")
+        self.assertEqual(serialized["error"]["code"], "thread_start_failed")
+        self.assertFalse(jobs.is_job_active())
+
+        started = jobs.queue_long_job(
+            operation="video_init",
+            stage="queued",
+            stage_label="Queued",
+            message="queued",
+            worker=lambda: {"ok": True},
+        )
+        self.assertEqual(started["operation"], "video_init")
+
 
 if __name__ == "__main__":
     unittest.main()

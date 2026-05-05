@@ -1,4 +1,5 @@
-from pydantic import BaseModel
+from typing import Optional
+from pydantic import BaseModel, Field
 import co_tracker as cot
 
 class TrackingLoadVideoRequest(BaseModel):
@@ -15,6 +16,8 @@ class TrackingPointsRequest(BaseModel):
 
 class TrackingPromptPointsRequest(BaseModel):
     add_support_grid: bool = True
+    start_frame_idx: Optional[int] = Field(default=None, ge=0)
+    end_frame_idx: Optional[int] = Field(default=None, ge=0)
 
 class TrackPromptPointMetadata(BaseModel):
     point_id: str
@@ -32,6 +35,8 @@ class TrackPromptPointsJobResponse(BaseModel):
     tracking_mode: str
     streaming_frame_threshold: int
     tracking_result_id: str
+    tracking_start_frame_idx: int
+    tracking_end_frame_idx: int
     state_epoch: int
 
 class TrackPromptPointsResult(BaseModel):
@@ -43,6 +48,8 @@ class TrackPromptPointsResult(BaseModel):
     add_support_grid_used: bool
     tracking_mode: str
     streaming_frame_threshold: int
+    tracking_start_frame_idx: int
+    tracking_end_frame_idx: int
     points: list[TrackPromptPointMetadata]
     tracks: list[list[list[float]]]
     visibility: list[list[bool]]

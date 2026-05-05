@@ -40,6 +40,8 @@ def save_prompt_tracking_result(
     points: list[dict[str, Any]],
     tracks: list[Any],
     visibility: list[Any],
+    tracking_start_frame_idx: int = 0,
+    tracking_end_frame_idx: int | None = None,
 ) -> dict[str, Any]:
     session_path = current_session_path()
     if session_path is None:
@@ -47,6 +49,11 @@ def save_prompt_tracking_result(
 
     result_id = uuid.uuid4().hex
     created_at = utc_now_iso()
+    normalized_tracking_end_frame_idx = (
+        int(num_frames) - 1
+        if tracking_end_frame_idx is None
+        else int(tracking_end_frame_idx)
+    )
     payload = {
         "version": 2,
         "result_id": result_id,
@@ -58,6 +65,8 @@ def save_prompt_tracking_result(
         "add_support_grid_used": bool(add_support_grid_used),
         "tracking_mode": tracking_mode,
         "streaming_frame_threshold": int(streaming_frame_threshold),
+        "tracking_start_frame_idx": int(tracking_start_frame_idx),
+        "tracking_end_frame_idx": normalized_tracking_end_frame_idx,
         "tracked_prompt_keys": tracked_prompt_keys(points),
         "points": points,
         "tracks": tracks,
@@ -74,6 +83,8 @@ def save_prompt_tracking_result(
         "add_support_grid_used": bool(add_support_grid_used),
         "tracking_mode": tracking_mode,
         "streaming_frame_threshold": int(streaming_frame_threshold),
+        "tracking_start_frame_idx": int(tracking_start_frame_idx),
+        "tracking_end_frame_idx": normalized_tracking_end_frame_idx,
     }
     write_session_metadata(
         {

@@ -312,7 +312,6 @@ def propagate_in_video(start_frame_idx=None, max_frame_num_to_track=None, revers
         "reverse": reverse,
         "online_mode": ONLINE_MODE,
         "batch_size": ONLINE_BATCH_SIZE,
-        "include_masks_in_response": False,
     }
     response = requests.post(url, json=payload)
     if response.status_code == 200:
@@ -324,15 +323,9 @@ def propagate_in_video(start_frame_idx=None, max_frame_num_to_track=None, revers
         batch_size = response_data.get("batch_size")
         if online_mode is not None:
             print(f"Online batching: {'enabled' if online_mode else 'disabled'} (batch_size={batch_size})")
-        num_frames = response_data.get("video_segments_total_frames", len(response_data.get("video_segments", {})))
-        saved_paths = response_data.get("saved_mask_paths", {})
+        num_frames = response_data.get("video_segments_total_frames", 0)
         print(f"Propagation successful! Processed {num_frames} frames.")
-        returned_frames = response_data.get("video_segments_returned_frames", len(response_data.get("video_segments", {})))
-        if returned_frames:
-            print(f"Returned {returned_frames} frame masks in API response.")
-        print(f"Saved masks for {len(saved_paths)} frames.")
-        for frame_idx, paths in saved_paths.items():
-            print(f"  Frame {frame_idx}: {paths}")
+        print(f"Saved mask frames: {response_data.get('saved_mask_frame_count', 0)}")
         return True, response_data
     else:
         print(f"Failed to propagate. Status: {response.status_code}, Response: {response.text}")

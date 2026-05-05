@@ -34,6 +34,7 @@ def restore_video_masker_from_prompt_events(
     progress_stage_override: Optional[str] = None,
     progress_label_override: Optional[str] = None,
     progress_message_prefix: Optional[str] = None,
+    prompt_events: Optional[list[dict]] = None,
 ) -> None:
 
     if state.video_dir is None:
@@ -60,7 +61,8 @@ def restore_video_masker_from_prompt_events(
         progress_callback=_on_progress,
     )
 
-    for event in state.video_prompt_events:
+    restore_events = state.video_prompt_events if prompt_events is None else prompt_events
+    for event in restore_events:
         points = event["points"] if event["points"] else None
         labels = event["labels"] if event["labels"] else None
         state.video_masker.add_new_points_or_box(

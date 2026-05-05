@@ -16,6 +16,8 @@ class BackendState:
     video_prompt_events: list[dict[str, Any]] = field(default_factory=list)
     mask_manifest_path: Optional[str] = None
     video_state_epoch: int = 0
+    video_masker_status: str = "inactive"
+    video_masker_error: Optional[str] = None
     active_session_dir: Optional[Path] = None
     active_session_id: Optional[str] = None
     active_session_saved_name: Optional[str] = None

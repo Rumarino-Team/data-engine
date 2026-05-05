@@ -7,7 +7,8 @@ from fastapi.responses import FileResponse
 import numpy as np
 import sam2_video_masker as svm
 from core.config import IMAGE_EXTENSIONS, SAVED_ROOT, VIDEO_EXTENSIONS
-from core.jobs import queue_long_job, require_no_active_job, update_job, utc_now_iso
+from core.jobs import queue_long_job, update_job, utc_now_iso
+from core.state_guards import guarded_video_read, guarded_video_write
 from core.state import state
 from schemas.video import VideoAddMaskRequest, VideoAddPointsOrBoxRequest, VideoInitStateRequest, VideoSaveRequest
 from sessions.cache import bump_video_state_epoch, prepare_video_masker_for_video_init, reset_video_session_state
@@ -15,12 +16,21 @@ from sessions.interactive_state import prompt_events_from_interactive_state, san
 from sessions.metadata import current_masks_dir, current_session_path, load_session_metadata, merge_session_metadata, sanitize_save_name, write_session_metadata
 from sessions.paths import path_is_relative_to, resolve_input_path, resolve_saved_session_layout, validate_video_input_path
 from utils import load_mask_manifest, write_mask_manifest
+from video.mask_commit import cleanup_stale_mask_commit_dirs
 from video.io import copy_frames_directory_to_session, create_active_session, extract_video_to_session_frames
 from video.masks import mask_logits_to_2d_bool
 from video.prompts import record_prompt_event
 from tracking.results import restored_tracking_result_payload
 
 logger = logging.getLogger(__name__)
+
+def _masker_unavailable_response() -> dict[str, str]:
+    if state.video_masker_status == "restore_failed":
+        raise HTTPException(
+            status_code=503,
+            detail="Video masker restore failed. Reinitialize the video session.",
+        )
+    return {"error": "Video masker not active."}
 
 def initialize_video_state_from_resolved_input(
     resolved_input_path: Path,
@@ -213,6 +223,8 @@ def initialize_video_state_from_resolved_input(
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+    state.video_masker_status = "ready"
+    state.video_masker_error = None
 
     update_job(
         stage="indexing_frames",
@@ -304,6 +316,8 @@ def run_video_init_job(request: VideoInitStateRequest) -> dict[str, Any]:
         update_job(stage=stage, stage_label=label, progress=progress, message=message)
 
     state.video_masker = svm.SAM2VideoMasker(progress_callback=_on_sam2_progress)
+    state.video_masker_status = "ready"
+    state.video_masker_error = None
     update_job(
         stage="model_ready",
         stage_label="SAM2 model ready",
@@ -336,10 +350,9 @@ def run_video_init_job(request: VideoInitStateRequest) -> dict[str, Any]:
     return result
 
 async def reset_video_state():
-    require_no_active_job("video reset")
-    with state.video_state_lock:
+    with guarded_video_write("video reset"):
         if state.video_masker is None:
-            return {"error": "Video masker not active."}
+            return _masker_unavailable_response()
         state.video_masker.reset_state()
         reset_video_session_state()
         masks_dir = current_masks_dir()
@@ -347,6 +360,8 @@ async def reset_video_state():
             shutil.rmtree(masks_dir, ignore_errors=True)
             masks_dir.mkdir(parents=True, exist_ok=True)
         state.mask_manifest_path = None
+        state.video_masker_status = "ready"
+        state.video_masker_error = None
         state_epoch = bump_video_state_epoch()
         write_session_metadata()
     return {
@@ -355,10 +370,9 @@ async def reset_video_state():
     }
 
 async def add_new_points_or_box(request: VideoAddPointsOrBoxRequest):
-    require_no_active_job("add points")
-    with state.video_state_lock:
+    with guarded_video_write("add points"):
         if state.video_masker is None:
-            return {"error": "Video masker not active."}
+            return _masker_unavailable_response()
 
         if not state.video_frame_files:
             raise HTTPException(status_code=400, detail="No video frames available. Call /video/init_state first.")
@@ -464,10 +478,9 @@ async def add_new_points_or_box(request: VideoAddPointsOrBoxRequest):
         }
 
 async def add_new_mask(request: VideoAddMaskRequest):
-    require_no_active_job("add mask")
-    with state.video_state_lock:
+    with guarded_video_write("add mask"):
         if state.video_masker is None:
-            return {"error": "Video masker not active."}
+            return _masker_unavailable_response()
 
         mask = np.array(request.mask, dtype=bool)
         frame_idx, out_obj_ids, out_mask_logits = state.video_masker.add_new_mask(
@@ -484,72 +497,70 @@ async def add_new_mask(request: VideoAddMaskRequest):
         }
 
 async def save_video_session(request: VideoSaveRequest):
-    require_no_active_job("save session")
+    with guarded_video_write("save session"):
+        session_path = current_session_path()
+        if session_path is None or state.video_dir is None or not state.video_frame_files:
+            raise HTTPException(status_code=400, detail="Video session is not initialized.")
 
-    session_path = current_session_path()
-    if session_path is None or state.video_dir is None or not state.video_frame_files:
-        raise HTTPException(status_code=400, detail="Video session is not initialized.")
+        save_name = sanitize_save_name(request.name)
+        SAVED_ROOT.mkdir(parents=True, exist_ok=True)
+        saved_path = (SAVED_ROOT / save_name).resolve()
+        if saved_path.exists():
+            raise HTTPException(status_code=409, detail=f"Saved session already exists: {save_name}")
 
-    save_name = sanitize_save_name(request.name)
-    SAVED_ROOT.mkdir(parents=True, exist_ok=True)
-    saved_path = (SAVED_ROOT / save_name).resolve()
-    if saved_path.exists():
-        raise HTTPException(status_code=409, detail=f"Saved session already exists: {save_name}")
+        if path_is_relative_to(session_path, SAVED_ROOT):
+            raise HTTPException(status_code=409, detail="Current session is already saved.")
 
-    if path_is_relative_to(session_path, SAVED_ROOT):
-        raise HTTPException(status_code=409, detail="Current session is already saved.")
+        interactive_state_payload = sanitize_interactive_state(request.interactive_state)
+        existing_metadata: dict[str, Any] = {}
+        session_metadata_path = session_path / "session.json"
+        if session_metadata_path.exists():
+            try:
+                loaded_metadata = load_mask_manifest(session_metadata_path)
+                if isinstance(loaded_metadata, dict):
+                    existing_metadata = loaded_metadata
+            except Exception:
+                logger.warning("Failed to parse existing session metadata before save: %s", session_metadata_path)
 
-    interactive_state_payload = sanitize_interactive_state(request.interactive_state)
-    existing_metadata: dict[str, Any] = {}
-    session_metadata_path = session_path / "session.json"
-    if session_metadata_path.exists():
-        try:
-            loaded_metadata = load_mask_manifest(session_metadata_path)
-            if isinstance(loaded_metadata, dict):
-                existing_metadata = loaded_metadata
-        except Exception:
-            logger.warning("Failed to parse existing session metadata before save: %s", session_metadata_path)
+        saved_at = utc_now_iso()
+        merged_metadata = merge_session_metadata(
+            existing_meta=existing_metadata,
+            interactive_state=interactive_state_payload,
+            save_name=save_name,
+            saved_path=saved_path,
+            saved_at=saved_at,
+        )
+        write_mask_manifest(session_metadata_path, merged_metadata)
 
-    saved_at = utc_now_iso()
-    merged_metadata = merge_session_metadata(
-        existing_meta=existing_metadata,
-        interactive_state=interactive_state_payload,
-        save_name=save_name,
-        saved_path=saved_path,
-        saved_at=saved_at,
-    )
-    write_mask_manifest(session_metadata_path, merged_metadata)
+        session_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(session_path), str(saved_path))
 
-    session_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(session_path), str(saved_path))
+        state.active_session_dir = saved_path
+        state.active_session_saved_name = save_name
+        state.video_dir = str(saved_path / "frames")
+        manifest_path = saved_path / "masks" / "manifest.json"
+        state.mask_manifest_path = str(manifest_path) if manifest_path.exists() else None
+        metadata_extra = {
+            "schema_version": 2,
+            "saved_name": save_name,
+            "saved_path": str(saved_path),
+            "saved_at": saved_at,
+        }
+        if interactive_state_payload is not None:
+            metadata_extra["interactive_state"] = interactive_state_payload
+        write_session_metadata(metadata_extra)
 
-    state.active_session_dir = saved_path
-    state.active_session_saved_name = save_name
-    state.video_dir = str(saved_path / "frames")
-    manifest_path = saved_path / "masks" / "manifest.json"
-    state.mask_manifest_path = str(manifest_path) if manifest_path.exists() else None
-    metadata_extra = {
-        "schema_version": 2,
-        "saved_name": save_name,
-        "saved_path": str(saved_path),
-        "saved_at": saved_at,
-    }
-    if interactive_state_payload is not None:
-        metadata_extra["interactive_state"] = interactive_state_payload
-    write_session_metadata(metadata_extra)
-
-    return {
-        "message": "Session saved successfully",
-        "name": save_name,
-        "saved_path": str(saved_path),
-        "state_epoch": int(state.video_state_epoch),
-    }
+        return {
+            "message": "Session saved successfully",
+            "name": save_name,
+            "saved_path": str(saved_path),
+            "state_epoch": int(state.video_state_epoch),
+        }
 
 async def clear_all_prompts_in_frame(frame_idx: int, obj_id: int):
-    require_no_active_job("clear prompts")
-    with state.video_state_lock:
+    with guarded_video_write("clear prompts"):
         if state.video_masker is None:
-            return {"error": "Video masker not active."}
+            return _masker_unavailable_response()
         state.video_masker.clear_all_prompts_in_frame(frame_idx, obj_id)
         state.video_prompt_events = [
             event
@@ -559,10 +570,9 @@ async def clear_all_prompts_in_frame(frame_idx: int, obj_id: int):
         return {"message": "Cleared all prompts in frame successfully"}
 
 async def remove_object(obj_id: int):
-    require_no_active_job("remove object")
-    with state.video_state_lock:
+    with guarded_video_write("remove object"):
         if state.video_masker is None:
-            return {"error": "Video masker not active."}
+            return _masker_unavailable_response()
         removed_obj_id = int(obj_id)
         state.video_masker.remove_object(removed_obj_id)
         state.video_prompt_events = [
@@ -597,17 +607,23 @@ async def remove_object(obj_id: int):
         }
 
 async def get_video_info():
+    with guarded_video_read():
+        frame_files = list(state.video_frame_files)
     return {
-        "num_frames": len(state.video_frame_files),
-        "frame_files": state.video_frame_files
+        "num_frames": len(frame_files),
+        "frame_files": frame_files
     }
 
 async def get_mask_manifest():
-    if state.video_dir is None:
+    with guarded_video_read():
+        video_dir = state.video_dir
+        mask_manifest_path = state.mask_manifest_path
+        session_path = state.active_session_dir
+    if video_dir is None:
         return {"error": "Video not initialized"}
 
-    masks_dir = current_masks_dir()
-    manifest_path = Path(state.mask_manifest_path) if state.mask_manifest_path else (masks_dir / "manifest.json" if masks_dir is not None else Path(state.video_dir) / "masks" / "manifest.json")
+    masks_dir = session_path / "masks" if session_path is not None else None
+    manifest_path = Path(mask_manifest_path) if mask_manifest_path else (masks_dir / "manifest.json" if masks_dir is not None else Path(video_dir) / "masks" / "manifest.json")
     if not manifest_path.exists():
         return {"error": "Mask manifest not found. Run /video/propagate_in_video first."}
 
@@ -678,12 +694,14 @@ def manifest_frame_objects(
 
 
 async def get_mask_data(frame_idx: int):
-    if state.video_dir is None:
+    with guarded_video_read():
+        video_dir = state.video_dir
+        manifest_path = _current_mask_manifest_path()
+    if video_dir is None:
         return {"error": "Video not initialized"}
     if frame_idx < 0:
         return {"error": "Frame index out of bounds"}
 
-    manifest_path = _current_mask_manifest_path()
     if manifest_path is None or not manifest_path.exists():
         return {"frame_idx": frame_idx, "objects": {}}
 
@@ -704,7 +722,11 @@ async def get_mask_data_window(
     object_ids: Optional[str] = None,
     include_empty: bool = False,
 ):
-    if state.video_dir is None:
+    with guarded_video_read():
+        video_dir = state.video_dir
+        frame_count = len(state.video_frame_files)
+        manifest_path = _current_mask_manifest_path()
+    if video_dir is None:
         return {"error": "Video not initialized"}
     if start_frame_idx < 0 or end_frame_idx < 0:
         raise HTTPException(status_code=400, detail="Frame indexes must be non-negative.")
@@ -713,12 +735,11 @@ async def get_mask_data_window(
     if end_frame_idx < start_frame_idx:
         raise HTTPException(status_code=400, detail="end_frame_idx must be >= start_frame_idx.")
 
-    manifest_path = _current_mask_manifest_path()
     if manifest_path is None or not manifest_path.exists():
         clamped_start, clamped_end = _clamp_frame_window(
             start_frame_idx,
             end_frame_idx,
-            len(state.video_frame_files),
+            frame_count,
         )
         return {
             "start_frame_idx": clamped_start,
@@ -749,25 +770,31 @@ async def get_mask_data_window(
     }
 
 async def get_video_frame(frame_idx: int):
-    if state.video_dir is None or not state.video_frame_files:
+    with guarded_video_read():
+        video_dir = state.video_dir
+        frame_files = list(state.video_frame_files)
+    if video_dir is None or not frame_files:
         return {"error": "Video not initialized"}
     
-    if frame_idx < 0 or frame_idx >= len(state.video_frame_files):
+    if frame_idx < 0 or frame_idx >= len(frame_files):
         return {"error": "Frame index out of bounds"}
         
-    file_path = Path(state.video_dir) / state.video_frame_files[frame_idx]
+    file_path = Path(video_dir) / frame_files[frame_idx]
     if not file_path.exists():
         raise HTTPException(status_code=404, detail=f"Frame file not found: {file_path}")
     return FileResponse(str(file_path))
 
 async def get_video_mask_frame(frame_idx: int):
-    if state.video_dir is None:
+    with guarded_video_read():
+        video_dir = state.video_dir
+        session_path = state.active_session_dir
+    if video_dir is None:
         return {"error": "Video not initialized"}
 
     if frame_idx < 0:
         return {"error": "Frame index out of bounds"}
 
-    masks_dir = current_masks_dir() or Path(state.video_dir) / "masks"
+    masks_dir = (session_path / "masks") if session_path is not None else Path(video_dir) / "masks"
     file_path = masks_dir / f"frame_{frame_idx:05d}_masks.png"
     if not file_path.exists():
         raise HTTPException(status_code=404, detail=f"Mask frame not found: {file_path}")

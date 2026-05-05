@@ -18,6 +18,7 @@ export interface VideoAddPointsOrBoxRequest {
 
 export interface VideoPropagateRequest {
   start_frame_idx?: number;
+  end_frame_idx?: number;
   max_frame_num_to_track?: number;
   reverse?: boolean;
   batch_size?: number;
@@ -25,10 +26,6 @@ export interface VideoPropagateRequest {
   use_tracked_points?: boolean;
   tracked_point_keyframe_interval?: number;
   max_tracked_points_per_object_per_frame?: number;
-  include_masks_in_response?: boolean;
-  include_saved_mask_paths?: boolean;
-  max_frames_in_response?: number;
-  max_mask_values_in_response?: number;
 }
 
 export interface VideoAddMaskRequest {
@@ -119,13 +116,10 @@ export interface RestoredSessionPayload {
 }
 
 export interface VideoPropagateResponse {
-  video_segments: { [frame_idx: string]: { [obj_id: string]: boolean[][] } };
-  saved_mask_paths: { [frame_idx: string]: string[] };
   saved_mask_frame_count?: number;
   video_segments_total_frames?: number;
-  video_segments_returned_frames?: number;
-  video_segments_returned_mask_values?: number;
-  video_segments_truncated?: boolean;
+  propagation_start_frame_idx?: number;
+  propagation_end_frame_idx?: number;
   mask_manifest_path?: string;
   'state.mask_manifest_path'?: string;
   tracked_points_used?: boolean;
@@ -158,6 +152,8 @@ export interface VideoMaskDataWindowResponse {
 
 export interface TrackPromptPointsRequest {
   add_support_grid?: boolean;
+  start_frame_idx?: number;
+  end_frame_idx?: number;
 }
 
 export interface TrackPromptPointMetadata {
@@ -177,6 +173,8 @@ export interface TrackPromptPointsJobResponse {
   tracking_mode?: 'streaming' | 'in_memory';
   streaming_frame_threshold?: number;
   tracking_result_id: string;
+  tracking_start_frame_idx?: number;
+  tracking_end_frame_idx?: number;
   state_epoch?: number;
 }
 
@@ -189,6 +187,8 @@ export interface TrackPromptPointsResult {
   add_support_grid_used?: boolean;
   tracking_mode?: 'streaming' | 'in_memory';
   streaming_frame_threshold?: number;
+  tracking_start_frame_idx?: number;
+  tracking_end_frame_idx?: number;
   tracks: number[][][];
   visibility: boolean[][];
   points: TrackPromptPointMetadata[];

@@ -6,9 +6,9 @@ from fastapi import HTTPException
 import torch
 import co_tracker as cot
 from core.config import DEFAULT_STREAMING_TRACK_FRAME_THRESHOLD
-from core.jobs import require_no_active_job
 from core.runtime import cleanup_cuda_memory
 from core.state import state
+from core.state_guards import guarded_video_write
 from schemas.tracking import TrackingGridRequest, TrackingLoadVideoRequest, TrackingPointsRequest
 from sessions.cache import bump_video_state_epoch, release_active_session
 from sessions.paths import resolve_input_path
@@ -41,22 +41,22 @@ def should_stream_tracking(num_frames: int) -> bool:
 async def load_tracking_video(request: TrackingLoadVideoRequest):
     """Load a video file for tracking."""
 
-    require_no_active_job("load tracking video")
-    release_active_session(clear_tracker=False, clear_cache_session=True)
-    bump_video_state_epoch()
-    
-    requested_model = getattr(request, "model_name", cot.DEFAULT_COTRACKER_MODEL)
-    try:
-        ensure_tracker_model(requested_model)
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-    
-    resolved_video_path = resolve_input_path(request.video_path, expect_dir=False)
-    state.tracking_video_path = str(resolved_video_path)
-    
-    # Load video using mediapy
-    state.tracking_video = mediapy.read_video(state.tracking_video_path)
-    
+    with guarded_video_write("load tracking video"):
+        release_active_session(clear_tracker=False, clear_cache_session=True)
+        bump_video_state_epoch()
+
+        requested_model = getattr(request, "model_name", cot.DEFAULT_COTRACKER_MODEL)
+        try:
+            ensure_tracker_model(requested_model)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+        resolved_video_path = resolve_input_path(request.video_path, expect_dir=False)
+        state.tracking_video_path = str(resolved_video_path)
+
+        # Load video using mediapy
+        state.tracking_video = mediapy.read_video(state.tracking_video_path)
+
     return {
         "message": "Video loaded successfully",
         "model_name": state.tracker.model_name,
@@ -67,18 +67,20 @@ async def load_tracking_video(request: TrackingLoadVideoRequest):
 
 async def track_grid(request: TrackingGridRequest):
     """Track a grid of points across the video."""
+
+    with guarded_video_write("track grid"):
+        if state.tracker is None:
+            return {"error": "Tracker not active. Call /tracking/load_video first."}
+
+        if state.tracking_video is None:
+            return {"error": "No video loaded. Call /tracking/load_video first."}
+        tracking_video = state.tracking_video
+        tracking_video_path = state.tracking_video_path
+        tracker = state.tracker
     
-    require_no_active_job("track grid")
-    if state.tracker is None:
-        return {"error": "Tracker not active. Call /tracking/load_video first."}
-    
-    if state.tracking_video is None:
-        return {"error": "No video loaded. Call /tracking/load_video first."}
-    
-    # Run tracking
     try:
-        tracks, visibility = state.tracker.track(
-            state.tracking_video,
+        tracks, visibility = tracker.track(
+            tracking_video,
             queries=None,
             grid_size=request.grid_size,
             add_support_grid=request.add_support_grid
@@ -99,11 +101,11 @@ async def track_grid(request: TrackingGridRequest):
         raise
     
     # Save visualization
-    painted_video = cot.paint_point_track(state.tracking_video, tracks, visibility)
+    painted_video = cot.paint_point_track(tracking_video, tracks, visibility)
     
     # Save output video
-    video_name = Path(state.tracking_video_path).stem
-    output_dir = Path(state.tracking_video_path).parent
+    video_name = Path(tracking_video_path).stem
+    output_dir = Path(tracking_video_path).parent
     timestamp = int(datetime.now().timestamp())
     mode_label = cot.DEFAULT_COTRACKER_MODEL.replace("cotracker3_", "")
     output_filename = f"{video_name}_tracked_grid_{mode_label}_{timestamp}.mp4"
@@ -111,7 +113,7 @@ async def track_grid(request: TrackingGridRequest):
     
     fps = 30  # Default fps
     try:
-        video_metadata = mediapy.read_video(state.tracking_video_path)
+        video_metadata = mediapy.read_video(tracking_video_path)
         if hasattr(video_metadata, 'metadata') and video_metadata.metadata and hasattr(video_metadata.metadata, 'fps'):
             fps = video_metadata.metadata.fps
     except:
@@ -132,21 +134,24 @@ async def track_grid(request: TrackingGridRequest):
 
 async def track_points(request: TrackingPointsRequest):
     """Track specific query points across the video."""
-    
-    require_no_active_job("track points")
-    if state.tracker is None:
-        return {"error": "Tracker not active. Call /tracking/load_video first."}
-    
-    if state.tracking_video is None:
-        return {"error": "No video loaded. Call /tracking/load_video first."}
-    
+
+    with guarded_video_write("track points"):
+        if state.tracker is None:
+            return {"error": "Tracker not active. Call /tracking/load_video first."}
+
+        if state.tracking_video is None:
+            return {"error": "No video loaded. Call /tracking/load_video first."}
+        tracking_video = state.tracking_video
+        tracking_video_path = state.tracking_video_path
+        tracker = state.tracker
+
     # Convert queries to numpy array
     queries = np.array(request.queries)
     
     # Run tracking
     try:
-        tracks, visibility = state.tracker.track(
-            state.tracking_video,
+        tracks, visibility = tracker.track(
+            tracking_video,
             queries=queries,
             add_support_grid=request.add_support_grid
         )
@@ -166,11 +171,11 @@ async def track_points(request: TrackingPointsRequest):
         raise
     
     # Save visualization
-    painted_video = cot.paint_point_track(state.tracking_video, tracks, visibility)
+    painted_video = cot.paint_point_track(tracking_video, tracks, visibility)
     
     # Save output video
-    video_name = Path(state.tracking_video_path).stem
-    output_dir = Path(state.tracking_video_path).parent
+    video_name = Path(tracking_video_path).stem
+    output_dir = Path(tracking_video_path).parent
     timestamp = int(datetime.now().timestamp())
     mode_label = cot.DEFAULT_COTRACKER_MODEL.replace("cotracker3_", "")
     output_tag = "tracked_points_support" if request.add_support_grid else "tracked_points"
@@ -179,7 +184,7 @@ async def track_points(request: TrackingPointsRequest):
     
     fps = 30  # Default fps
     try:
-        video_metadata = mediapy.read_video(state.tracking_video_path)
+        video_metadata = mediapy.read_video(tracking_video_path)
         if hasattr(video_metadata, 'metadata') and video_metadata.metadata and hasattr(video_metadata.metadata, 'fps'):
             fps = video_metadata.metadata.fps
     except:

@@ -230,8 +230,13 @@ def queue_long_job(
     worker: Callable[[], dict[str, Any]],
 ) -> dict[str, Any]:
     job = _start_job(operation, stage=stage, stage_label=stage_label, message=message)
-    thread = threading.Thread(target=_run_job, args=(job["job_id"], worker), daemon=True)
-    thread.start()
+    try:
+        thread = threading.Thread(target=_run_job, args=(job["job_id"], worker), daemon=True)
+        thread.start()
+    except Exception as error:
+        logger.exception("Failed to start background job thread")
+        _fail_job(job["job_id"], "thread_start_failed", "Failed to start background job.", str(error))
+        raise HTTPException(status_code=500, detail="Failed to start background job.") from error
     return {
         "job_id": job["job_id"],
         "status": job["status"],

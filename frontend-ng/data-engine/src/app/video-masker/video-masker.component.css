@@ -407,10 +407,36 @@ canvas {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
 }
 
 .scrubber input {
   flex-grow: 1;
+  min-width: 120px;
+}
+
+.scrubber-frame-label {
+  white-space: nowrap;
+}
+
+.frame-range-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.range-readout {
+  min-width: 64px;
+  padding: 4px 6px;
+  border: 1px solid #d0d0d0;
+  border-radius: 4px;
+  background: #fff;
+  color: #333;
+  font-size: 0.85rem;
+  text-align: center;
 }
 
 button {
@@ -430,5 +456,13 @@ button:disabled {
 
   .api-url-input {
     flex: 1 1 220px;
+  }
+
+  .scrubber {
+    flex-wrap: wrap;
+  }
+
+  .frame-range-controls {
+    width: 100%;
   }
 }

@@ -18,6 +18,7 @@ interface WorkflowDeps {
   invalidateMaskCache: () => void;
   scheduleFrameLoad: (frameIdx: number) => void;
   targetFrameIdx: () => number;
+  selectedFrameRange?: () => { start_frame_idx?: number; end_frame_idx?: number };
   setTrackedPoints: (next: any[]) => void;
   drawCurrentFrame: () => void;
   showToast: (severity: 'error' | 'warning' | 'info' | 'success', title: string, message: string) => void;
@@ -108,13 +109,9 @@ export class VideoMaskerWorkflowService {
   }
 
   async propagate(deps: WorkflowDeps): Promise<void> {
+    const frameRange = deps.selectedFrameRange?.() || {};
     const response = await deps.runBackendJob<VideoPropagateResponse>('Propagating masks', () =>
-      firstValueFrom(
-        deps.backend.propagateInVideo({
-          include_masks_in_response: false,
-          include_saved_mask_paths: false,
-        }),
-      ),
+      firstValueFrom(deps.backend.propagateInVideo(frameRange)),
     );
     if (!response) {
       return;
@@ -130,11 +127,15 @@ export class VideoMaskerWorkflowService {
   }
 
   async runTracking(deps: WorkflowDeps): Promise<void> {
+    const frameRange = deps.selectedFrameRange?.() || {};
     const response = await deps.runBackendJob<TrackPromptPointsJobResponse>(
       'Tracking prompt points',
       () =>
         firstValueFrom(
-          deps.backend.trackPromptPoints({ add_support_grid: deps.trackingUseSupportGrid() }),
+          deps.backend.trackPromptPoints({
+            add_support_grid: deps.trackingUseSupportGrid(),
+            ...frameRange,
+          }),
         ),
     );
     if (!response) {

@@ -66,6 +66,8 @@ def create_active_session(source_path: Path) -> Path:
     state.active_session_dir = session_dir
     state.active_session_id = session_id
     state.active_session_saved_name = None
+    state.video_masker_status = "inactive"
+    state.video_masker_error = None
     write_session_metadata(
         {
             "created_at": utc_now_iso(),
@@ -128,4 +130,3 @@ def extract_video_to_session_frames(
     if frame_idx == 0:
         raise ValueError(f"No frames could be extracted from video: {video_path}")
     return frame_names
-

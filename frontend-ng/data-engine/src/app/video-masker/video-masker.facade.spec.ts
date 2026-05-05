@@ -21,7 +21,6 @@ describe('VideoMaskerFacade', () => {
     const sessionMock = {
       getLoadPathPlaceholder: vi.fn(() => 'placeholder'),
       getBrowseLabel: vi.fn(() => 'browse'),
-      getLoadModeHint: vi.fn(() => 'hint'),
       browse: vi.fn(async () => '/tmp/frames'),
     } as unknown as VideoSessionService;
 
@@ -83,14 +82,12 @@ describe('VideoMaskerFacade', () => {
 
     expect(facade.getLoadPathPlaceholder()).toBe('placeholder');
     expect(facade.getBrowseLabel()).toBe('browse');
-    expect(facade.getLoadModeHint()).toBe('hint');
   });
 
   it('sets videoDir from browseSelectedSource', async () => {
     const sessionMock = {
       getLoadPathPlaceholder: vi.fn(() => 'placeholder'),
       getBrowseLabel: vi.fn(() => 'browse'),
-      getLoadModeHint: vi.fn(() => 'hint'),
       browse: vi.fn(async () => '/tmp/frames'),
     } as unknown as VideoSessionService;
 

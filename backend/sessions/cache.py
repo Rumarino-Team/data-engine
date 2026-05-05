@@ -34,6 +34,8 @@ def release_active_session(*, clear_video_masker: bool = True, clear_tracker: bo
         state.active_session_dir = None
         state.active_session_id = None
         state.active_session_saved_name = None
+        state.video_masker_status = "inactive"
+        state.video_masker_error = None
     if clear_prompts:
         state.video_prompt_events = []
     cleanup_cuda_memory()

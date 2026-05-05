@@ -43,6 +43,9 @@ class OperationGuardTests(unittest.TestCase):
             jobs.current_job = None
         state.video_masker = None
         state.video_frame_files = []
+        state.video_dir = None
+        state.active_session_dir = None
+        state.mask_manifest_path = None
 
     def set_active_job(self):
         with jobs.current_job_lock:
@@ -62,12 +65,27 @@ class OperationGuardTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 409)
 
-    def test_read_only_video_info_is_not_guarded(self):
+    def test_read_only_video_info_returns_409_while_job_active(self):
         self.set_active_job()
         state.video_frame_files = ["00000.jpg"]
         response = self.client.get("/video/info")
+        self.assertEqual(response.status_code, 409)
+
+    def test_mask_data_window_returns_409_while_job_active(self):
+        self.set_active_job()
+        response = self.client.get("/video/mask_data_window?start_frame_idx=0&end_frame_idx=0")
+        self.assertEqual(response.status_code, 409)
+
+    def test_video_frame_returns_409_while_job_active(self):
+        self.set_active_job()
+        response = self.client.get("/video/frame/0")
+        self.assertEqual(response.status_code, 409)
+
+    def test_jobs_current_remains_available_while_job_active(self):
+        self.set_active_job()
+        response = self.client.get("/jobs/current")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["num_frames"], 1)
+        self.assertEqual(response.json()["job"]["job_id"], "active")
 
     def test_without_active_job_endpoint_uses_normal_validation(self):
         response = self.client.post("/video/reset_state")

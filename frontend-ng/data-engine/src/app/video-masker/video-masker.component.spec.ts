@@ -353,6 +353,23 @@ describe('VideoMaskerComponent sync contract', () => {
     expect(templateText).toContain('Displayed: {{ displayedFrameIdx() }} / {{ numFrames() - 1 }}');
   });
 
+  it('sets propagation range boundaries from the current playhead', () => {
+    component.numFrames.set(12);
+    component.targetFrameIdx.set(4);
+
+    component.setRangeStartToPlayhead();
+    component.targetFrameIdx.set(9);
+    component.setRangeEndToPlayhead();
+
+    expect(component.rangeStartFrameIdx()).toBe(4);
+    expect(component.rangeEndFrameIdx()).toBe(9);
+
+    component.clearFrameRange();
+
+    expect(component.rangeStartFrameIdx()).toBeNull();
+    expect(component.rangeEndFrameIdx()).toBeNull();
+  });
+
   it('starts a video init job, polls completion, and applies the result', async () => {
     backendMock.initVideoState.mockReturnValue(
       of({
@@ -774,6 +791,88 @@ describe('VideoMaskerComponent sync contract', () => {
     ]);
   });
 
+  it('sends selected frame range to CoTracker', async () => {
+    backendMock.trackPromptPoints.mockReturnValue(
+      of({
+        job_id: 'job-track',
+        status: 'queued',
+        operation: 'prompt_tracking',
+        message: 'queued',
+      }),
+    );
+    backendMock.getJob.mockReturnValue(
+      of({
+        job: {
+          job_id: 'job-track',
+          operation: 'prompt_tracking',
+          status: 'completed',
+          stage: 'completed',
+          stage_label: 'Completed',
+          progress: 1,
+          current: 1,
+          total: 1,
+          window_index: null,
+          window_count: null,
+          frame_idx: null,
+          stage_history: [],
+          message: 'done',
+          error: null,
+          started_at: 'now',
+          updated_at: 'now',
+          completed_at: 'now',
+          result: {
+            message: 'Prompt-point tracking completed',
+            model_name: 'cotracker3_online',
+            num_points: 1,
+            num_frames: 2,
+            add_support_grid_used: false,
+            tracking_mode: 'streaming',
+            streaming_frame_threshold: 256,
+            tracking_result_id: 'track-1',
+            state_epoch: 3,
+          },
+        },
+      }),
+    );
+    backendMock.getTrackingResult.mockReturnValue(
+      of({
+        result: {
+          version: 1,
+          result_id: 'track-1',
+          message: 'Prompt-point tracking completed',
+          model_name: 'cotracker3_online',
+          num_points: 1,
+          num_frames: 2,
+          add_support_grid_used: false,
+          tracking_mode: 'streaming',
+          streaming_frame_threshold: 256,
+          tracks: [[[10, 20]]],
+          visibility: [[true]],
+          points: [
+            {
+              point_id: 'p0_0',
+              obj_id: 1,
+              source_frame_idx: 0,
+              source_x: 10,
+              source_y: 20,
+            },
+          ],
+        },
+      }),
+    );
+    component.numFrames.set(20);
+    component.rangeStartFrameIdx.set(12);
+    component.rangeEndFrameIdx.set(5);
+
+    await component.runTracking();
+
+    expect(backendMock.trackPromptPoints).toHaveBeenCalledWith({
+      add_support_grid: false,
+      start_frame_idx: 5,
+      end_frame_idx: 12,
+    });
+  });
+
   it('enables manifest mask loading after propagation with legacy manifest key', async () => {
     backendMock.propagateInVideo.mockReturnValue(
       of({
@@ -804,12 +903,7 @@ describe('VideoMaskerComponent sync contract', () => {
           updated_at: 'now',
           completed_at: 'now',
           result: {
-            video_segments: {},
-            saved_mask_paths: {},
             video_segments_total_frames: 2,
-            video_segments_returned_frames: 0,
-            video_segments_returned_mask_values: 0,
-            video_segments_truncated: false,
             'state.mask_manifest_path': '/tmp/session/masks/manifest.json',
             state_epoch: 3,
           },
@@ -822,9 +916,56 @@ describe('VideoMaskerComponent sync contract', () => {
     await component.propagate();
 
     expect(component.hasManifestMasks()).toBe(true);
+    expect(backendMock.propagateInVideo).toHaveBeenCalledWith({});
+  });
+
+  it('sends selected frame range to propagation', async () => {
+    backendMock.propagateInVideo.mockReturnValue(
+      of({
+        job_id: 'job-propagate',
+        status: 'queued',
+        operation: 'mask_propagation',
+        message: 'queued',
+      }),
+    );
+    backendMock.getJob.mockReturnValue(
+      of({
+        job: {
+          job_id: 'job-propagate',
+          operation: 'mask_propagation',
+          status: 'completed',
+          stage: 'completed',
+          stage_label: 'Completed',
+          progress: 1,
+          current: 2,
+          total: 2,
+          window_index: null,
+          window_count: null,
+          frame_idx: null,
+          stage_history: [],
+          message: 'done',
+          error: null,
+          started_at: 'now',
+          updated_at: 'now',
+          completed_at: 'now',
+          result: {
+            video_segments_total_frames: 2,
+            mask_manifest_path: '/tmp/session/masks/manifest.json',
+            state_epoch: 3,
+          },
+        },
+      }),
+    );
+    component.isInitialized.set(true);
+    component.numFrames.set(20);
+    component.rangeStartFrameIdx.set(14);
+    component.rangeEndFrameIdx.set(6);
+
+    await component.propagate();
+
     expect(backendMock.propagateInVideo).toHaveBeenCalledWith({
-      include_masks_in_response: false,
-      include_saved_mask_paths: false,
+      start_frame_idx: 6,
+      end_frame_idx: 14,
     });
   });
 
