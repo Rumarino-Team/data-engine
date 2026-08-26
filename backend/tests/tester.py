@@ -16,6 +16,10 @@ import numpy as np
 # Configuration
 BASE_URL = os.getenv("DATA_ENGINE_BASE_URL", "http://127.0.0.1:8000")
 BEDROOM_ZIP_URL = "https://dl.fbaipublicfiles.com/segment_anything_2/assets/bedroom.zip"
+APPLE_VIDEO_URL = os.getenv(
+    "DATA_ENGINE_APPLE_VIDEO_URL",
+    "https://github.com/facebookresearch/co-tracker/raw/refs/heads/main/assets/apple.mp4",
+)
 SCRIPT_DIR = Path(__file__).resolve().parent
 BACKEND_DIR = SCRIPT_DIR.parent
 PROJECT_ROOT = BACKEND_DIR.parent
@@ -146,15 +150,39 @@ def ensure_apple_test_video() -> bool:
     ensure_clean_dir(TEST_APPLE_DIR)
     if TRACKING_VIDEO_PATH.exists():
         return True
-    if not APPLE_SOURCE_VIDEO_PATH.exists():
-        print(f"Apple source video not found: {APPLE_SOURCE_VIDEO_PATH}")
-        return False
+    if APPLE_SOURCE_VIDEO_PATH.exists():
+        try:
+            shutil.copy2(APPLE_SOURCE_VIDEO_PATH, TRACKING_VIDEO_PATH)
+            print(f"Copied apple test video to: {TRACKING_VIDEO_PATH}")
+            return True
+        except Exception as error:
+            print(f"Failed to prepare apple test video from local source: {error}")
+            return False
+
+    print(f"Apple source video not found: {APPLE_SOURCE_VIDEO_PATH}")
+    print(f"Downloading apple.mp4 from {APPLE_VIDEO_URL}...")
+    temp_path = TRACKING_VIDEO_PATH.with_suffix(".mp4.tmp")
     try:
-        shutil.copy2(APPLE_SOURCE_VIDEO_PATH, TRACKING_VIDEO_PATH)
-        print(f"Copied apple test video to: {TRACKING_VIDEO_PATH}")
+        response = requests.get(APPLE_VIDEO_URL, stream=True, timeout=60)
+        response.raise_for_status()
+
+        total_size = int(response.headers.get("content-length", 0))
+        downloaded_size = 0
+        with temp_path.open("wb") as handle:
+            for chunk in response.iter_content(chunk_size=8192):
+                if not chunk:
+                    continue
+                handle.write(chunk)
+                downloaded_size += len(chunk)
+                if total_size > 0:
+                    progress = (downloaded_size / total_size) * 100
+                    print(f"\rApple download progress: {progress:.1f}%", end="", flush=True)
+        temp_path.replace(TRACKING_VIDEO_PATH)
+        print(f"\nDownloaded apple test video to: {TRACKING_VIDEO_PATH}")
         return True
     except Exception as error:
-        print(f"Failed to prepare apple test video: {error}")
+        print(f"\nFailed to download apple test video: {error}")
+        temp_path.unlink(missing_ok=True)
         return False
 
 

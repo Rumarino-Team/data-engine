@@ -8,7 +8,6 @@ torch==2.13.0+cu132
 torchvision==0.28.0+cu132
 matplotlib==3.7.5
 opencv-python
-mediapy==1.2.2
 numpy
 requests
 git+https://github.com/facebookresearch/co-tracker.git

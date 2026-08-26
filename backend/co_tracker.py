@@ -1,6 +1,5 @@
 import torch
 import numpy as np
-import mediapy
 import cv2
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
@@ -9,6 +8,63 @@ import random
 
 VIDEO_INPUT_RESO = (384, 512) # Resolution of the input video to the model
 DEFAULT_COTRACKER_MODEL = "cotracker3_online"
+
+
+def read_video_rgb(video_path: str | Path) -> np.ndarray:
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        raise ValueError(f"Unable to open video: {video_path}")
+
+    frames: list[np.ndarray] = []
+    try:
+        while True:
+            success, frame_bgr = capture.read()
+            if not success:
+                break
+            frames.append(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
+    finally:
+        capture.release()
+
+    if not frames:
+        raise ValueError(f"No frames could be decoded from video: {video_path}")
+    return np.stack(frames, axis=0)
+
+
+def read_video_fps(video_path: str | Path, default: float = 30.0) -> float:
+    capture = cv2.VideoCapture(str(video_path))
+    try:
+        if not capture.isOpened():
+            return float(default)
+        fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
+        return fps if fps > 0 else float(default)
+    finally:
+        capture.release()
+
+
+def write_video_rgb(output_path: str | Path, video: np.ndarray, fps: float) -> None:
+    video_array = np.asarray(video)
+    if video_array.ndim != 4 or video_array.shape[-1] != 3 or video_array.shape[0] == 0:
+        raise ValueError(f"Expected video shape (T, H, W, 3), got {video_array.shape}.")
+
+    if video_array.dtype != np.uint8:
+        video_array = np.clip(video_array, 0, 255).astype(np.uint8)
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    height, width = int(video_array.shape[1]), int(video_array.shape[2])
+    writer = cv2.VideoWriter(
+        str(output_path),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        float(fps),
+        (width, height),
+    )
+    if not writer.isOpened():
+        raise ValueError(f"Unable to open video writer: {output_path}")
+    try:
+        for frame_rgb in video_array:
+            writer.write(cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR))
+    finally:
+        writer.release()
 
 
 class FrameChunkLoader:
@@ -422,7 +478,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     # Load video
-    video = mediapy.read_video(args.video_path)
+    video = read_video_rgb(args.video_path)
     
     # Initialize tracker
     tracker = CoTracker()
@@ -432,5 +488,5 @@ if __name__ == '__main__':
 
     # Visualize and save video
     painted_video = paint_point_track(video, tracks, visibility)
-    mediapy.write_video(args.output_path, painted_video, fps=mediapy.read_video(args.video_path).metadata.fps)
+    write_video_rgb(args.output_path, painted_video, fps=read_video_fps(args.video_path))
     print(f"Saved tracking video to {args.output_path}")

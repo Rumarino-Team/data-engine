@@ -1,6 +1,5 @@
 from datetime import datetime
 from pathlib import Path
-import mediapy
 import numpy as np
 from fastapi import HTTPException
 import torch
@@ -38,6 +37,9 @@ def should_stream_tracking(num_frames: int) -> bool:
         return True
     return int(num_frames) >= threshold
 
+def read_tracking_video(video_path: str | Path) -> np.ndarray:
+    return cot.read_video_rgb(video_path)
+
 async def load_tracking_video(request: TrackingLoadVideoRequest):
     """Load a video file for tracking."""
 
@@ -54,8 +56,7 @@ async def load_tracking_video(request: TrackingLoadVideoRequest):
     resolved_video_path = resolve_input_path(request.video_path, expect_dir=False)
     state.tracking_video_path = str(resolved_video_path)
     
-    # Load video using mediapy
-    state.tracking_video = mediapy.read_video(state.tracking_video_path)
+    state.tracking_video = read_tracking_video(state.tracking_video_path)
     
     return {
         "message": "Video loaded successfully",
@@ -109,15 +110,8 @@ async def track_grid(request: TrackingGridRequest):
     output_filename = f"{video_name}_tracked_grid_{mode_label}_{timestamp}.mp4"
     output_path = output_dir / output_filename
     
-    fps = 30  # Default fps
-    try:
-        video_metadata = mediapy.read_video(state.tracking_video_path)
-        if hasattr(video_metadata, 'metadata') and video_metadata.metadata and hasattr(video_metadata.metadata, 'fps'):
-            fps = video_metadata.metadata.fps
-    except:
-        pass
-    
-    mediapy.write_video(str(output_path), painted_video, fps=fps)
+    fps = cot.read_video_fps(state.tracking_video_path)
+    cot.write_video_rgb(output_path, painted_video, fps=fps)
 
     cleanup_cuda_memory()
     
@@ -177,15 +171,8 @@ async def track_points(request: TrackingPointsRequest):
     output_filename = f"{video_name}_{output_tag}_{mode_label}_{timestamp}.mp4"
     output_path = output_dir / output_filename
     
-    fps = 30  # Default fps
-    try:
-        video_metadata = mediapy.read_video(state.tracking_video_path)
-        if hasattr(video_metadata, 'metadata') and video_metadata.metadata and hasattr(video_metadata.metadata, 'fps'):
-            fps = video_metadata.metadata.fps
-    except:
-        pass
-    
-    mediapy.write_video(str(output_path), painted_video, fps=fps)
+    fps = cot.read_video_fps(state.tracking_video_path)
+    cot.write_video_rgb(output_path, painted_video, fps=fps)
 
     cleanup_cuda_memory()
     
