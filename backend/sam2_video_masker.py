@@ -58,7 +58,7 @@ class SAM2VideoMasker:
             )
 
         _report("loading_sam2_model", "Loading SAM2 model", None, "Loading SAM2 model weights")
-        self.predictor = SAM2VideoPredictor.from_pretrained("facebook/sam2-hiera-large")
+        self.predictor = SAM2VideoPredictor.from_pretrained("facebook/sam2-hiera-large", device=self.device)
         _report("model_ready", "SAM2 model ready", 0.35, "SAM2 model loaded")
 
         self.inference_state = None
