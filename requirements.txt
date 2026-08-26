@@ -1,9 +1,11 @@
+--extra-index-url https://download.pytorch.org/whl/cu132
+
 fastapi==0.119.0
 fastapi-cli==0.0.13
 pydantic
 huggingface_hub==0.36.0
-torch==2.5.1
-torchvision==0.20.1
+torch==2.13.0+cu132
+torchvision==0.28.0+cu132
 matplotlib==3.7.5
 opencv-python
 mediapy==1.2.2
