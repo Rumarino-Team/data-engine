@@ -7,10 +7,6 @@ from typing import Callable, Optional
 from sam2.sam2_video_predictor import SAM2VideoPredictor
 from utils import extract_video_to_frames
 
-# if using Apple MPS, fall back to CPU for unsupported ops
-os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
-
-
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -25,8 +21,6 @@ class SAM2VideoMasker:
 
         if torch.cuda.is_available():
             self.device = torch.device("cuda")
-        elif torch.backends.mps.is_available():
-            self.device = torch.device("mps")
         else:
             self.device = torch.device("cpu")
 
@@ -53,7 +47,7 @@ class SAM2VideoMasker:
             elif compute_capability[0] == 7:
                 gpu_family = "RTX 20-series / Turing"
             else:
-                gpu_family = "pre-RTX 30 architecture"
+                gpu_family = "pre-RTX 20-series architecture"
 
             print(
                 "CUDA precision config | "
@@ -61,11 +55,6 @@ class SAM2VideoMasker:
                 f"family: {gpu_family} | "
                 f"autocast: {autocast_dtype} | "
                 f"tf32: {is_ampere_or_newer}"
-            )
-        elif self.device.type == "mps":
-            print(
-                "\nSupport for MPS devices is preliminary. SAM 2 is trained with CUDA and might "
-                "give numerically different outputs and sometimes degraded performance on MPS."
             )
 
         _report("loading_sam2_model", "Loading SAM2 model", None, "Loading SAM2 model weights")
