@@ -2,9 +2,9 @@
   <div class="top-bar">
     <select
       class="load-source-select"
-      [ngModel]="loadSourceMode()"
+      [ngModel]="store.loadSourceMode()"
       (ngModelChange)="onLoadSourceModeChange($event)"
-      [disabled]="isInitialized() || isLoading()"
+      [disabled]="store.isInitialized() || store.isLoading()"
     >
       <option value="frames_dir">Frames Directory</option>
       <option value="video_file">Video File</option>
@@ -12,29 +12,32 @@
     </select>
     <input
       type="text"
-      [ngModel]="videoDir()"
+      [ngModel]="store.videoDir()"
       (ngModelChange)="onVideoDirChange($event)"
       [placeholder]="getLoadPathPlaceholder()"
-      [disabled]="isInitialized() || isLoading()"
+      [disabled]="store.isInitialized() || store.isLoading()"
     />
-    <button (click)="browseSelectedSource()" [disabled]="isInitialized() || isLoading()">
+    <button (click)="browseSelectedSource()" [disabled]="store.isInitialized() || store.isLoading()">
       {{ getBrowseLabel() }}
     </button>
-    <button (click)="initVideo()" [disabled]="isInitialized() || isLoading() || !videoDir().trim()">
+    <button
+      (click)="initVideo()"
+      [disabled]="store.isInitialized() || store.isLoading() || !store.videoDir().trim()"
+    >
       Load
     </button>
     <div class="load-mode-hint" *ngIf="getLoadModeHint()">{{ getLoadModeHint() }}</div>
     <div class="api-url-controls">
       <span
         class="api-status-pill"
-        [class.online]="apiHealthStatus() === 'online'"
-        [class.offline]="apiHealthStatus() === 'offline'"
-        [class.checking]="apiHealthStatus() === 'checking'"
+        [class.online]="store.apiHealthStatus() === 'online'"
+        [class.offline]="store.apiHealthStatus() === 'offline'"
+        [class.checking]="store.apiHealthStatus() === 'checking'"
       >
         {{
-          apiHealthStatus() === 'online'
+          store.apiHealthStatus() === 'online'
             ? 'Online'
-            : apiHealthStatus() === 'offline'
+            : store.apiHealthStatus() === 'offline'
               ? 'Offline'
               : 'Checking'
         }}
@@ -42,20 +45,20 @@
       <input
         type="text"
         class="api-url-input"
-        [ngModel]="apiUrlInput()"
+        [ngModel]="store.apiUrlInput()"
         (ngModelChange)="onApiUrlChange($event)"
         placeholder="Backend URL"
-        [disabled]="isLoading()"
+        [disabled]="store.isLoading()"
       />
       <button
         (click)="applyApiUrl()"
-        [disabled]="isLoading() || !apiUrlInput().trim() || !isApiUrlDirty()"
+        [disabled]="store.isLoading() || !store.apiUrlInput().trim() || !isApiUrlDirty()"
       >
         Apply API
       </button>
       <button
         (click)="resetApiUrl()"
-        [disabled]="isLoading() || apiUrlInput() === 'http://127.0.0.1:8000'"
+        [disabled]="store.isLoading() || store.apiUrlInput() === 'http://127.0.0.1:8000'"
       >
         Reset API
       </button>
@@ -69,7 +72,7 @@
       multiple
       hidden
       (change)="onFramesDirSelected($event)"
-      [disabled]="isInitialized() || isLoading()"
+      [disabled]="store.isInitialized() || store.isLoading()"
     />
     <input
       #videoFileInput
@@ -77,7 +80,7 @@
       accept=".mp4,.mov,.avi,.mkv,.webm,.m4v"
       hidden
       (change)="onVideoFileSelected($event)"
-      [disabled]="isInitialized() || isLoading()"
+      [disabled]="store.isInitialized() || store.isLoading()"
     />
   </div>
 
@@ -91,10 +94,10 @@
         <h3>Objects</h3>
         <div class="object-list">
           <div
-            *ngFor="let obj of objects()"
+            *ngFor="let obj of store.objects()"
             class="object-item"
-            [class.selected]="selectedObjectId() === obj.id"
-            (click)="selectedObjectId.set(obj.id)"
+            [class.selected]="store.selectedObjectId() === obj.id"
+            (click)="store.selectedObjectId.set(obj.id)"
           >
             <span class="color-indicator" [style.background-color]="obj.color"></span>
             {{ obj.name }}
@@ -102,8 +105,10 @@
         </div>
         <div class="button-group">
           <button (click)="addObject()">Add Object</button>
-          <button (click)="removeObject()" [disabled]="selectedObjectId() === null">Remove</button>
-          <button (click)="removeAllObjects()" [disabled]="objects().length === 0">
+          <button (click)="removeObject()" [disabled]="store.selectedObjectId() === null">
+            Remove
+          </button>
+          <button (click)="removeAllObjects()" [disabled]="store.objects().length === 0">
             Remove All Objects
           </button>
         </div>
@@ -112,23 +117,23 @@
       <div class="section">
         <h3>Tools</h3>
         <div class="tool-group">
-          <label [class.selected]="interactionMode() === 'positive'">
+          <label [class.selected]="store.interactionMode() === 'positive'">
             <input
               type="radio"
               name="mode"
               [value]="'positive'"
-              [checked]="interactionMode() === 'positive'"
-              (change)="interactionMode.set('positive')"
+              [checked]="store.interactionMode() === 'positive'"
+              (change)="store.interactionMode.set('positive')"
             />
             Positive Point
           </label>
-          <label [class.selected]="interactionMode() === 'negative'">
+          <label [class.selected]="store.interactionMode() === 'negative'">
             <input
               type="radio"
               name="mode"
               [value]="'negative'"
-              [checked]="interactionMode() === 'negative'"
-              (change)="interactionMode.set('negative')"
+              [checked]="store.interactionMode() === 'negative'"
+              (change)="store.interactionMode.set('negative')"
             />
             Negative Point
           </label>
@@ -141,21 +146,21 @@
           <button
             class="panel-action-btn"
             (click)="runTracking()"
-            [disabled]="!isInitialized() || isLoading()"
+            [disabled]="!store.isInitialized() || store.isLoading()"
           >
             Track Prompt Points
           </button>
           <button
             class="panel-action-btn"
             (click)="propagate()"
-            [disabled]="!isInitialized() || isLoading()"
+            [disabled]="!store.isInitialized() || store.isLoading()"
           >
             Propagate Masks
           </button>
           <button
             class="panel-action-btn panel-action-btn-danger"
             (click)="clearMasks()"
-            [disabled]="!isInitialized() || isLoading()"
+            [disabled]="!store.isInitialized() || store.isLoading()"
           >
             Clear All Masks
           </button>
@@ -163,9 +168,9 @@
         <label>
           Tracking Overlay
           <select
-            [ngModel]="trackingOverlayStyle()"
-            (ngModelChange)="trackingOverlayStyle.set($event)"
-            [disabled]="isLoading()"
+            [ngModel]="store.trackingOverlayStyle()"
+            (ngModelChange)="store.trackingOverlayStyle.set($event)"
+            [disabled]="store.isLoading()"
           >
             <option value="point">Point Only</option>
             <option value="short">Short Trail</option>
@@ -176,9 +181,9 @@
           Use Support Grid
           <input
             type="checkbox"
-            [checked]="trackingUseSupportGrid()"
-            (change)="trackingUseSupportGrid.set($any($event.target).checked)"
-            [disabled]="isLoading()"
+            [checked]="store.trackingUseSupportGrid()"
+            (change)="store.trackingUseSupportGrid.set($any($event.target).checked)"
+            [disabled]="store.isLoading()"
           />
         </label>
         <div class="save-panel">
@@ -186,62 +191,68 @@
             <span>Save Current Session</span>
             <input
               type="text"
-              [ngModel]="saveName()"
+              [ngModel]="store.saveName()"
               (ngModelChange)="onSaveNameChange($event)"
               placeholder="Session Name"
-              [disabled]="!isInitialized() || isLoading()"
+              [disabled]="!store.isInitialized() || store.isLoading()"
             />
           </label>
           <button
             class="action-button action-button-primary"
             (click)="save()"
-            [disabled]="!isInitialized() || isLoading() || !saveName().trim()"
+            [disabled]="!store.isInitialized() || store.isLoading() || !store.saveName().trim()"
           >
             Save
           </button>
         </div>
       </div>
 
-      <div class="section debug-section" *ngIf="isInitialized() && showDebugUi">
+      <div class="section debug-section" *ngIf="store.isInitialized() && showDebugUi">
         <h3>Sync Debug</h3>
         <div class="debug-grid">
-          <span>Target frame</span><strong>{{ targetFrameIdx() }}</strong>
-          <span>Displayed frame</span><strong>{{ displayedFrameIdx() }}</strong>
-          <span>Last request frame</span><strong>{{ lastClickRequestFrameIdx() ?? 'n/a' }}</strong>
+          <span>Target frame</span><strong>{{ store.targetFrameIdx() }}</strong>
+          <span>Displayed frame</span><strong>{{ store.displayedFrameIdx() }}</strong>
+          <span>Last request frame</span
+          ><strong>{{ store.lastClickRequestFrameIdx() ?? 'n/a' }}</strong>
           <span>Last response frame</span
-          ><strong>{{ lastBackendResponseFrameIdx() ?? 'n/a' }}</strong>
-          <span>Response frame file</span><strong>{{ lastBackendResponseFrameFile() }}</strong>
-          <span>State epoch</span><strong>{{ stateEpoch() }}</strong> <span>Response epoch</span
-          ><strong>{{ lastBackendResponseStateEpoch() ?? 'n/a' }}</strong> <span>Last object</span
-          ><strong>{{ lastDebugObjectId() ?? 'n/a' }}</strong> <span>Last pixel count</span
-          ><strong>{{ lastMaskPixelCount() ?? 'n/a' }}</strong> <span>Fallback used</span
-          ><strong>{{ lastFallbackUsed() ? 'yes' : 'no' }}</strong> <span>Last mask source</span
-          ><strong>{{ lastMaskSource() }}</strong>
+          ><strong>{{ store.lastBackendResponseFrameIdx() ?? 'n/a' }}</strong>
+          <span>Response frame file</span><strong>{{ store.lastBackendResponseFrameFile() }}</strong>
+          <span>State epoch</span><strong>{{ store.stateEpoch() }}</strong> <span>Response epoch</span
+          ><strong>{{ store.lastBackendResponseStateEpoch() ?? 'n/a' }}</strong>
+          <span>Last object</span><strong>{{ store.lastDebugObjectId() ?? 'n/a' }}</strong>
+          <span>Last pixel count</span><strong>{{ store.lastMaskPixelCount() ?? 'n/a' }}</strong>
+          <span>Fallback used</span><strong>{{ store.lastFallbackUsed() ? 'yes' : 'no' }}</strong>
+          <span>Last mask source</span><strong>{{ store.lastMaskSource() }}</strong>
         </div>
-        <p class="debug-discard" *ngIf="lastDiscardReason()">{{ lastDiscardReason() }}</p>
+        <p class="debug-discard" *ngIf="store.lastDiscardReason()">
+          {{ store.lastDiscardReason() }}
+        </p>
       </div>
     </div>
   </div>
 
-  <div class="bottom-bar" *ngIf="isInitialized()">
+  <div class="bottom-bar" *ngIf="store.isInitialized()">
     <div class="scrubber">
-      <span>Displayed: {{ displayedFrameIdx() }} / {{ numFrames() - 1 }}</span>
+      <span>Displayed: {{ store.displayedFrameIdx() }} / {{ store.numFrames() - 1 }}</span>
       <input
         type="range"
         [min]="0"
-        [max]="numFrames() - 1"
-        [ngModel]="targetFrameIdx()"
+        [max]="store.numFrames() - 1"
+        [ngModel]="store.targetFrameIdx()"
         (ngModelChange)="onScrubberFrameChange($event)"
-        [disabled]="isLoading() || isPointRequestInFlight()"
+        [disabled]="store.isLoading() || store.isPointRequestInFlight()"
       />
     </div>
   </div>
 
   <app-job-status-panel
-    [isLoading]="isLoading()"
-    [activeJob]="activeJob()"
-    [activeJobTitle]="activeJobTitle()"
+    [isLoading]="store.isLoading()"
+    [activeJob]="store.activeJob()"
+    [activeJobTitle]="store.activeJobTitle()"
   ></app-job-status-panel>
 
-  <app-toast-stack [toasts]="toasts()" (dismiss)="dismissToast($event)"></app-toast-stack>
+  <app-toast-stack
+    [toasts]="store.toasts()"
+    (dismiss)="dismissToast($event)"
+  ></app-toast-stack>
 </div>

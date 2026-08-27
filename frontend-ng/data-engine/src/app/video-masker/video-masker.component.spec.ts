@@ -95,10 +95,10 @@ describe('VideoMaskerComponent sync contract', () => {
 
     fixture = TestBed.createComponent(VideoMaskerComponent);
     component = fixture.componentInstance;
-    component.selectedObjectId.set(1);
-    component.objects.set([{ id: 1, name: 'Object 1', color: '#ff0000' }]);
-    component.stateEpoch.set(3);
-    component.displayedFrameIdx.set(5);
+    component.store.selectedObjectId.set(1);
+    component.store.objects.set([{ id: 1, name: 'Object 1', color: '#ff0000' }]);
+    component.store.stateEpoch.set(3);
+    component.store.displayedFrameIdx.set(5);
   });
 
   it('uses displayed frame index in request and stores mask on that frame', async () => {
@@ -109,11 +109,11 @@ describe('VideoMaskerComponent sync contract', () => {
     expect(backendMock.addNewPointsOrBox).toHaveBeenCalledWith(
       expect.objectContaining({ frame_idx: 5 }),
     );
-    expect(component.masks().get(5)?.get(1)).toEqual([
+    expect(component.store.masks().get(5)?.get(1)).toEqual([
       [true, false],
       [false, false],
     ]);
-    expect(component.lastDiscardReason()).toBeNull();
+    expect(component.store.lastDiscardReason()).toBeNull();
   });
 
   it('discards mismatched response frame and rolls back optimistic point', async () => {
@@ -123,25 +123,25 @@ describe('VideoMaskerComponent sync contract', () => {
 
     await component.addPoint(10, 20, 1, 5);
 
-    expect(component.masks().get(5)?.get(1)).toBeUndefined();
-    expect(component.points().get(5)?.get(1)?.length ?? 0).toBe(0);
-    expect(component.lastDiscardReason()).toContain('frame mismatch');
+    expect(component.store.masks().get(5)?.get(1)).toBeUndefined();
+    expect(component.store.points().get(5)?.get(1)?.length ?? 0).toBe(0);
+    expect(component.store.lastDiscardReason()).toContain('frame mismatch');
   });
 
   it('discards stale epoch responses and clears live masks', async () => {
     const existingMasks = new Map<number, Map<number, boolean[][]>>();
     existingMasks.set(2, new Map([[1, [[true]]]]));
-    component.masks.set(existingMasks);
-    component.liveEditedObjectFrames.set(new Map([[2, new Set([1])]]));
+    component.store.masks.set(existingMasks);
+    component.store.liveEditedObjectFrames.set(new Map([[2, new Set([1])]]));
 
     backendMock.addNewPointsOrBox.mockReturnValue(of(makeResponse({ state_epoch: 4 })));
 
     await component.addPoint(14, 18, 1, 5);
 
-    expect(component.stateEpoch()).toBe(4);
-    expect(component.masks().size).toBe(0);
-    expect(component.liveEditedObjectFrames().size).toBe(0);
-    expect(component.lastDiscardReason()).toContain('epoch mismatch');
+    expect(component.store.stateEpoch()).toBe(4);
+    expect(component.store.masks().size).toBe(0);
+    expect(component.store.liveEditedObjectFrames().size).toBe(0);
+    expect(component.store.lastDiscardReason()).toContain('epoch mismatch');
   });
 
   it('keeps frame/object marked as live-edited even when returned mask is empty', async () => {
@@ -161,8 +161,8 @@ describe('VideoMaskerComponent sync contract', () => {
 
     await component.addPoint(30, 40, 1, 5);
 
-    expect(component.liveEditedObjectFrames().get(5)?.has(1)).toBe(true);
-    expect(component.lastMaskPixelCount()).toBe(0);
+    expect(component.store.liveEditedObjectFrames().get(5)?.has(1)).toBe(true);
+    expect(component.store.lastMaskPixelCount()).toBe(0);
   });
 
   it('does not mark an object live-edited until the point mask response returns', async () => {
@@ -171,14 +171,14 @@ describe('VideoMaskerComponent sync contract', () => {
 
     const pendingRequest = component.addPoint(30, 40, 1, 5);
 
-    expect(component.points().get(5)?.get(1)?.length).toBe(1);
-    expect(component.liveEditedObjectFrames().get(5)?.has(1)).toBeFalsy();
+    expect(component.store.points().get(5)?.get(1)?.length).toBe(1);
+    expect(component.store.liveEditedObjectFrames().get(5)?.has(1)).toBeFalsy();
 
     response$.next(makeResponse({}));
     response$.complete();
     await pendingRequest;
 
-    expect(component.liveEditedObjectFrames().get(5)?.has(1)).toBe(true);
+    expect(component.store.liveEditedObjectFrames().get(5)?.has(1)).toBe(true);
   });
 
   it('rolls back optimistic point and shows a toast when point update conflicts', async () => {
@@ -188,38 +188,38 @@ describe('VideoMaskerComponent sync contract', () => {
 
     await component.addPoint(30, 40, 1, 5);
 
-    expect(component.points().get(5)?.get(1)?.length ?? 0).toBe(0);
-    expect(component.toasts()[0].title).toBe('Point update failed');
-    expect(component.toasts()[0].message).toBe('Another operation is already running.');
+    expect(component.store.points().get(5)?.get(1)?.length ?? 0).toBe(0);
+    expect(component.store.toasts()[0].title).toBe('Point update failed');
+    expect(component.store.toasts()[0].message).toBe('Another operation is already running.');
   });
 
   it('uses the native Tauri video picker when video mode is selected', async () => {
     desktopBridgeMock.isTauri.mockReturnValue(true);
     desktopBridgeMock.pickVideoFile.mockResolvedValue('C:/videos/example.mp4');
-    component.loadSourceMode.set('video_file');
+    component.store.loadSourceMode.set('video_file');
 
     await component.browseSelectedSource();
 
     expect(desktopBridgeMock.pickVideoFile).toHaveBeenCalled();
-    expect(component.videoDir()).toBe('C:/videos/example.mp4');
+    expect(component.store.videoDir()).toBe('C:/videos/example.mp4');
   });
 
   it('uses the native Tauri directory picker for saved-session mode', async () => {
     desktopBridgeMock.isTauri.mockReturnValue(true);
     desktopBridgeMock.pickFramesDirectory.mockResolvedValue('C:/sessions/saved1');
-    component.loadSourceMode.set('saved_session_dir');
+    component.store.loadSourceMode.set('saved_session_dir');
 
     await component.browseSelectedSource();
 
     expect(desktopBridgeMock.pickFramesDirectory).toHaveBeenCalled();
-    expect(component.videoDir()).toBe('C:/sessions/saved1');
+    expect(component.store.videoDir()).toBe('C:/sessions/saved1');
   });
 
   it('falls back to browser video input when Tauri runtime is unavailable in video mode', async () => {
     const pickerSpy = vi
       .spyOn(component, 'openVideoFilePicker')
       .mockImplementation(() => undefined);
-    component.loadSourceMode.set('video_file');
+    component.store.loadSourceMode.set('video_file');
 
     await component.browseSelectedSource();
 
@@ -230,7 +230,7 @@ describe('VideoMaskerComponent sync contract', () => {
     const pickerSpy = vi
       .spyOn(component, 'openFramesDirPicker')
       .mockImplementation(() => undefined);
-    component.loadSourceMode.set('frames_dir');
+    component.store.loadSourceMode.set('frames_dir');
 
     await component.browseSelectedSource();
 
@@ -238,15 +238,15 @@ describe('VideoMaskerComponent sync contract', () => {
   });
 
   it('updates load placeholder and browse label based on selected load mode', () => {
-    component.loadSourceMode.set('frames_dir');
+    component.store.loadSourceMode.set('frames_dir');
     expect(component.getBrowseLabel()).toBe('Browse Frames');
     expect(component.getLoadPathPlaceholder()).toContain('frames directory');
 
-    component.loadSourceMode.set('video_file');
+    component.store.loadSourceMode.set('video_file');
     expect(component.getBrowseLabel()).toBe('Browse Video');
     expect(component.getLoadPathPlaceholder()).toContain('video file');
 
-    component.loadSourceMode.set('saved_session_dir');
+    component.store.loadSourceMode.set('saved_session_dir');
     expect(component.getBrowseLabel()).toBe('Browse Saved Session');
     expect(component.getLoadPathPlaceholder()).toContain('saved session directory');
     expect(component.getLoadPathPlaceholder()).toContain('session.json');
@@ -261,10 +261,10 @@ describe('VideoMaskerComponent sync contract', () => {
   });
 
   it('renders displayed frame text without target text next to the frame scrubber', () => {
-    component.isInitialized.set(true);
-    component.numFrames.set(12);
-    component.targetFrameIdx.set(4);
-    component.displayedFrameIdx.set(4);
+    component.store.isInitialized.set(true);
+    component.store.numFrames.set(12);
+    component.store.targetFrameIdx.set(4);
+    component.store.displayedFrameIdx.set(4);
 
     fixture.detectChanges();
 
@@ -315,15 +315,15 @@ describe('VideoMaskerComponent sync contract', () => {
         },
       }),
     );
-    component.videoDir.set('C:/frames');
+    component.store.videoDir.set('C:/frames');
 
     await component.initVideo();
 
     expect(backendMock.initVideoState).toHaveBeenCalledWith('C:/frames');
     expect(backendMock.getJob).toHaveBeenCalledWith('job-1');
-    expect(component.isInitialized()).toBe(true);
-    expect(component.numFrames()).toBe(12);
-    expect(component.stateEpoch()).toBe(7);
+    expect(component.store.isInitialized()).toBe(true);
+    expect(component.store.numFrames()).toBe(12);
+    expect(component.store.stateEpoch()).toBe(7);
   });
 
   it('uses the same init endpoint path flow for saved-session mode', async () => {
@@ -369,13 +369,13 @@ describe('VideoMaskerComponent sync contract', () => {
         },
       }),
     );
-    component.loadSourceMode.set('saved_session_dir');
-    component.videoDir.set('C:/backend/saved/review-run');
+    component.store.loadSourceMode.set('saved_session_dir');
+    component.store.videoDir.set('C:/backend/saved/review-run');
 
     await component.initVideo();
 
     expect(backendMock.initVideoState).toHaveBeenCalledWith('C:/backend/saved/review-run');
-    expect(component.isInitialized()).toBe(true);
+    expect(component.store.isInitialized()).toBe(true);
   });
 
   it('restores interactive state from saved-session init result', async () => {
@@ -435,16 +435,16 @@ describe('VideoMaskerComponent sync contract', () => {
         },
       }),
     );
-    component.loadSourceMode.set('saved_session_dir');
-    component.videoDir.set('C:/backend/saved/review-run');
+    component.store.loadSourceMode.set('saved_session_dir');
+    component.store.videoDir.set('C:/backend/saved/review-run');
 
     await component.initVideo();
 
-    expect(component.hasManifestMasks()).toBe(true);
-    expect(component.interactionMode()).toBe('negative');
-    expect(component.targetFrameIdx()).toBe(4);
-    expect(component.points().get(4)?.get(1)?.length).toBe(1);
-    expect(component.masks().get(4)?.get(1)).toEqual([
+    expect(component.store.hasManifestMasks()).toBe(true);
+    expect(component.store.interactionMode()).toBe('negative');
+    expect(component.store.targetFrameIdx()).toBe(4);
+    expect(component.store.points().get(4)?.get(1)?.length).toBe(1);
+    expect(component.store.masks().get(4)?.get(1)).toEqual([
       [true, false],
       [false, false],
     ]);
@@ -532,13 +532,13 @@ describe('VideoMaskerComponent sync contract', () => {
         },
       }),
     );
-    component.loadSourceMode.set('saved_session_dir');
-    component.videoDir.set('C:/backend/saved/review-run');
+    component.store.loadSourceMode.set('saved_session_dir');
+    component.store.videoDir.set('C:/backend/saved/review-run');
 
     await component.initVideo();
 
     expect(backendMock.getTrackingResult).toHaveBeenCalledWith('track-restored');
-    expect(component.trackedPoints()[0].tracks).toEqual([
+    expect(component.store.trackedPoints()[0].tracks).toEqual([
       [10, 20],
       [11, 21],
     ]);
@@ -596,13 +596,13 @@ describe('VideoMaskerComponent sync contract', () => {
     backendMock.getTrackingResult.mockReturnValue(
       throwError(() => ({ error: { detail: 'missing' } })),
     );
-    component.loadSourceMode.set('saved_session_dir');
-    component.videoDir.set('C:/backend/saved/review-run');
+    component.store.loadSourceMode.set('saved_session_dir');
+    component.store.videoDir.set('C:/backend/saved/review-run');
 
     await component.initVideo();
 
-    expect(component.isInitialized()).toBe(true);
-    expect(component.toasts()[0].title).toBe('Tracking result unavailable');
+    expect(component.store.isInitialized()).toBe(true);
+    expect(component.store.toasts()[0].title).toBe('Tracking result unavailable');
   });
 
   it('runs CoTracker without sending a model selector value', async () => {
@@ -679,7 +679,7 @@ describe('VideoMaskerComponent sync contract', () => {
         },
       }),
     );
-    component.trackingUseSupportGrid.set(true);
+    component.store.trackingUseSupportGrid.set(true);
 
     await component.runTracking();
 
@@ -687,7 +687,7 @@ describe('VideoMaskerComponent sync contract', () => {
     expect(backendMock.trackPromptPoints.mock.calls[0][0]).not.toHaveProperty('model_name');
     expect(backendMock.getTrackingResult).toHaveBeenCalledWith('track-1');
     expect(backendMock.clearJobResult).toHaveBeenCalledWith('job-track');
-    expect(component.trackedPoints()[0].tracks).toEqual([
+    expect(component.store.trackedPoints()[0].tracks).toEqual([
       [10, 20],
       [11, 21],
     ]);
@@ -735,12 +735,12 @@ describe('VideoMaskerComponent sync contract', () => {
         },
       }),
     );
-    component.isInitialized.set(true);
-    component.numFrames.set(2);
+    component.store.isInitialized.set(true);
+    component.store.numFrames.set(2);
 
     await component.propagate();
 
-    expect(component.hasManifestMasks()).toBe(true);
+    expect(component.store.hasManifestMasks()).toBe(true);
     expect(backendMock.propagateInVideo).toHaveBeenCalledWith({
       include_masks_in_response: false,
       include_saved_mask_paths: false,
@@ -786,13 +786,13 @@ describe('VideoMaskerComponent sync contract', () => {
         },
       }),
     );
-    component.videoDir.set('C:/missing');
+    component.store.videoDir.set('C:/missing');
 
     await component.initVideo();
 
-    expect(component.isInitialized()).toBe(false);
-    expect(component.toasts()[0].title).toBe('Loading video');
-    expect(component.toasts()[0].message).toBe('Path not found');
+    expect(component.store.isInitialized()).toBe(false);
+    expect(component.store.toasts()[0].title).toBe('Loading video');
+    expect(component.store.toasts()[0].message).toBe('Path not found');
   });
 
   it('saves the current session with the typed name', async () => {
@@ -804,8 +804,8 @@ describe('VideoMaskerComponent sync contract', () => {
         state_epoch: 3,
       }),
     );
-    component.isInitialized.set(true);
-    component.saveName.set('review-run');
+    component.store.isInitialized.set(true);
+    component.store.saveName.set('review-run');
 
     component.save();
     await Promise.resolve();
@@ -819,6 +819,6 @@ describe('VideoMaskerComponent sync contract', () => {
         live_masks: expect.any(Array),
       }),
     );
-    expect(component.toasts()[0].title).toBe('Session saved');
+    expect(component.store.toasts()[0].title).toBe('Session saved');
   });
 });
