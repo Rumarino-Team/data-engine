@@ -1,10 +1,11 @@
 # Data Engine
 
-A complete data annotation and tracking system with both Python (FastAPI) backend and C++ interface. Supports video object segmentation using SAM 2 and point tracking using CoTracker.
+A complete data annotation and tracking system with both Python (FastAPI) backend and Angular frontend. Supports video object segmentation using SAM 2 and point tracking using CoTracker.
 
 Use `git clone --recursive https://github.com/Rumarino-Team/data-engine.git` when cloning the repo
 
 ## Install Dependencies
+This project is made with Linux and Windows using x86-64 CPUs and NVIDIA GPUs in mind.
 
 1. Create Python virtual environment using venv or Anaconda (mainly written and tested on Python 3.12.12)
 2. If you didn't use `--recursive` when doing git clone, then run `git submodule update --init --recursive` to make sure `sam2` is downloaded
@@ -32,6 +33,7 @@ Mainly for developing the frontend, for production its recommended to use the Ta
 The frontend defaults to `http://127.0.0.1:8000` for backend requests and also exposes a compact API URL override in the top bar.
 
 ## Tauri Desktop Frontend
+Please install Rust (Cargo) before proceeding with the Tauri build.
 
 1. Change into `frontend-ng/data-engine`
 2. Install JavaScript dependencies with `bun install` or `npm install`
@@ -41,16 +43,6 @@ The frontend defaults to `http://127.0.0.1:8000` for backend requests and also e
 6. Run `bun run tauri:build` or `npm run tauri:build:npm` to produce a packaged desktop build
 
 The Tauri app only wraps the Angular frontend. It does not bundle or launch the Python backend.
-
-## Testing via C++
-Currently this part is behind the python api's backend implementation so it isnt recommended to use
-
-1. Install `nlohmann_json` and `curl` dev packages via your package manager
-2. Change into `/cpp-backend-bindings`
-2. Run `mkdir build`
-3. Run `cmake build` to generate CMake build files
-4. Run `cmake --build build` to compile project
-5. Run `./build/src/BackendInterfaceTests` while the venv is sourced to test backend code
 
 
 ## Structure
