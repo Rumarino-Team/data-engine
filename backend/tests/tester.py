@@ -71,6 +71,32 @@ OFFLOAD_STATE_TO_CPU = _env_bool("DATA_ENGINE_OFFLOAD_STATE_TO_CPU", False)
 JOB_POLL_INTERVAL_SECONDS = float(os.getenv("DATA_ENGINE_JOB_POLL_INTERVAL", "0.5"))
 JOB_TIMEOUT_SECONDS = float(os.getenv("DATA_ENGINE_JOB_TIMEOUT", "1800"))
 
+def test_chooser():
+    print("Choose a test with a number")
+    print("Video Masking Test: 1")
+    print("CoTracker Propagation Tests: 2")
+    print("Run All Tests: 3")
+    print("Quit: 0")
+    choice = input()
+
+    match choice:
+        case "1":
+            run_video_tests()
+            return False
+        case "2":
+            run_apple_tracking_tests()
+            return False
+        case "3":
+            run_video_tests()
+            run_apple_tracking_tests()
+            print("\n" + "=" * 60)
+            print("ALL TESTS COMPLETED")
+            print("=" * 60)
+            return False
+        case "0":
+            return False
+
+
 
 def _print_job_progress(job):
     stage_label = job.get("stage_label") or job.get("stage") or "Working"
@@ -762,11 +788,6 @@ def run_apple_tracking_tests():
             print(f"  - {output_path}")
 
 
-def run_tracking_tests():
-    """Runs the current tracking integration suite."""
-    run_apple_tracking_tests()
-
-
 if __name__ == "__main__":
     # Download and extract bedroom video frames
     print("=" * 60)
@@ -792,15 +813,11 @@ if __name__ == "__main__":
         # Wait for the server to be ready
         # The root endpoint in api.py returns a simple message
         if wait_for_server(f"{BASE_URL}/", timeout=30):
-            # Run the video tests
-            run_video_tests()
-            
-            # Run the tracking tests
-            run_tracking_tests()
-            
-            print("\n" + "=" * 60)
-            print("ALL TESTS COMPLETED")
-            print("=" * 60)
+            # Run test chooser
+            active = True
+            while (active):
+                active = test_chooser()
+
         else:
             print("Could not connect to the server. Aborting tests.")
 
