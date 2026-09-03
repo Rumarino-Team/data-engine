@@ -7,6 +7,7 @@ import { AppToast } from '../../state/video-masker-ui.types';
   standalone: true,
   imports: [CommonModule],
   templateUrl: './toast-stack.component.html',
+  styleUrl: './toast-stack.component.css',
 })
 export class ToastStackComponent {
   @Input() toasts: AppToast[] = [];
