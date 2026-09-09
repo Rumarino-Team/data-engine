@@ -22,7 +22,7 @@
     </button>
     <button
       (click)="initVideo()"
-      [disabled]="store.isInitialized() || store.isLoading() || !store.videoDir().trim()"
+      [disabled]="store.isInitialized() || store.isLoading() || !store.videoDir().trim() || store.apiHealthStatus() !== 'online'"
     >
       Load
     </button>
@@ -86,7 +86,17 @@
 
   <div class="main-area">
     <div class="canvas-container">
-      <div #canvas (click)="onCanvasClick($event)"></div>
+      <canvas
+        #canvas
+        class="frame-canvas"
+        [class.ready]="
+          store.isInitialized() &&
+          store.selectedObjectId() !== null &&
+          !store.isFrameLoading() &&
+          !store.isPointRequestInFlight()
+        "
+        (click)="onCanvasClick($event)"
+      ></canvas>
     </div>
 
     <div class="sidebar">
