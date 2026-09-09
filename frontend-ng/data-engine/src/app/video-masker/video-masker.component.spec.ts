@@ -101,6 +101,25 @@ describe('VideoMaskerComponent sync contract', () => {
     component.store.displayedFrameIdx.set(5);
   });
 
+  it('hides the API URL scheme while the input is not focused', () => {
+    component.store.apiUrlInput.set('http://127.0.0.1:8000');
+
+    expect(component.getApiUrlInputValue()).toBe('127.0.0.1:8000');
+
+    component.onApiUrlFocus();
+
+    expect(component.getApiUrlInputValue()).toBe('http://127.0.0.1:8000');
+  });
+
+  it('adds the default API URL scheme when focusing a host-only value', () => {
+    component.store.apiUrlInput.set('127.0.0.1:8000');
+
+    component.onApiUrlFocus();
+
+    expect(component.store.apiUrlInput()).toBe('http://127.0.0.1:8000');
+    expect(component.getApiUrlInputValue()).toBe('http://127.0.0.1:8000');
+  });
+
   it('uses displayed frame index in request and stores mask on that frame', async () => {
     backendMock.addNewPointsOrBox.mockReturnValue(of(makeResponse({})));
 

@@ -6,13 +6,21 @@
 }
 
 .top-bar {
-  padding: 10px;
+  padding: 8px 10px;
   background-color: #f0f0f0;
   border-bottom: 1px solid #ccc;
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px 12px;
   align-items: center;
+}
+
+.load-controls {
+  display: flex;
+  flex: 1 1 560px;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
 .load-source-select {
@@ -20,30 +28,77 @@
   min-width: 170px;
 }
 
+.load-path-field {
+  position: relative;
+  flex: 1 1 280px;
+  min-width: 220px;
+}
+
+.load-path-field input {
+  width: 100%;
+}
+
 .top-bar input {
   flex-grow: 1;
-  min-width: 260px;
+  min-width: 0;
   padding: 5px;
 }
 
 .load-mode-hint {
-  flex: 1 0 100%;
+  position: absolute;
+  top: calc(100% + 7px);
+  left: 0;
+  z-index: 20;
+  width: min(420px, calc(100vw - 32px));
+  padding: 7px 9px;
+  border: 1px solid #cfcfcf;
+  border-radius: 4px;
+  background: #fff;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16);
   font-size: 0.78rem;
   color: #555;
-  margin-top: -2px;
+  line-height: 1.35;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-3px);
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+}
+
+.load-path-field:hover .load-mode-hint,
+.load-path-field:focus-within .load-mode-hint {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .api-url-controls {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
   align-items: center;
+  justify-content: flex-end;
   margin-left: auto;
+  padding-left: 10px;
+  border-left: 1px solid #d3d3d3;
+}
+
+.api-input-combo {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.api-button-combo {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .api-url-input {
-  flex: 0 1 260px;
-  min-width: 220px;
+  flex: 0 1 210px;
+  min-width: 170px;
 }
 
 .api-status-pill {
@@ -512,11 +567,19 @@ button:disabled {
 }
 
 @media (max-width: 960px) {
+  .load-controls {
+    flex-basis: 100%;
+  }
+
   .api-url-controls {
+    justify-content: flex-start;
     width: 100%;
+    margin-left: 0;
+    padding-left: 0;
+    border-left: 0;
   }
 
   .api-url-input {
-    flex: 1 1 220px;
+    flex: 1 1 180px;
   }
 }

@@ -41,6 +41,7 @@ export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
   readonly actions = inject(VideoMaskerActionsService);
   readonly frameCanvas = inject(FrameCanvasService);
   readonly showDebugUi = isDevMode();
+  apiUrlInputHasFocus = false;
 
   private healthTimerId: ReturnType<typeof setInterval> | null = null;
 
@@ -101,8 +102,38 @@ export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
     this.store.videoDir.set(value);
   }
 
+  onVideoPathBlur(event: FocusEvent): void {
+    const input = event.target as HTMLInputElement | null;
+    if (!input) {
+      return;
+    }
+    requestAnimationFrame(() => {
+      input.scrollLeft = input.scrollWidth;
+    });
+  }
+
   onApiUrlChange(value: string): void {
     this.store.apiUrlInput.set(value);
+  }
+
+  onApiUrlFocus(): void {
+    this.apiUrlInputHasFocus = true;
+    const apiUrl = this.store.apiUrlInput().trim();
+    if (apiUrl && !/^[a-z][a-z\d+\-.]*:\/\//i.test(apiUrl)) {
+      this.store.apiUrlInput.set(`http://${apiUrl}`);
+    }
+  }
+
+  onApiUrlBlur(): void {
+    this.apiUrlInputHasFocus = false;
+  }
+
+  getApiUrlInputValue(): string {
+    const apiUrl = this.store.apiUrlInput();
+    if (this.apiUrlInputHasFocus) {
+      return apiUrl;
+    }
+    return apiUrl.replace(/^https?:\/\//i, '');
   }
 
   onSaveNameChange(value: string): void {

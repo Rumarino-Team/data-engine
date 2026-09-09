@@ -1,67 +1,82 @@
 <div class="video-masker-container">
   <div class="top-bar">
-    <select
-      class="load-source-select"
-      [ngModel]="store.loadSourceMode()"
-      (ngModelChange)="onLoadSourceModeChange($event)"
-      [disabled]="store.isInitialized() || store.isLoading()"
-    >
-      <option value="frames_dir">Frames Directory</option>
-      <option value="video_file">Video File</option>
-      <option value="saved_session_dir">Saved Session</option>
-    </select>
-    <input
-      type="text"
-      [ngModel]="store.videoDir()"
-      (ngModelChange)="onVideoDirChange($event)"
-      [placeholder]="getLoadPathPlaceholder()"
-      [disabled]="store.isInitialized() || store.isLoading()"
-    />
-    <button (click)="browseSelectedSource()" [disabled]="store.isInitialized() || store.isLoading()">
-      {{ getBrowseLabel() }}
-    </button>
-    <button
-      (click)="initVideo()"
-      [disabled]="store.isInitialized() || store.isLoading() || !store.videoDir().trim() || store.apiHealthStatus() !== 'online'"
-    >
-      Load
-    </button>
-    <div class="load-mode-hint" *ngIf="getLoadModeHint()">{{ getLoadModeHint() }}</div>
+    <div class="load-controls">
+      <select
+        class="load-source-select"
+        [ngModel]="store.loadSourceMode()"
+        (ngModelChange)="onLoadSourceModeChange($event)"
+        [disabled]="store.isInitialized() || store.isLoading()"
+        [attr.aria-describedby]="getLoadModeHint() ? 'load-mode-hint' : null"
+      >
+        <option value="frames_dir">Frames Directory</option>
+        <option value="video_file">Video File</option>
+        <option value="saved_session_dir">Saved Session</option>
+      </select>
+      <div class="load-path-field">
+        <input
+          type="text"
+          class="load-path-input"
+          [ngModel]="store.videoDir()"
+          (ngModelChange)="onVideoDirChange($event)"
+          (blur)="onVideoPathBlur($event)"
+          [placeholder]="getLoadPathPlaceholder()"
+          [disabled]="store.isInitialized() || store.isLoading()"
+        />
+        <div id="load-mode-hint" class="load-mode-hint" *ngIf="getLoadModeHint()" role="tooltip">
+          {{ getLoadModeHint() }}
+        </div>
+      </div>
+      <button (click)="browseSelectedSource()" [disabled]="store.isInitialized() || store.isLoading()">
+        {{ getBrowseLabel() }}
+      </button>
+      <button
+        (click)="initVideo()"
+        [disabled]="store.isInitialized() || store.isLoading() || !store.videoDir().trim() || store.apiHealthStatus() !== 'online'"
+      >
+        Load
+      </button>
+    </div>
     <div class="api-url-controls">
-      <span
-        class="api-status-pill"
-        [class.online]="store.apiHealthStatus() === 'online'"
-        [class.offline]="store.apiHealthStatus() === 'offline'"
-        [class.checking]="store.apiHealthStatus() === 'checking'"
-      >
-        {{
-          store.apiHealthStatus() === 'online'
-            ? 'Online'
-            : store.apiHealthStatus() === 'offline'
-              ? 'Offline'
-              : 'Checking'
-        }}
-      </span>
-      <input
-        type="text"
-        class="api-url-input"
-        [ngModel]="store.apiUrlInput()"
-        (ngModelChange)="onApiUrlChange($event)"
-        placeholder="Backend URL"
-        [disabled]="store.isLoading()"
-      />
-      <button
-        (click)="applyApiUrl()"
-        [disabled]="store.isLoading() || !store.apiUrlInput().trim() || !isApiUrlDirty()"
-      >
-        Apply API
-      </button>
-      <button
-        (click)="resetApiUrl()"
-        [disabled]="store.isLoading() || store.apiUrlInput() === 'http://127.0.0.1:8000'"
-      >
-        Reset API
-      </button>
+      <div class="api-input-combo">
+        <span
+          class="api-status-pill"
+          [class.online]="store.apiHealthStatus() === 'online'"
+          [class.offline]="store.apiHealthStatus() === 'offline'"
+          [class.checking]="store.apiHealthStatus() === 'checking'"
+        >
+          {{
+            store.apiHealthStatus() === 'online'
+              ? 'Online'
+              : store.apiHealthStatus() === 'offline'
+                ? 'Offline'
+                : 'Checking'
+          }}
+        </span>
+        <input
+          type="text"
+          class="api-url-input"
+          [ngModel]="getApiUrlInputValue()"
+          (ngModelChange)="onApiUrlChange($event)"
+          (focus)="onApiUrlFocus()"
+          (blur)="onApiUrlBlur()"
+          placeholder="Backend URL"
+          [disabled]="store.isLoading()"
+        />
+      </div>
+      <div class="api-button-combo">
+        <button
+          (click)="applyApiUrl()"
+          [disabled]="store.isLoading() || !store.apiUrlInput().trim() || !isApiUrlDirty()"
+        >
+          Apply API
+        </button>
+        <button
+          (click)="resetApiUrl()"
+          [disabled]="store.isLoading() || store.apiUrlInput() === 'http://127.0.0.1:8000'"
+        >
+          Reset API
+        </button>
+      </div>
     </div>
 
     <input
