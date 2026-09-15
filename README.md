@@ -44,6 +44,17 @@ Please install Rust (Cargo) before proceeding with the Tauri build.
 
 The Tauri app only wraps the Angular frontend. It does not bundle or launch the Python backend.
 
+## Debugging
+
+Open the repository root in VS Code and use the debug panel.
+
+- `Backend: FastAPI` starts the API on `http://127.0.0.1:8000` through Uvicorn with `PYTHONPATH` set for both `backend/` and `sam2/`.
+- `Frontend: Angular (Chrome)` starts `npm run start` in `frontend-ng/data-engine` and opens Chrome at `http://localhost:4200/` with Angular source maps enabled.
+- `Frontend: Angular tests (Chrome)` starts the frontend test runner and attaches Chrome to `http://localhost:9876/debug.html`.
+- `Full stack: Backend + Angular` launches the backend and Angular debug sessions together.
+
+Install the recommended VS Code extensions when prompted: Python, Debugpy, Angular Language Service, Rust Analyzer, and Tauri.
+
 
 ## Structure
 TBA

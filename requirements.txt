@@ -2,6 +2,7 @@
 
 fastapi==0.119.0
 fastapi-cli==0.0.13
+uvicorn[standard]
 pydantic
 huggingface_hub==0.36.0
 torch==2.13.0+cu132

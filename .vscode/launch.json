@@ -1,0 +1,55 @@
+{
+  // Open the repository root in VS Code and use "Full stack: Backend + Angular".
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Backend: FastAPI",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": [
+        "backend.api:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8000"
+      ],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/backend:${workspaceFolder}/sam2"
+      },
+      "jinja": true,
+      "justMyCode": false
+    },
+    {
+      "name": "Frontend: Angular (Chrome)",
+      "type": "pwa-chrome",
+      "request": "launch",
+      "preLaunchTask": "frontend: npm start",
+      "url": "http://localhost:4200/",
+      "webRoot": "${workspaceFolder}/frontend-ng/data-engine/src",
+      "sourceMaps": true,
+      "smartStep": true
+    },
+    {
+      "name": "Frontend: Angular tests (Chrome)",
+      "type": "pwa-chrome",
+      "request": "launch",
+      "preLaunchTask": "frontend: npm test",
+      "url": "http://localhost:9876/debug.html",
+      "webRoot": "${workspaceFolder}/frontend-ng/data-engine/src",
+      "sourceMaps": true,
+      "smartStep": true
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Full stack: Backend + Angular",
+      "configurations": [
+        "Backend: FastAPI",
+        "Frontend: Angular (Chrome)"
+      ],
+      "stopAll": true
+    }
+  ]
+}
