@@ -200,14 +200,22 @@ export class VideoMaskerActionsService {
       .replace(/^['"]|['"]$/g, '');
     if (!enteredPath) {
       if (this.store.loadSourceMode() === 'saved_session_dir') {
-        this.notify('warning', 'Missing session path', 'Enter a saved session directory path or browse for one.');
+        this.notify(
+          'warning',
+          'Missing session path',
+          'Enter a saved session directory path or browse for one.',
+        );
         return false;
       }
       if (this.store.loadSourceMode() === 'video_file') {
         this.notify('warning', 'Missing video path', 'Enter a video file path or browse for one.');
         return false;
       }
-      this.notify('warning', 'Missing frames path', 'Enter a frames directory path or browse for one.');
+      this.notify(
+        'warning',
+        'Missing frames path',
+        'Enter a frames directory path or browse for one.',
+      );
       return false;
     }
 
@@ -222,6 +230,8 @@ export class VideoMaskerActionsService {
     this.store.numFrames.set(res.num_frames);
     this.store.targetFrameIdx.set(0);
     this.store.displayedFrameIdx.set(-1);
+    this.store.propagationStartFrameIdx.set(0);
+    this.store.propagationEndFrameIdx.set(Math.max(0, res.num_frames - 1));
     this.store.saveName.set('');
     this.store.trackedPoints.set([]);
     this.resetInteractiveMaps();
@@ -354,9 +364,21 @@ export class VideoMaskerActionsService {
   // --- mask propagation / tracking ---------------------------------------
 
   async propagate(): Promise<void> {
+    const startFrameIdx = this.store.propagationStartFrameIdx();
+    const endFrameIdx = this.store.propagationEndFrameIdx();
+    if (startFrameIdx > endFrameIdx) {
+      this.notify(
+        'warning',
+        'Invalid frame range',
+        'The start frame must not be after the end frame.',
+      );
+      return;
+    }
     const response = await this.runJob<VideoPropagateResponse>('Propagating masks', () =>
       firstValueFrom(
         this.backend.propagateInVideo({
+          start_frame_idx: startFrameIdx,
+          max_frame_num_to_track: endFrameIdx - startFrameIdx + 1,
           include_masks_in_response: false,
           include_saved_mask_paths: false,
         }),
@@ -576,7 +598,9 @@ export class VideoMaskerActionsService {
       this.store.lastFallbackUsed.set(Boolean(response.single_frame_fallback_used));
 
       const masksMap = new Map(this.store.masks());
-      const frameMasksMap = new Map(masksMap.get(requestFrameIdx) || new Map<number, boolean[][]>());
+      const frameMasksMap = new Map(
+        masksMap.get(requestFrameIdx) || new Map<number, boolean[][]>(),
+      );
       response.out_obj_ids.forEach((id, index) => {
         frameMasksMap.set(id, response.out_masks[index]);
       });

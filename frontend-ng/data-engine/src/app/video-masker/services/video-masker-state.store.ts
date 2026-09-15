@@ -37,6 +37,8 @@ export class VideoMaskerStateStore {
   numFrames = signal<number>(0);
   targetFrameIdx = signal<number>(0);
   displayedFrameIdx = signal<number>(-1);
+  propagationStartFrameIdx = signal<number>(0);
+  propagationEndFrameIdx = signal<number>(0);
   stateEpoch = signal<number>(0);
 
   objects = signal<MaskObject[]>([]);

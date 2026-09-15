@@ -26,12 +26,20 @@
           {{ getLoadModeHint() }}
         </div>
       </div>
-      <button (click)="browseSelectedSource()" [disabled]="store.isInitialized() || store.isLoading()">
+      <button
+        (click)="browseSelectedSource()"
+        [disabled]="store.isInitialized() || store.isLoading()"
+      >
         {{ getBrowseLabel() }}
       </button>
       <button
         (click)="initVideo()"
-        [disabled]="store.isInitialized() || store.isLoading() || !store.videoDir().trim() || store.apiHealthStatus() !== 'online'"
+        [disabled]="
+          store.isInitialized() ||
+          store.isLoading() ||
+          !store.videoDir().trim() ||
+          store.apiHealthStatus() !== 'online'
+        "
       >
         Load
       </button>
@@ -182,6 +190,26 @@
           >
             Propagate Masks
           </button>
+          <div class="propagation-range" aria-label="Propagation frame range">
+            <button
+              class="panel-action-btn"
+              (click)="setPropagationStartFrame()"
+              [disabled]="
+                !store.isInitialized() || store.isLoading() || store.displayedFrameIdx() < 0
+              "
+            >
+              Start Frame: {{ store.propagationStartFrameIdx() }}
+            </button>
+            <button
+              class="panel-action-btn"
+              (click)="setPropagationEndFrame()"
+              [disabled]="
+                !store.isInitialized() || store.isLoading() || store.displayedFrameIdx() < 0
+              "
+            >
+              End Frame: {{ store.propagationEndFrameIdx() }}
+            </button>
+          </div>
           <button
             class="panel-action-btn panel-action-btn-danger"
             (click)="clearMasks()"
@@ -241,8 +269,9 @@
           ><strong>{{ store.lastClickRequestFrameIdx() ?? 'n/a' }}</strong>
           <span>Last response frame</span
           ><strong>{{ store.lastBackendResponseFrameIdx() ?? 'n/a' }}</strong>
-          <span>Response frame file</span><strong>{{ store.lastBackendResponseFrameFile() }}</strong>
-          <span>State epoch</span><strong>{{ store.stateEpoch() }}</strong> <span>Response epoch</span
+          <span>Response frame file</span
+          ><strong>{{ store.lastBackendResponseFrameFile() }}</strong> <span>State epoch</span
+          ><strong>{{ store.stateEpoch() }}</strong> <span>Response epoch</span
           ><strong>{{ store.lastBackendResponseStateEpoch() ?? 'n/a' }}</strong>
           <span>Last object</span><strong>{{ store.lastDebugObjectId() ?? 'n/a' }}</strong>
           <span>Last pixel count</span><strong>{{ store.lastMaskPixelCount() ?? 'n/a' }}</strong>
@@ -259,14 +288,28 @@
   <div class="bottom-bar" *ngIf="store.isInitialized()">
     <div class="scrubber">
       <span>Displayed: {{ store.displayedFrameIdx() }} / {{ store.numFrames() - 1 }}</span>
-      <input
-        type="range"
-        [min]="0"
-        [max]="store.numFrames() - 1"
-        [ngModel]="store.targetFrameIdx()"
-        (ngModelChange)="onScrubberFrameChange($event)"
-        [disabled]="store.isLoading() || store.isPointRequestInFlight()"
-      />
+      <div
+        class="timeline"
+        [style.--range-start.%]="getPropagationFramePercent(store.propagationStartFrameIdx())"
+        [style.--range-end.%]="getPropagationFramePercent(store.propagationEndFrameIdx())"
+      >
+        <div class="timeline-selection" aria-hidden="true"></div>
+        <span class="timeline-marker timeline-marker-start" aria-hidden="true">
+          <span>Start {{ store.propagationStartFrameIdx() }}</span>
+        </span>
+        <span class="timeline-marker timeline-marker-end" aria-hidden="true">
+          <span>End {{ store.propagationEndFrameIdx() }}</span>
+        </span>
+        <input
+          type="range"
+          [min]="0"
+          [max]="store.numFrames() - 1"
+          [ngModel]="store.targetFrameIdx()"
+          (ngModelChange)="onScrubberFrameChange($event)"
+          [disabled]="store.isLoading() || store.isPointRequestInFlight()"
+          aria-label="Current frame"
+        />
+      </div>
     </div>
   </div>
 
@@ -276,8 +319,5 @@
     [activeJobTitle]="store.activeJobTitle()"
   ></app-job-status-panel>
 
-  <app-toast-stack
-    [toasts]="store.toasts()"
-    (dismiss)="dismissToast($event)"
-  ></app-toast-stack>
+  <app-toast-stack [toasts]="store.toasts()" (dismiss)="dismissToast($event)"></app-toast-stack>
 </div>

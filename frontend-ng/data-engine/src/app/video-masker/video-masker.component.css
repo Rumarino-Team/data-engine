@@ -312,6 +312,18 @@
   border-color: #c4c4c4;
 }
 
+.propagation-range {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.propagation-range .panel-action-btn {
+  min-width: 0;
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
 .panel-action-btn-danger {
   border-color: #d7acac;
   background: #fff8f8;
@@ -431,8 +443,110 @@
   gap: 10px;
 }
 
-.scrubber input {
+.timeline {
+  --range-start: 0%;
+  --range-end: 100%;
+  position: relative;
   flex-grow: 1;
+  height: 34px;
+  min-width: 120px;
+  display: flex;
+  align-items: center;
+}
+
+.timeline::before {
+  content: '';
+  position: absolute;
+  right: 0;
+  left: 0;
+  height: 6px;
+  border-radius: 3px;
+  background: #c9c9c9;
+}
+
+.timeline-selection {
+  position: absolute;
+  left: var(--range-start);
+  width: calc(var(--range-end) - var(--range-start));
+  height: 6px;
+  border-radius: 3px;
+  background: #2f6fed;
+}
+
+.timeline-marker {
+  position: absolute;
+  top: 12px;
+  z-index: 1;
+  width: 2px;
+  height: 14px;
+  background: #174ea6;
+  pointer-events: none;
+}
+
+.timeline-marker span {
+  position: absolute;
+  top: 15px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #174ea6;
+  white-space: nowrap;
+}
+
+.timeline-marker-start {
+  left: var(--range-start);
+}
+
+.timeline-marker-start span {
+  left: 0;
+}
+
+.timeline-marker-end {
+  left: var(--range-end);
+}
+
+.timeline-marker-end span {
+  right: 0;
+}
+
+.timeline input[type='range'] {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  margin: 0;
+  appearance: none;
+  background: transparent;
+}
+
+.timeline input[type='range']::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 3px;
+  background: transparent;
+}
+
+.timeline input[type='range']::-webkit-slider-thumb {
+  width: 14px;
+  height: 14px;
+  margin-top: -4px;
+  appearance: none;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: #222;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+
+.timeline input[type='range']::-moz-range-track {
+  height: 6px;
+  border-radius: 3px;
+  background: transparent;
+}
+
+.timeline input[type='range']::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: #222;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
 }
 
 button {

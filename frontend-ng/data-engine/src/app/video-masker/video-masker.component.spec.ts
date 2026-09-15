@@ -291,6 +291,40 @@ describe('VideoMaskerComponent sync contract', () => {
     expect(fixture.nativeElement.textContent).toContain('Displayed: 4 / 11');
   });
 
+  it('sets propagation frame bounds from the displayed frame while keeping the range valid', () => {
+    component.store.displayedFrameIdx.set(8);
+    component.store.propagationStartFrameIdx.set(0);
+    component.store.propagationEndFrameIdx.set(5);
+
+    component.setPropagationStartFrame();
+
+    expect(component.store.propagationStartFrameIdx()).toBe(8);
+    expect(component.store.propagationEndFrameIdx()).toBe(8);
+
+    component.store.displayedFrameIdx.set(3);
+    component.setPropagationEndFrame();
+
+    expect(component.store.propagationStartFrameIdx()).toBe(3);
+    expect(component.store.propagationEndFrameIdx()).toBe(3);
+  });
+
+  it('renders the propagation range markers on the timeline', () => {
+    component.store.isInitialized.set(true);
+    component.store.numFrames.set(100);
+    component.store.propagationStartFrameIdx.set(20);
+    component.store.propagationEndFrameIdx.set(80);
+
+    fixture.detectChanges();
+
+    const timeline = fixture.nativeElement.querySelector('.timeline') as HTMLElement;
+    expect(parseFloat(timeline.style.getPropertyValue('--range-start'))).toBeCloseTo(
+      (20 / 99) * 100,
+    );
+    expect(parseFloat(timeline.style.getPropertyValue('--range-end'))).toBeCloseTo((80 / 99) * 100);
+    expect(timeline.textContent).toContain('Start 20');
+    expect(timeline.textContent).toContain('End 80');
+  });
+
   it('starts a video init job, polls completion, and applies the result', async () => {
     backendMock.initVideoState.mockReturnValue(
       of({
@@ -756,11 +790,14 @@ describe('VideoMaskerComponent sync contract', () => {
     );
     component.store.isInitialized.set(true);
     component.store.numFrames.set(2);
+    component.store.propagationEndFrameIdx.set(1);
 
     await component.propagate();
 
     expect(component.store.hasManifestMasks()).toBe(true);
     expect(backendMock.propagateInVideo).toHaveBeenCalledWith({
+      start_frame_idx: 0,
+      max_frame_num_to_track: 2,
       include_masks_in_response: false,
       include_saved_mask_paths: false,
     });

@@ -97,7 +97,6 @@ def test_chooser():
             return False
 
 
-
 def _print_job_progress(job):
     stage_label = job.get("stage_label") or job.get("stage") or "Working"
     progress = job.get("progress")

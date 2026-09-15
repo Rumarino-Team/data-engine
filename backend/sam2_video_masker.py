@@ -6,11 +6,7 @@ from pathlib import Path
 from typing import Callable, Optional
 from sam2.sam2_video_predictor import SAM2VideoPredictor
 from utils import extract_video_to_frames
-
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
-VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-GENERATED_FRAMES_ROOT = PROJECT_ROOT / "backend/cache/frames"
+from core.config import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, PROJECT_ROOT, GENERATED_FRAMES_ROOT
 
 
 class SAM2VideoMasker:

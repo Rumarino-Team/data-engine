@@ -16,7 +16,12 @@ import { VideoMaskerStateStore } from './services/video-masker-state.store';
 import { FrameCanvasService } from './services/frame-canvas.service';
 import { VideoMaskerActionsService } from './services/video-masker-actions.service';
 import { LoadSourceMode } from './state/video-masker-ui.types';
-import { browseLabel, clampFrameIndex, loadModeHint, loadPathPlaceholder } from './video-masker.util';
+import {
+  browseLabel,
+  clampFrameIndex,
+  loadModeHint,
+  loadPathPlaceholder,
+} from './video-masker.util';
 
 /**
  * Composition root for the video masker route. Owns the view refs and lifecycle, wires
@@ -340,5 +345,35 @@ export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
     }
     const maxFrame = this.store.numFrames() - 1;
     this.store.targetFrameIdx.set(clampFrameIndex(parsed, maxFrame));
+  }
+
+  getPropagationFramePercent(frameIdx: number): number {
+    const maxFrame = this.store.numFrames() - 1;
+    if (maxFrame <= 0) {
+      return 0;
+    }
+    return (clampFrameIndex(frameIdx, maxFrame) / maxFrame) * 100;
+  }
+
+  setPropagationStartFrame(): void {
+    const frameIdx = this.store.displayedFrameIdx();
+    if (frameIdx < 0) {
+      return;
+    }
+    this.store.propagationStartFrameIdx.set(frameIdx);
+    if (frameIdx > this.store.propagationEndFrameIdx()) {
+      this.store.propagationEndFrameIdx.set(frameIdx);
+    }
+  }
+
+  setPropagationEndFrame(): void {
+    const frameIdx = this.store.displayedFrameIdx();
+    if (frameIdx < 0) {
+      return;
+    }
+    this.store.propagationEndFrameIdx.set(frameIdx);
+    if (frameIdx < this.store.propagationStartFrameIdx()) {
+      this.store.propagationStartFrameIdx.set(frameIdx);
+    }
   }
 }
