@@ -1,5 +1,5 @@
 import { Injectable, inject } from '@angular/core';
-import { firstValueFrom } from 'rxjs';
+import { finalize, firstValueFrom } from 'rxjs';
 import {
   BackendService,
   RestoredSessionPayload,
@@ -47,6 +47,17 @@ export class VideoMaskerActionsService {
   private readonly frameCanvas = inject(FrameCanvasService);
 
   private lastCompletedJobId: string | null = null;
+  private nextObjectId = 1;
+  private trackingRevision = 0;
+
+  private get isBusy(): boolean {
+    return this.store.isInteractionBusy();
+  }
+
+  private invalidateTracking(): void {
+    this.trackingRevision++;
+    this.store.trackedPoints.set([]);
+  }
 
   // --- API URL + health ------------------------------------------------------
 
@@ -194,6 +205,7 @@ export class VideoMaskerActionsService {
   // --- session load / save -------------------------------------------------
 
   async initVideo(): Promise<boolean> {
+    if (this.isBusy) return false;
     const enteredPath = this.store
       .videoDir()
       .trim()
@@ -233,7 +245,8 @@ export class VideoMaskerActionsService {
     this.store.propagationStartFrameIdx.set(0);
     this.store.propagationEndFrameIdx.set(Math.max(0, res.num_frames - 1));
     this.store.saveName.set('');
-    this.store.trackedPoints.set([]);
+    this.invalidateTracking();
+    this.nextObjectId = 1;
     this.resetInteractiveMaps();
     this.frameCanvas.clearFrameCaches();
     this.store.objects.set([{ id: 1, name: 'Object 1', color: randomColor() }]);
@@ -339,6 +352,7 @@ export class VideoMaskerActionsService {
   }
 
   save(): void {
+    if (this.isBusy) return;
     const name = this.store.saveName().trim();
     if (!name) {
       this.notify('warning', 'Missing save name', 'Enter a name for this saved session.');
@@ -364,6 +378,7 @@ export class VideoMaskerActionsService {
   // --- mask propagation / tracking ---------------------------------------
 
   async propagate(): Promise<void> {
+    if (this.isBusy) return;
     const startFrameIdx = this.store.propagationStartFrameIdx();
     const endFrameIdx = this.store.propagationEndFrameIdx();
     if (startFrameIdx > endFrameIdx) {
@@ -398,6 +413,7 @@ export class VideoMaskerActionsService {
   }
 
   async runTracking(): Promise<void> {
+    if (this.isBusy) return;
     const response = await this.runJob<TrackPromptPointsJobResponse>('Tracking prompt points', () =>
       firstValueFrom(
         this.backend.trackPromptPoints({ add_support_grid: this.store.trackingUseSupportGrid() }),
@@ -418,25 +434,33 @@ export class VideoMaskerActionsService {
   }
 
   clearMasks(): void {
-    this.backend.resetVideoState().subscribe({
-      next: (response) => {
-        this.updateStateEpoch(response?.state_epoch, 'reset');
-        this.store.hasManifestMasks.set(false);
-        this.store.trackedPoints.set([]);
-        this.resetInteractiveMaps();
-        this.frameCanvas.clearMaskDataCache();
-        this.frameCanvas.scheduleFrameLoad(this.store.targetFrameIdx());
-      },
-      error: (error) => {
-        console.error(error);
-        this.notify('error', 'Clear failed', getErrorMessage(error, 'Failed to clear masks.'));
-      },
-    });
+    if (this.isBusy) return;
+    this.store.isLoading.set(true);
+    this.backend
+      .resetVideoState()
+      .pipe(finalize(() => this.store.isLoading.set(false)))
+      .subscribe({
+        next: (response) => {
+          this.updateStateEpoch(response?.state_epoch, 'reset');
+          this.store.hasManifestMasks.set(false);
+          this.invalidateTracking();
+          this.resetInteractiveMaps();
+          this.frameCanvas.clearMaskDataCache();
+          this.frameCanvas.scheduleFrameLoad(this.store.targetFrameIdx());
+        },
+        error: (error) => {
+          console.error(error);
+          this.notify('error', 'Clear failed', getErrorMessage(error, 'Failed to clear masks.'));
+        },
+      });
   }
 
   private async loadTrackingResult(resultId: string, sourceLabel: string): Promise<boolean> {
+    const revision = this.trackingRevision;
+    const epoch = this.store.stateEpoch();
     try {
       const response = await firstValueFrom(this.backend.getTrackingResult(resultId));
+      if (revision !== this.trackingRevision || epoch !== this.store.stateEpoch()) return false;
       const result: TrackPromptPointsResult = response.result;
       const trackedSeries: TrackedPointSeries[] = result.points.map((point, index) => ({
         ...point,
@@ -460,7 +484,9 @@ export class VideoMaskerActionsService {
   // --- objects -----------------------------------------------------------
 
   addObject(): void {
-    const newId = this.store.objects().length + 1;
+    if (this.isBusy) return;
+    const newId = this.reserveNextObjectId();
+    this.nextObjectId = newId + 1;
     this.store.objects.set([
       ...this.store.objects(),
       { id: newId, name: `Object ${newId}`, color: randomColor() },
@@ -469,58 +495,96 @@ export class VideoMaskerActionsService {
   }
 
   removeObject(): void {
+    if (this.isBusy) return;
     const id = this.store.selectedObjectId();
     if (id === null) return;
 
-    this.backend.removeObject(id).subscribe({
-      next: () => {
-        this.store.objects.set(this.store.objects().filter((entry) => entry.id !== id));
-        this.removeObjectFromFrameMaps(id);
-        const nextObjects = this.store.objects();
-        this.store.selectedObjectId.set(nextObjects.length > 0 ? nextObjects[0].id : null);
-        this.frameCanvas.redraw();
-      },
-      error: (error) => this.showError('Remove failed', 'Failed to remove object.', error),
-    });
+    this.reserveNextObjectId();
+    this.store.isLoading.set(true);
+    this.backend
+      .removeObject(id)
+      .pipe(finalize(() => this.store.isLoading.set(false)))
+      .subscribe({
+        next: () => {
+          this.applyObjectRemoval(id);
+        },
+        error: (error) => this.showError('Remove failed', 'Failed to remove object.', error),
+      });
   }
 
   async removeAllObjects(): Promise<void> {
+    if (this.isBusy) return;
     const objectIds = this.store.objects().map((entry) => entry.id);
     if (objectIds.length === 0) return;
 
+    this.reserveNextObjectId();
+    this.store.isLoading.set(true);
     try {
-      await Promise.all(objectIds.map((id) => firstValueFrom(this.backend.removeObject(id))));
-      this.store.objects.set([]);
-      this.store.selectedObjectId.set(null);
-      this.store.masks.set(new Map());
-      this.store.points.set(new Map());
-      this.store.liveEditedObjectFrames.set(new Map());
-      this.store.trackedPoints.set([]);
-      this.frameCanvas.redraw();
+      for (const id of objectIds) {
+        await firstValueFrom(this.backend.removeObject(id));
+        this.applyObjectRemoval(id);
+      }
     } catch (error) {
       this.showError('Remove all failed', 'Failed to remove all objects.', error);
+    } finally {
+      this.store.isLoading.set(false);
     }
+  }
+
+  private reserveNextObjectId(): number {
+    this.nextObjectId = this.store
+      .objects()
+      .reduce((next, object) => Math.max(next, object.id + 1), this.nextObjectId);
+    return this.nextObjectId;
+  }
+
+  private applyObjectRemoval(id: number): void {
+    this.store.objects.set(this.store.objects().filter((entry) => entry.id !== id));
+    this.removeObjectFromFrameMaps(id);
+    if (this.store.selectedObjectId() === id) {
+      this.store.selectedObjectId.set(this.store.objects()[0]?.id ?? null);
+    }
+    this.invalidateTracking();
+    this.frameCanvas.removeObject(id);
+    this.frameCanvas.redraw();
+    this.frameCanvas.scheduleFrameLoad(this.store.targetFrameIdx());
   }
 
   private removeObjectFromFrameMaps(objectId: number): void {
     const nextMasks = new Map(this.store.masks());
-    nextMasks.forEach((frameMap) => frameMap.delete(objectId));
+    nextMasks.forEach((frameMap, frameIdx) => {
+      const next = new Map(frameMap);
+      next.delete(objectId);
+      if (next.size) nextMasks.set(frameIdx, next);
+      else nextMasks.delete(frameIdx);
+    });
     this.store.masks.set(nextMasks);
 
     const nextPoints = new Map(this.store.points());
-    nextPoints.forEach((frameMap) => frameMap.delete(objectId));
+    nextPoints.forEach((frameMap, frameIdx) => {
+      const next = new Map(frameMap);
+      next.delete(objectId);
+      if (next.size) nextPoints.set(frameIdx, next);
+      else nextPoints.delete(frameIdx);
+    });
     this.store.points.set(nextPoints);
 
-    this.store.trackedPoints.set(
-      this.store.trackedPoints().filter((series) => series.obj_id !== objectId),
-    );
+    const nextEdited = new Map(this.store.liveEditedObjectFrames());
+    nextEdited.forEach((ids, frameIdx) => {
+      const next = new Set(ids);
+      next.delete(objectId);
+      if (next.size) nextEdited.set(frameIdx, next);
+      else nextEdited.delete(frameIdx);
+    });
+    this.store.liveEditedObjectFrames.set(nextEdited);
   }
 
   // --- point prompting -------------------------------------------------------
 
   async addPoint(x: number, y: number, label: number, frameIdx: number): Promise<void> {
+    if (this.isBusy) return;
     const objId = this.store.selectedObjectId();
-    if (objId === null) return;
+    if (objId === null || !this.store.objects().some((object) => object.id === objId)) return;
 
     const expectedEpoch = this.store.stateEpoch();
 
@@ -551,16 +615,27 @@ export class VideoMaskerActionsService {
     };
 
     const liveEditedBeforeRequest = this.isObjectLiveEdited(frameIdx, objId);
+    let responseChangedEpoch = false;
+    const ownsPointUpdate = () =>
+      this.store.stateEpoch() === expectedEpoch &&
+      this.store.points().get(frameIdx)?.get(objId) === objectPoints &&
+      this.store.objects().some((object) => object.id === objId);
 
     try {
       this.store.isPointRequestInFlight.set(true);
       const response = await firstValueFrom(this.backend.addNewPointsOrBox(request));
+      if (!ownsPointUpdate()) {
+        this.store.lastDiscardReason.set(
+          'Discarded point response because the editing state changed.',
+        );
+        return;
+      }
       if (
         (response as any)?.error ||
         typeof (response as any)?.request_frame_idx !== 'number' ||
         typeof (response as any)?.frame_idx !== 'number' ||
         typeof (response as any)?.frame_file !== 'string' ||
-        typeof (response as any)?.state_epoch !== 'number' ||
+        !Number.isInteger(response?.state_epoch) ||
         !Array.isArray((response as any)?.out_obj_ids) ||
         !Array.isArray((response as any)?.out_masks) ||
         typeof (response as any)?.mask_pixel_counts !== 'object'
@@ -572,7 +647,10 @@ export class VideoMaskerActionsService {
       this.store.lastBackendResponseStateEpoch.set(responseStateEpoch);
       if (responseStateEpoch !== expectedEpoch) {
         const reason = `Discarded stale response due to epoch mismatch (expected ${expectedEpoch}, got ${responseStateEpoch}).`;
-        this.updateStateEpoch(responseStateEpoch, 'add_new_points_or_box mismatch response');
+        if (responseStateEpoch > expectedEpoch) {
+          this.updateStateEpoch(responseStateEpoch, 'add_new_points_or_box mismatch response');
+          responseChangedEpoch = true;
+        }
         this.store.lastDiscardReason.set(reason);
         throw new Error(reason);
       }
@@ -607,8 +685,15 @@ export class VideoMaskerActionsService {
       masksMap.set(requestFrameIdx, frameMasksMap);
       this.markObjectAsLiveEdited(requestFrameIdx, objId);
       this.store.masks.set(masksMap);
+      this.invalidateTracking();
       this.frameCanvas.redraw();
     } catch (error) {
+      if (!responseChangedEpoch && !ownsPointUpdate()) {
+        this.store.lastDiscardReason.set(
+          'Discarded point failure because the editing state changed.',
+        );
+        return;
+      }
       console.error(error);
       this.notify(
         'error',
@@ -616,6 +701,12 @@ export class VideoMaskerActionsService {
         getErrorMessage(error, 'Unable to update point mask.'),
       );
 
+      // Never restore prompts into a replacement session or overwrite a newer edit.
+      if (
+        this.store.points().get(frameIdx)?.get(objId) !== objectPoints ||
+        !this.store.objects().some((object) => object.id === objId)
+      )
+        return;
       const rollbackPointsMap = new Map(this.store.points());
       const rollbackFramePointsMap = new Map(
         rollbackPointsMap.get(frameIdx) || new Map<number, Point[]>(),

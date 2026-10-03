@@ -1,4 +1,4 @@
-import { Injectable, signal } from '@angular/core';
+import { Injectable, computed, signal } from '@angular/core';
 import {
   ApiHealthStatus,
   BackendJob,
@@ -58,6 +58,7 @@ export class VideoMaskerStateStore {
   isLoading = signal<boolean>(false);
   isFrameLoading = signal<boolean>(false);
   isPointRequestInFlight = signal<boolean>(false);
+  isInteractionBusy = computed(() => this.isLoading() || this.isPointRequestInFlight());
   apiHealthStatus = signal<ApiHealthStatus>('checking');
   activeJob = signal<BackendJob | null>(null);
   activeJobTitle = signal<string>('');

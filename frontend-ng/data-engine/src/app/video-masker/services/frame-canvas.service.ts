@@ -2,7 +2,12 @@ import { Injectable, inject } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
 import { BackendService, VideoMaskObjectData } from '../../services/backend.service';
 import { DebugMaskSource } from '../state/video-masker-ui.types';
-import { MaskObject, Point, TrackedPointSeries, VideoMaskerStateStore } from './video-masker-state.store';
+import {
+  MaskObject,
+  Point,
+  TrackedPointSeries,
+  VideoMaskerStateStore,
+} from './video-masker-state.store';
 import {
   evictWithLimit,
   hexToRgb,
@@ -33,6 +38,9 @@ export class FrameCanvasService {
   private readonly backend = inject(BackendService);
 
   private canvas: HTMLCanvasElement | null = null;
+  private cacheGeneration = 0;
+  private maskGeneration = 0;
+  private readonly removedObjectIds = new Set<number>();
   private readonly state: FramePipelineState = {
     frameLoadToken: 0,
     pendingFrameIdx: null,
@@ -49,10 +57,7 @@ export class FrameCanvasService {
   }
 
   detach(): void {
-    if (this.state.frameLoadAnimationId !== null) {
-      cancelAnimationFrame(this.state.frameLoadAnimationId);
-      this.state.frameLoadAnimationId = null;
-    }
+    this.clearFrameCaches();
     this.canvas = null;
   }
 
@@ -61,15 +66,27 @@ export class FrameCanvasService {
   }
 
   clearMaskDataCache(): void {
+    this.maskGeneration++;
     this.state.maskDataCache.clear();
+    this.state.currentMaskObjects = {};
+  }
+
+  removeObject(objectId: number): void {
+    // Saved manifests can still contain deleted objects, even after a refetch.
+    this.removedObjectIds.add(objectId);
+    this.clearMaskDataCache();
   }
 
   clearFrameCaches(): void {
+    this.cacheGeneration++;
+    this.clearMaskDataCache();
+    this.removedObjectIds.clear();
     this.state.frameImageCache.clear();
-    this.state.maskDataCache.clear();
     this.state.currentBaseImage = null;
     this.state.currentMaskObjects = {};
     this.state.frameLoadToken++;
+    this.state.pendingFrameIdx = null;
+    this.store.isFrameLoading.set(false);
     if (this.state.frameLoadAnimationId !== null) {
       cancelAnimationFrame(this.state.frameLoadAnimationId);
       this.state.frameLoadAnimationId = null;
@@ -142,7 +159,8 @@ export class FrameCanvasService {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     const liveFrameMasks = this.store.masks().get(frameIdx);
-    const liveEditedObjectIds = this.store.liveEditedObjectFrames().get(frameIdx) ?? new Set<number>();
+    const liveEditedObjectIds =
+      this.store.liveEditedObjectFrames().get(frameIdx) ?? new Set<number>();
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(img, 0, 0);
@@ -150,7 +168,7 @@ export class FrameCanvasService {
     if (this.store.hasManifestMasks() && Object.keys(this.state.currentMaskObjects).length > 0) {
       for (const [objIdStr, maskData] of Object.entries(this.state.currentMaskObjects)) {
         const objId = parseInt(objIdStr, 10);
-        if (liveEditedObjectIds.has(objId)) {
+        if (liveEditedObjectIds.has(objId) || this.removedObjectIds.has(objId)) {
           continue;
         }
         const obj = this.store.objects().find((candidate) => candidate.id === objId);
@@ -237,6 +255,7 @@ export class FrameCanvasService {
   }
 
   private preloadNeighborFrames(frameIdx: number): void {
+    const generation = this.cacheGeneration;
     for (const neighborIdx of [frameIdx + 1, frameIdx - 1]) {
       if (
         neighborIdx < 0 ||
@@ -246,7 +265,11 @@ export class FrameCanvasService {
         continue;
       }
       const image = new Image();
-      image.onload = () => this.cacheFrameImage(neighborIdx, image);
+      image.onload = () => {
+        if (generation === this.cacheGeneration) {
+          this.cacheFrameImage(neighborIdx, image);
+        }
+      };
       image.src = this.backend.getVideoFrameUrl(neighborIdx);
     }
   }
@@ -262,6 +285,7 @@ export class FrameCanvasService {
   }
 
   private async loadMaskDataForFrame(frameIdx: number, token: number): Promise<void> {
+    const generation = this.maskGeneration;
     if (!this.store.hasManifestMasks()) {
       this.state.currentMaskObjects = {};
       return;
@@ -274,7 +298,7 @@ export class FrameCanvasService {
 
     try {
       const response = await firstValueFrom(this.backend.getVideoMaskData(frameIdx));
-      if (token !== this.state.frameLoadToken) {
+      if (token !== this.state.frameLoadToken || generation !== this.maskGeneration) {
         return;
       }
       if ((response as any)?.error) {
@@ -284,6 +308,9 @@ export class FrameCanvasService {
       this.state.currentMaskObjects = response.objects || {};
       this.state.maskDataCache.set(frameIdx, this.state.currentMaskObjects);
     } catch (error) {
+      if (token !== this.state.frameLoadToken || generation !== this.maskGeneration) {
+        return;
+      }
       console.error(error);
       this.state.currentMaskObjects = {};
     }
@@ -403,7 +430,11 @@ export class FrameCanvasService {
         ctx.beginPath();
         let started = false;
         for (let idx = trailStart; idx <= frameIdx; idx++) {
-          if (idx < 0 || idx >= pointSeries.tracks.length || pointSeries.visibility[idx] === false) {
+          if (
+            idx < 0 ||
+            idx >= pointSeries.tracks.length ||
+            pointSeries.visibility[idx] === false
+          ) {
             continue;
           }
           const [x, y] = pointSeries.tracks[idx];

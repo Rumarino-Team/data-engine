@@ -4,6 +4,8 @@ import { vi } from 'vitest';
 import { BackendService, VideoAddPointsResponse } from '../services/backend.service';
 import { DesktopBridgeService } from '../services/desktop-bridge.service';
 import { VideoMaskerComponent } from './video-masker.component';
+import { ElementRef } from '@angular/core';
+import { VideoJobsService } from './services/video-jobs.service';
 
 describe('VideoMaskerComponent sync contract', () => {
   let component: VideoMaskerComponent;
@@ -21,6 +23,8 @@ describe('VideoMaskerComponent sync contract', () => {
     setApiUrl: ReturnType<typeof vi.fn>;
     resetApiUrl: ReturnType<typeof vi.fn>;
     saveVideoSession: ReturnType<typeof vi.fn>;
+    removeObject: ReturnType<typeof vi.fn>;
+    resetVideoState: ReturnType<typeof vi.fn>;
   };
   let desktopBridgeMock: {
     isTauri: ReturnType<typeof vi.fn>;
@@ -59,6 +63,8 @@ describe('VideoMaskerComponent sync contract', () => {
       setApiUrl: vi.fn((value: string) => value),
       resetApiUrl: vi.fn(() => 'http://127.0.0.1:8000'),
       saveVideoSession: vi.fn(),
+      removeObject: vi.fn(() => of({})),
+      resetVideoState: vi.fn(() => of({ state_epoch: 4 })),
     };
     desktopBridgeMock = {
       isTauri: vi.fn(() => false),
@@ -84,6 +90,8 @@ describe('VideoMaskerComponent sync contract', () => {
             setApiUrl: backendMock.setApiUrl,
             resetApiUrl: backendMock.resetApiUrl,
             saveVideoSession: backendMock.saveVideoSession,
+            removeObject: backendMock.removeObject,
+            resetVideoState: backendMock.resetVideoState,
           },
         },
         {
@@ -99,6 +107,200 @@ describe('VideoMaskerComponent sync contract', () => {
     component.store.objects.set([{ id: 1, name: 'Object 1', color: '#ff0000' }]);
     component.store.stateEpoch.set(3);
     component.store.displayedFrameIdx.set(5);
+  });
+
+  it('allocates unique IDs across sparse objects and removal of the highest ID', () => {
+    component.store.objects.set([
+      { id: 1, name: 'One', color: '#ff0000' },
+      { id: 3, name: 'Three', color: '#00ff00' },
+    ]);
+    component.addObject();
+    expect(component.store.selectedObjectId()).toBe(4);
+    vi.spyOn(component.frameCanvas, 'scheduleFrameLoad').mockImplementation(() => {});
+    component.removeObject();
+    component.addObject();
+    expect(component.store.objects().map((object) => object.id)).toEqual([1, 3, 5]);
+  });
+
+  it('cleans removed objects from all frame maps without mutating previous snapshots', () => {
+    vi.spyOn(component.frameCanvas, 'scheduleFrameLoad').mockImplementation(() => {});
+    const removeFromCanvas = vi.spyOn(component.frameCanvas, 'removeObject');
+    const points = new Map([[5, new Map([[1, [{ x: 1, y: 2, label: 1 }]]])]]);
+    const masks = new Map([[5, new Map([[1, [[true]]]])]]);
+    const edited = new Map([[5, new Set([1])]]);
+    component.store.points.set(points);
+    component.store.masks.set(masks);
+    component.store.liveEditedObjectFrames.set(edited);
+    component.removeObject();
+    expect(component.store.points().size).toBe(0);
+    expect(component.store.masks().size).toBe(0);
+    expect(component.store.liveEditedObjectFrames().size).toBe(0);
+    expect(points.get(5)?.has(1)).toBe(true);
+    expect(masks.get(5)?.has(1)).toBe(true);
+    expect(edited.get(5)?.has(1)).toBe(true);
+    expect(removeFromCanvas).toHaveBeenCalledWith(1);
+  });
+
+  it('keeps successful removals when removing all objects fails partway through', async () => {
+    vi.spyOn(component.frameCanvas, 'scheduleFrameLoad').mockImplementation(() => {});
+    component.addObject();
+    backendMock.removeObject
+      .mockReturnValueOnce(of({}))
+      .mockReturnValueOnce(throwError(() => new Error('Failed')));
+    await component.removeAllObjects();
+    expect(component.store.objects().map((object) => object.id)).toEqual([2]);
+    expect(component.store.isLoading()).toBe(false);
+  });
+
+  it('blocks conflicting workflows while a point update is pending', async () => {
+    const response$ = new Subject<VideoAddPointsResponse>();
+    backendMock.addNewPointsOrBox.mockReturnValue(response$);
+    const pending = component.addPoint(10, 20, 1, 5);
+    await component.addPoint(30, 40, 0, 5);
+    component.removeObject();
+    await component.removeAllObjects();
+    component.clearMasks();
+    component.addObject();
+    component.save();
+    await component.propagate();
+    await component.runTracking();
+    expect(backendMock.addNewPointsOrBox).toHaveBeenCalledTimes(1);
+    expect(backendMock.removeObject).not.toHaveBeenCalled();
+    expect(backendMock.resetVideoState).not.toHaveBeenCalled();
+    expect(backendMock.propagateInVideo).not.toHaveBeenCalled();
+    expect(backendMock.trackPromptPoints).not.toHaveBeenCalled();
+    expect(backendMock.saveVideoSession).not.toHaveBeenCalled();
+    expect(component.store.objects()).toHaveLength(1);
+    response$.next(makeResponse({}));
+    response$.complete();
+    await pending;
+    expect(component.store.isInteractionBusy()).toBe(false);
+  });
+
+  it('blocks point requests during object removal and unlocks after failure', async () => {
+    const removal$ = new Subject<unknown>();
+    backendMock.removeObject.mockReturnValue(removal$);
+    component.removeObject();
+    await component.addPoint(10, 20, 1, 5);
+    expect(backendMock.addNewPointsOrBox).not.toHaveBeenCalled();
+    removal$.error(new Error('Removal failed'));
+    expect(component.store.isInteractionBusy()).toBe(false);
+    expect(component.store.objects()).toHaveLength(1);
+  });
+
+  it.each(['success', 'failure'])(
+    'ignores a late point %s after the session epoch changes',
+    async (outcome) => {
+      const response$ = new Subject<VideoAddPointsResponse>();
+      backendMock.addNewPointsOrBox.mockReturnValue(response$);
+      const pending = component.addPoint(10, 20, 1, 5);
+      component.store.stateEpoch.set(4);
+      const replacementPoints = new Map([[5, new Map([[1, [{ x: 50, y: 60, label: 0 }]]])]]);
+      const replacementMasks = new Map([[5, new Map([[1, [[false]]]])]]);
+      component.store.points.set(replacementPoints);
+      component.store.masks.set(replacementMasks);
+      if (outcome === 'success') {
+        response$.next(makeResponse({}));
+        response$.complete();
+      } else {
+        response$.error(new Error('Old failure'));
+      }
+      await pending;
+      expect(component.store.stateEpoch()).toBe(4);
+      expect(component.store.points()).toBe(replacementPoints);
+      expect(component.store.masks()).toBe(replacementMasks);
+      expect(component.store.isPointRequestInFlight()).toBe(false);
+    },
+  );
+
+  it('does not move the current epoch backwards on an older backend response', async () => {
+    backendMock.addNewPointsOrBox.mockReturnValue(of(makeResponse({ state_epoch: 2 })));
+    await component.addPoint(10, 20, 1, 5);
+    expect(component.store.stateEpoch()).toBe(3);
+    expect(component.store.points().size).toBe(0);
+  });
+
+  it('rejects a response when only the current epoch changed during the request', async () => {
+    const response$ = new Subject<VideoAddPointsResponse>();
+    backendMock.addNewPointsOrBox.mockReturnValue(response$);
+    const pending = component.addPoint(10, 20, 1, 5);
+    component.store.stateEpoch.set(4);
+    response$.next(makeResponse({}));
+    response$.complete();
+    await pending;
+    expect(component.store.stateEpoch()).toBe(4);
+    expect(component.store.masks().size).toBe(0);
+    expect(component.store.lastDiscardReason()).toContain('editing state changed');
+  });
+
+  it('does not restore an old tracking result after a successful prompt edit', async () => {
+    vi.spyOn(TestBed.inject(VideoJobsService), 'run').mockResolvedValue({
+      result: { tracking_result_id: 'old-tracks', state_epoch: 3 },
+      completedJobId: null,
+    });
+    const result$ = new Subject<unknown>();
+    backendMock.getTrackingResult.mockReturnValue(result$);
+    const tracking = component.runTracking();
+    await vi.waitFor(() =>
+      expect(backendMock.getTrackingResult).toHaveBeenCalledWith('old-tracks'),
+    );
+    backendMock.addNewPointsOrBox.mockReturnValue(of(makeResponse({})));
+    await component.addPoint(10, 20, 1, 5);
+    result$.next({
+      result: {
+        points: [{ point_id: 'p1', obj_id: 1, source_frame_idx: 0, source_x: 1, source_y: 2 }],
+        tracks: [[[1, 2]]],
+        visibility: [[true]],
+      },
+    });
+    result$.complete();
+    await tracking;
+    expect(component.store.trackedPoints()).toEqual([]);
+  });
+
+  it.each([true, false])(
+    'invalidates tracking only after a successful point update (success=%s)',
+    async (succeeds) => {
+      const tracks = [
+        {
+          point_id: 'p1',
+          obj_id: 1,
+          source_frame_idx: 0,
+          source_x: 1,
+          source_y: 2,
+          tracks: [[1, 2]],
+          visibility: [true],
+        },
+      ];
+      component.store.trackedPoints.set(tracks);
+      backendMock.addNewPointsOrBox.mockReturnValue(
+        succeeds ? of(makeResponse({})) : throwError(() => new Error('Failed')),
+      );
+      await component.addPoint(10, 20, 1, 5);
+      expect(component.store.trackedPoints()).toEqual(succeeds ? [] : tracks);
+    },
+  );
+
+  it('maps scaled canvas clicks to image pixels on the displayed frame', () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1000;
+    canvas.height = 500;
+    vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
+      left: 20,
+      top: 30,
+      width: 500,
+      height: 250,
+    } as DOMRect);
+    component.canvasRef = new ElementRef(canvas);
+    component.store.isInitialized.set(true);
+    component.store.targetFrameIdx.set(6);
+    component.store.interactionMode.set('negative');
+    vi.spyOn(component.frameCanvas, 'currentBaseImage', 'get').mockReturnValue(new Image());
+    const addPoint = vi.spyOn(component, 'addPoint').mockResolvedValue();
+    component.onCanvasClick(new MouseEvent('click', { clientX: 120, clientY: 80 }));
+    expect(addPoint).toHaveBeenCalledWith(200, 100, 0, 5);
+    component.onCanvasClick(new MouseEvent('click', { clientX: 10, clientY: 80 }));
+    expect(addPoint).toHaveBeenCalledTimes(1);
   });
 
   it('hides the API URL scheme while the input is not focused', () => {

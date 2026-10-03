@@ -310,6 +310,7 @@ export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
   onCanvasClick(event: MouseEvent): void {
     if (
       !this.store.isInitialized() ||
+      this.store.isLoading() ||
       this.store.selectedObjectId() === null ||
       this.store.isFrameLoading() ||
       this.store.isPointRequestInFlight() ||
@@ -321,11 +322,13 @@ export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
     const canvasEl = this.canvasRef?.nativeElement;
     if (!canvasEl) return;
     const rect = canvasEl.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
     const scaleX = canvasEl.width / rect.width;
     const scaleY = canvasEl.height / rect.height;
 
     const x = (event.clientX - rect.left) * scaleX;
     const y = (event.clientY - rect.top) * scaleY;
+    if (x < 0 || y < 0 || x >= canvasEl.width || y >= canvasEl.height) return;
     const label = this.store.interactionMode() === 'positive' ? 1 : 0;
     const frameIdx = this.store.displayedFrameIdx();
     if (frameIdx < 0) {

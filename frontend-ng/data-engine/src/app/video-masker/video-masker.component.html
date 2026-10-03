@@ -5,7 +5,7 @@
         class="load-source-select"
         [ngModel]="store.loadSourceMode()"
         (ngModelChange)="onLoadSourceModeChange($event)"
-        [disabled]="store.isInitialized() || store.isLoading()"
+        [disabled]="store.isInitialized() || store.isInteractionBusy()"
         [attr.aria-describedby]="getLoadModeHint() ? 'load-mode-hint' : null"
       >
         <option value="frames_dir">Frames Directory</option>
@@ -20,7 +20,7 @@
           (ngModelChange)="onVideoDirChange($event)"
           (blur)="onVideoPathBlur($event)"
           [placeholder]="getLoadPathPlaceholder()"
-          [disabled]="store.isInitialized() || store.isLoading()"
+          [disabled]="store.isInitialized() || store.isInteractionBusy()"
         />
         <div id="load-mode-hint" class="load-mode-hint" *ngIf="getLoadModeHint()" role="tooltip">
           {{ getLoadModeHint() }}
@@ -28,7 +28,7 @@
       </div>
       <button
         (click)="browseSelectedSource()"
-        [disabled]="store.isInitialized() || store.isLoading()"
+        [disabled]="store.isInitialized() || store.isInteractionBusy()"
       >
         {{ getBrowseLabel() }}
       </button>
@@ -36,7 +36,7 @@
         (click)="initVideo()"
         [disabled]="
           store.isInitialized() ||
-          store.isLoading() ||
+          store.isInteractionBusy() ||
           !store.videoDir().trim() ||
           store.apiHealthStatus() !== 'online'
         "
@@ -68,19 +68,19 @@
           (focus)="onApiUrlFocus()"
           (blur)="onApiUrlBlur()"
           placeholder="Backend URL"
-          [disabled]="store.isLoading()"
+          [disabled]="store.isInteractionBusy()"
         />
       </div>
       <div class="api-button-combo">
         <button
           (click)="applyApiUrl()"
-          [disabled]="store.isLoading() || !store.apiUrlInput().trim() || !isApiUrlDirty()"
+          [disabled]="store.isInteractionBusy() || !store.apiUrlInput().trim() || !isApiUrlDirty()"
         >
           Apply API
         </button>
         <button
           (click)="resetApiUrl()"
-          [disabled]="store.isLoading() || store.apiUrlInput() === 'http://127.0.0.1:8000'"
+          [disabled]="store.isInteractionBusy() || store.apiUrlInput() === 'http://127.0.0.1:8000'"
         >
           Reset API
         </button>
@@ -95,7 +95,7 @@
       multiple
       hidden
       (change)="onFramesDirSelected($event)"
-      [disabled]="store.isInitialized() || store.isLoading()"
+      [disabled]="store.isInitialized() || store.isInteractionBusy()"
     />
     <input
       #videoFileInput
@@ -103,7 +103,7 @@
       accept=".mp4,.mov,.avi,.mkv,.webm,.m4v"
       hidden
       (change)="onVideoFileSelected($event)"
-      [disabled]="store.isInitialized() || store.isLoading()"
+      [disabled]="store.isInitialized() || store.isInteractionBusy()"
     />
   </div>
 
@@ -115,8 +115,8 @@
         [class.ready]="
           store.isInitialized() &&
           store.selectedObjectId() !== null &&
-          !store.isFrameLoading() &&
-          !store.isPointRequestInFlight()
+          !store.isInteractionBusy() &&
+          !store.isFrameLoading()
         "
         (click)="onCanvasClick($event)"
       ></canvas>
@@ -137,11 +137,17 @@
           </div>
         </div>
         <div class="button-group">
-          <button (click)="addObject()">Add Object</button>
-          <button (click)="removeObject()" [disabled]="store.selectedObjectId() === null">
+          <button (click)="addObject()" [disabled]="store.isInteractionBusy()">Add Object</button>
+          <button
+            (click)="removeObject()"
+            [disabled]="store.isInteractionBusy() || store.selectedObjectId() === null"
+          >
             Remove
           </button>
-          <button (click)="removeAllObjects()" [disabled]="store.objects().length === 0">
+          <button
+            (click)="removeAllObjects()"
+            [disabled]="store.isInteractionBusy() || store.objects().length === 0"
+          >
             Remove All Objects
           </button>
         </div>
@@ -179,14 +185,14 @@
           <button
             class="panel-action-btn"
             (click)="runTracking()"
-            [disabled]="!store.isInitialized() || store.isLoading()"
+            [disabled]="!store.isInitialized() || store.isInteractionBusy()"
           >
             Track Prompt Points
           </button>
           <button
             class="panel-action-btn"
             (click)="propagate()"
-            [disabled]="!store.isInitialized() || store.isLoading()"
+            [disabled]="!store.isInitialized() || store.isInteractionBusy()"
           >
             Propagate Masks
           </button>
@@ -195,7 +201,7 @@
               class="panel-action-btn"
               (click)="setPropagationStartFrame()"
               [disabled]="
-                !store.isInitialized() || store.isLoading() || store.displayedFrameIdx() < 0
+                !store.isInitialized() || store.isInteractionBusy() || store.displayedFrameIdx() < 0
               "
             >
               Start Frame: {{ store.propagationStartFrameIdx() }}
@@ -204,7 +210,7 @@
               class="panel-action-btn"
               (click)="setPropagationEndFrame()"
               [disabled]="
-                !store.isInitialized() || store.isLoading() || store.displayedFrameIdx() < 0
+                !store.isInitialized() || store.isInteractionBusy() || store.displayedFrameIdx() < 0
               "
             >
               End Frame: {{ store.propagationEndFrameIdx() }}
@@ -213,7 +219,7 @@
           <button
             class="panel-action-btn panel-action-btn-danger"
             (click)="clearMasks()"
-            [disabled]="!store.isInitialized() || store.isLoading()"
+            [disabled]="!store.isInitialized() || store.isInteractionBusy()"
           >
             Clear All Masks
           </button>
@@ -223,7 +229,7 @@
           <select
             [ngModel]="store.trackingOverlayStyle()"
             (ngModelChange)="store.trackingOverlayStyle.set($event)"
-            [disabled]="store.isLoading()"
+            [disabled]="store.isInteractionBusy()"
           >
             <option value="point">Point Only</option>
             <option value="short">Short Trail</option>
@@ -236,7 +242,7 @@
             type="checkbox"
             [checked]="store.trackingUseSupportGrid()"
             (change)="store.trackingUseSupportGrid.set($any($event.target).checked)"
-            [disabled]="store.isLoading()"
+            [disabled]="store.isInteractionBusy()"
           />
         </label>
         <div class="save-panel">
@@ -247,13 +253,15 @@
               [ngModel]="store.saveName()"
               (ngModelChange)="onSaveNameChange($event)"
               placeholder="Session Name"
-              [disabled]="!store.isInitialized() || store.isLoading()"
+              [disabled]="!store.isInitialized() || store.isInteractionBusy()"
             />
           </label>
           <button
             class="action-button action-button-primary"
             (click)="save()"
-            [disabled]="!store.isInitialized() || store.isLoading() || !store.saveName().trim()"
+            [disabled]="
+              !store.isInitialized() || store.isInteractionBusy() || !store.saveName().trim()
+            "
           >
             Save
           </button>
@@ -306,7 +314,7 @@
           [max]="store.numFrames() - 1"
           [ngModel]="store.targetFrameIdx()"
           (ngModelChange)="onScrubberFrameChange($event)"
-          [disabled]="store.isLoading() || store.isPointRequestInFlight()"
+          [disabled]="store.isInteractionBusy()"
           aria-label="Current frame"
         />
       </div>
