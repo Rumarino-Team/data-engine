@@ -88,7 +88,7 @@ export function isObjectLiveEdited(
   return Boolean(liveEditedObjectFrames.get(frameIdx)?.has(objId));
 }
 
-// --- mask geometry helpers (from VideoMaskerRenderingService) ---
+// --- mask geometry helpers ---
 
 export function normalizeMask2d(mask: unknown): boolean[][] | null {
   let candidate: unknown = mask;
@@ -319,9 +319,10 @@ export function deserializePoints(points: InteractivePoint[]): Map<number, Map<n
   return pointsByFrame;
 }
 
-export function deserializeLiveMasks(
-  liveMasks: InteractiveMaskRle[],
-): { masks: Map<number, Map<number, boolean[][]>>; liveEditedFrames: Map<number, Set<number>> } {
+export function deserializeLiveMasks(liveMasks: InteractiveMaskRle[]): {
+  masks: Map<number, Map<number, boolean[][]>>;
+  liveEditedFrames: Map<number, Set<number>>;
+} {
   const masksByFrame = new Map<number, Map<number, boolean[][]>>();
   const editedByFrame = new Map<number, Set<number>>();
   for (const entry of liveMasks) {

@@ -14,7 +14,7 @@ import {
 import { DesktopBridgeService } from '../../services/desktop-bridge.service';
 import { LoadSourceMode, ToastSeverity } from '../state/video-masker-ui.types';
 import { Point, TrackedPointSeries, VideoMaskerStateStore } from './video-masker-state.store';
-import { FrameCanvasService } from './frame-canvas.service';
+import { FramePipelineService } from './frame-pipeline.service';
 import { ToastService } from './toast.service';
 import { VideoJobsService } from './video-jobs.service';
 import {
@@ -35,7 +35,7 @@ import {
  * All backend-driven workflows for the video masker: session load/save, object
  * management, point prompting (with the epoch/frame discard rules), mask propagation and
  * prompt-point tracking, plus API-URL and health handling. Mutates
- * {@link VideoMaskerStateStore} directly and delegates painting to {@link FrameCanvasService}.
+ * {@link VideoMaskerStateStore} directly and delegates painting to {@link FramePipelineService}.
  */
 @Injectable()
 export class VideoMaskerActionsService {
@@ -44,7 +44,7 @@ export class VideoMaskerActionsService {
   private readonly desktopBridge = inject(DesktopBridgeService);
   private readonly jobs = inject(VideoJobsService);
   private readonly toastSvc = inject(ToastService);
-  private readonly frameCanvas = inject(FrameCanvasService);
+  private readonly framePipeline = inject(FramePipelineService);
 
   private lastCompletedJobId: string | null = null;
   private nextObjectId = 1;
@@ -248,7 +248,7 @@ export class VideoMaskerActionsService {
     this.invalidateTracking();
     this.nextObjectId = 1;
     this.resetInteractiveMaps();
-    this.frameCanvas.clearFrameCaches();
+    this.framePipeline.clearFrameCaches();
     this.store.objects.set([{ id: 1, name: 'Object 1', color: randomColor() }]);
     this.store.selectedObjectId.set(1);
     this.store.hasManifestMasks.set(Boolean(res.restored_session?.has_mask_manifest));
@@ -408,8 +408,8 @@ export class VideoMaskerActionsService {
     if (response.tracked_points_skipped_reason) {
       this.notify('warning', 'Tracking guidance skipped', response.tracked_points_skipped_reason);
     }
-    this.frameCanvas.clearMaskDataCache();
-    this.frameCanvas.scheduleFrameLoad(this.store.targetFrameIdx());
+    this.framePipeline.clearMaskDataCache();
+    this.framePipeline.scheduleFrameLoad(this.store.targetFrameIdx());
   }
 
   async runTracking(): Promise<void> {
@@ -445,8 +445,8 @@ export class VideoMaskerActionsService {
           this.store.hasManifestMasks.set(false);
           this.invalidateTracking();
           this.resetInteractiveMaps();
-          this.frameCanvas.clearMaskDataCache();
-          this.frameCanvas.scheduleFrameLoad(this.store.targetFrameIdx());
+          this.framePipeline.clearMaskDataCache();
+          this.framePipeline.scheduleFrameLoad(this.store.targetFrameIdx());
         },
         error: (error) => {
           console.error(error);
@@ -468,7 +468,7 @@ export class VideoMaskerActionsService {
         visibility: result.visibility[index] || [],
       }));
       this.store.trackedPoints.set(trackedSeries);
-      this.frameCanvas.redraw();
+      this.framePipeline.redraw();
       return true;
     } catch (error) {
       console.error(error);
@@ -545,9 +545,9 @@ export class VideoMaskerActionsService {
       this.store.selectedObjectId.set(this.store.objects()[0]?.id ?? null);
     }
     this.invalidateTracking();
-    this.frameCanvas.removeObject(id);
-    this.frameCanvas.redraw();
-    this.frameCanvas.scheduleFrameLoad(this.store.targetFrameIdx());
+    this.framePipeline.removeObject(id);
+    this.framePipeline.redraw();
+    this.framePipeline.scheduleFrameLoad(this.store.targetFrameIdx());
   }
 
   private removeObjectFromFrameMaps(objectId: number): void {
@@ -686,7 +686,7 @@ export class VideoMaskerActionsService {
       this.markObjectAsLiveEdited(requestFrameIdx, objId);
       this.store.masks.set(masksMap);
       this.invalidateTracking();
-      this.frameCanvas.redraw();
+      this.framePipeline.redraw();
     } catch (error) {
       if (!responseChangedEpoch && !ownsPointUpdate()) {
         this.store.lastDiscardReason.set(
@@ -725,7 +725,7 @@ export class VideoMaskerActionsService {
         this.unmarkObjectAsLiveEdited(frameIdx, objId);
       }
       this.store.points.set(rollbackPointsMap);
-      this.frameCanvas.redraw();
+      this.framePipeline.redraw();
     } finally {
       this.store.isPointRequestInFlight.set(false);
     }

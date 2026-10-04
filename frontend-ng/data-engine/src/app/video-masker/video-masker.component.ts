@@ -13,7 +13,8 @@ import { FormsModule } from '@angular/forms';
 import { JobStatusPanelComponent } from './components/job-status-panel/job-status-panel.component';
 import { ToastStackComponent } from './components/toast-stack/toast-stack.component';
 import { VideoMaskerStateStore } from './services/video-masker-state.store';
-import { FrameCanvasService } from './services/frame-canvas.service';
+import { FramePipelineService } from './services/frame-pipeline.service';
+import { CanvasViewportService } from './services/canvas-viewport.service';
 import { VideoMaskerActionsService } from './services/video-masker-actions.service';
 import { LoadSourceMode } from './state/video-masker-ui.types';
 import {
@@ -26,7 +27,7 @@ import {
 /**
  * Composition root for the video masker route. Owns the view refs and lifecycle, wires
  * two signal effects, and exposes the shared {@link VideoMaskerStateStore} plus the
- * {@link VideoMaskerActionsService} / {@link FrameCanvasService} to the template. All
+ * {@link VideoMaskerActionsService} / {@link FramePipelineService} to the template. All
  * non-trivial logic lives in those collaborators.
  */
 @Component({
@@ -35,16 +36,22 @@ import {
   imports: [CommonModule, FormsModule, ToastStackComponent, JobStatusPanelComponent],
   templateUrl: './video-masker.component.html',
   styleUrls: ['./video-masker.component.css'],
-  providers: [VideoMaskerStateStore, FrameCanvasService, VideoMaskerActionsService],
+  providers: [
+    VideoMaskerStateStore,
+    FramePipelineService,
+    CanvasViewportService,
+    VideoMaskerActionsService,
+  ],
 })
 export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
-  @ViewChild('canvas') canvasRef?: ElementRef<HTMLCanvasElement>;
+  @ViewChild('canvasHost') canvasHostRef?: ElementRef<HTMLDivElement>;
   @ViewChild('videoFileInput') videoFileInputRef?: ElementRef<HTMLInputElement>;
   @ViewChild('framesDirInput') framesDirInputRef?: ElementRef<HTMLInputElement>;
 
   readonly store = inject(VideoMaskerStateStore);
   readonly actions = inject(VideoMaskerActionsService);
-  readonly frameCanvas = inject(FrameCanvasService);
+  readonly framePipeline = inject(FramePipelineService);
+  readonly viewport = inject(CanvasViewportService);
   readonly showDebugUi = isDevMode();
   apiUrlInputHasFocus = false;
 
@@ -55,20 +62,22 @@ export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
 
     effect(() => {
       if (this.store.isInitialized()) {
-        this.frameCanvas.scheduleFrameLoad(this.store.targetFrameIdx());
+        this.framePipeline.scheduleFrameLoad(this.store.targetFrameIdx());
       }
     });
 
     effect(() => {
       this.store.trackingOverlayStyle();
       this.store.trackedPoints();
-      this.frameCanvas.redraw();
+      this.framePipeline.redraw();
     });
   }
 
   ngAfterViewInit(): void {
-    if (this.canvasRef?.nativeElement) {
-      this.frameCanvas.attachCanvas(this.canvasRef.nativeElement);
+    if (this.canvasHostRef?.nativeElement) {
+      this.framePipeline.attach(this.canvasHostRef.nativeElement, (point) =>
+        this.onCanvasPoint(point),
+      );
     }
     void this.actions.checkApiHealth(true);
     this.healthTimerId = setInterval(() => void this.actions.checkApiHealth(), 3000);
@@ -78,7 +87,7 @@ export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
     if (this.healthTimerId !== null) {
       clearInterval(this.healthTimerId);
     }
-    this.frameCanvas.detach();
+    this.framePipeline.detach();
   }
 
   // --- load-source copy (pure) -------------------------------------------
@@ -307,34 +316,24 @@ export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
 
   // --- canvas / scrubber interaction ----------------------------------
 
-  onCanvasClick(event: MouseEvent): void {
+  onCanvasPoint(point: { x: number; y: number }): void {
     if (
       !this.store.isInitialized() ||
       this.store.isLoading() ||
       this.store.selectedObjectId() === null ||
       this.store.isFrameLoading() ||
       this.store.isPointRequestInFlight() ||
-      !this.frameCanvas.currentBaseImage
+      !this.framePipeline.currentBaseImage
     ) {
       return;
     }
 
-    const canvasEl = this.canvasRef?.nativeElement;
-    if (!canvasEl) return;
-    const rect = canvasEl.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return;
-    const scaleX = canvasEl.width / rect.width;
-    const scaleY = canvasEl.height / rect.height;
-
-    const x = (event.clientX - rect.left) * scaleX;
-    const y = (event.clientY - rect.top) * scaleY;
-    if (x < 0 || y < 0 || x >= canvasEl.width || y >= canvasEl.height) return;
     const label = this.store.interactionMode() === 'positive' ? 1 : 0;
     const frameIdx = this.store.displayedFrameIdx();
     if (frameIdx < 0) {
       return;
     }
-    void this.addPoint(x, y, label, frameIdx);
+    void this.addPoint(point.x, point.y, label, frameIdx);
   }
 
   addPoint(x: number, y: number, label: number, frameIdx: number): Promise<void> {

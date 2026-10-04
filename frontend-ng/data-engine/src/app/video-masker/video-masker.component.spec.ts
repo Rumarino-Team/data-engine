@@ -4,7 +4,7 @@ import { vi } from 'vitest';
 import { BackendService, VideoAddPointsResponse } from '../services/backend.service';
 import { DesktopBridgeService } from '../services/desktop-bridge.service';
 import { VideoMaskerComponent } from './video-masker.component';
-import { ElementRef } from '@angular/core';
+
 import { VideoJobsService } from './services/video-jobs.service';
 
 describe('VideoMaskerComponent sync contract', () => {
@@ -103,6 +103,7 @@ describe('VideoMaskerComponent sync contract', () => {
 
     fixture = TestBed.createComponent(VideoMaskerComponent);
     component = fixture.componentInstance;
+    vi.spyOn(component.viewport, 'attach').mockImplementation(() => {});
     component.store.selectedObjectId.set(1);
     component.store.objects.set([{ id: 1, name: 'Object 1', color: '#ff0000' }]);
     component.store.stateEpoch.set(3);
@@ -116,15 +117,15 @@ describe('VideoMaskerComponent sync contract', () => {
     ]);
     component.addObject();
     expect(component.store.selectedObjectId()).toBe(4);
-    vi.spyOn(component.frameCanvas, 'scheduleFrameLoad').mockImplementation(() => {});
+    vi.spyOn(component.framePipeline, 'scheduleFrameLoad').mockImplementation(() => {});
     component.removeObject();
     component.addObject();
     expect(component.store.objects().map((object) => object.id)).toEqual([1, 3, 5]);
   });
 
   it('cleans removed objects from all frame maps without mutating previous snapshots', () => {
-    vi.spyOn(component.frameCanvas, 'scheduleFrameLoad').mockImplementation(() => {});
-    const removeFromCanvas = vi.spyOn(component.frameCanvas, 'removeObject');
+    vi.spyOn(component.framePipeline, 'scheduleFrameLoad').mockImplementation(() => {});
+    const removeFromCanvas = vi.spyOn(component.framePipeline, 'removeObject');
     const points = new Map([[5, new Map([[1, [{ x: 1, y: 2, label: 1 }]]])]]);
     const masks = new Map([[5, new Map([[1, [[true]]]])]]);
     const edited = new Map([[5, new Set([1])]]);
@@ -142,7 +143,7 @@ describe('VideoMaskerComponent sync contract', () => {
   });
 
   it('keeps successful removals when removing all objects fails partway through', async () => {
-    vi.spyOn(component.frameCanvas, 'scheduleFrameLoad').mockImplementation(() => {});
+    vi.spyOn(component.framePipeline, 'scheduleFrameLoad').mockImplementation(() => {});
     component.addObject();
     backendMock.removeObject
       .mockReturnValueOnce(of({}))
@@ -281,28 +282,18 @@ describe('VideoMaskerComponent sync contract', () => {
     },
   );
 
-  it('maps scaled canvas clicks to image pixels on the displayed frame', () => {
-    const canvas = document.createElement('canvas');
-    canvas.width = 1000;
-    canvas.height = 500;
-    vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
-      left: 20,
-      top: 30,
-      width: 500,
-      height: 250,
-    } as DOMRect);
-    component.canvasRef = new ElementRef(canvas);
+  it('submits image coordinates from the viewport on the displayed frame', () => {
     component.store.isInitialized.set(true);
     component.store.targetFrameIdx.set(6);
     component.store.interactionMode.set('negative');
-    vi.spyOn(component.frameCanvas, 'currentBaseImage', 'get').mockReturnValue(new Image());
+    vi.spyOn(component.framePipeline, 'currentBaseImage', 'get').mockReturnValue(new Image());
     const addPoint = vi.spyOn(component, 'addPoint').mockResolvedValue();
-    component.onCanvasClick(new MouseEvent('click', { clientX: 120, clientY: 80 }));
+    component.onCanvasPoint({ x: 200, y: 100 });
     expect(addPoint).toHaveBeenCalledWith(200, 100, 0, 5);
-    component.onCanvasClick(new MouseEvent('click', { clientX: 10, clientY: 80 }));
+    component.store.isPointRequestInFlight.set(true);
+    component.onCanvasPoint({ x: 300, y: 100 });
     expect(addPoint).toHaveBeenCalledTimes(1);
   });
-
   it('hides the API URL scheme while the input is not focused', () => {
     component.store.apiUrlInput.set('http://127.0.0.1:8000');
 

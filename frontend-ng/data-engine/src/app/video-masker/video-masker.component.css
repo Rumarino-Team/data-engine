@@ -138,28 +138,57 @@
 }
 
 .canvas-container {
-  flex-grow: 1;
+  flex: 1 1 0;
   background-color: #333;
   display: flex;
-  justify-content: center;
-  align-items: center;
-  overflow: auto;
+  flex-direction: column;
+  overflow: hidden;
   min-width: 0;
   min-height: 0;
-  padding: 12px;
 }
 
 .frame-canvas {
-  display: block;
-  max-width: 100%;
-  max-height: 100%;
-  box-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: hidden;
+  touch-action: none;
   cursor: default;
   background: #222;
 }
 
 .frame-canvas.ready {
   cursor: crosshair;
+}
+
+.frame-canvas.pan-mode {
+  cursor: grab;
+}
+.frame-canvas.panning {
+  cursor: grabbing;
+}
+.frame-canvas:focus-visible {
+  outline: 2px solid #8ab4ff;
+  outline-offset: -2px;
+}
+.canvas-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: #eee;
+  font-size: 0.8rem;
+}
+.canvas-toolbar output {
+  min-width: 44px;
+  text-align: center;
+}
+.canvas-toolbar button[aria-pressed='true'] {
+  background: #dce5ff;
+}
+.canvas-toolbar span {
+  margin-left: auto;
+  color: #555;
 }
 
 .sidebar {

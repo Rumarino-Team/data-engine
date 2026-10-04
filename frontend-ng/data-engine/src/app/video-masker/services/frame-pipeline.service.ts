@@ -1,16 +1,12 @@
-import { Injectable, inject } from '@angular/core';
+import { Injectable, inject, untracked } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
 import { BackendService, VideoMaskObjectData } from '../../services/backend.service';
+import { MaskOverlay } from './mask-texture';
+import { CanvasViewportService } from './canvas-viewport.service';
 import { DebugMaskSource } from '../state/video-masker-ui.types';
-import {
-  MaskObject,
-  Point,
-  TrackedPointSeries,
-  VideoMaskerStateStore,
-} from './video-masker-state.store';
+import { VideoMaskerStateStore } from './video-masker-state.store';
 import {
   evictWithLimit,
-  hexToRgb,
   isObjectLiveEdited,
   maskHasForeground,
   normalizeMask2d,
@@ -28,16 +24,16 @@ interface FramePipelineState {
 }
 
 /**
- * Owns the <canvas> element plus the frame image/mask caches, and is the single place
- * that paints a frame (base image + manifest masks + live masks + prompt points +
- * tracking overlay). Reads everything else from {@link VideoMaskerStateStore}.
+ * Loads and caches frame data. The Konva viewport owns mask composition and
+ * vector annotations; this service does not create canvases or draw pixels.
  */
 @Injectable()
-export class FrameCanvasService {
+export class FramePipelineService {
   private readonly store = inject(VideoMaskerStateStore);
   private readonly backend = inject(BackendService);
+  private readonly viewport = inject(CanvasViewportService);
 
-  private canvas: HTMLCanvasElement | null = null;
+  private attached = false;
   private cacheGeneration = 0;
   private maskGeneration = 0;
   private readonly removedObjectIds = new Set<number>();
@@ -52,13 +48,15 @@ export class FrameCanvasService {
     currentMaskObjects: {},
   };
 
-  attachCanvas(canvas: HTMLCanvasElement): void {
-    this.canvas = canvas;
+  attach(host: HTMLDivElement, onPoint: (point: { x: number; y: number }) => void): void {
+    this.viewport.attach(host, onPoint);
+    this.attached = true;
   }
 
   detach(): void {
     this.clearFrameCaches();
-    this.canvas = null;
+    this.viewport.detach();
+    this.attached = false;
   }
 
   get currentBaseImage(): HTMLImageElement | null {
@@ -78,6 +76,7 @@ export class FrameCanvasService {
   }
 
   clearFrameCaches(): void {
+    this.viewport.reset();
     this.cacheGeneration++;
     this.clearMaskDataCache();
     this.removedObjectIds.clear();
@@ -109,7 +108,7 @@ export class FrameCanvasService {
   }
 
   async loadFrame(frameIdx: number): Promise<void> {
-    if (!this.canvas) {
+    if (!this.attached) {
       return;
     }
 
@@ -117,7 +116,7 @@ export class FrameCanvasService {
     this.state.currentMaskObjects = {};
     const cachedImage = this.state.frameImageCache.get(frameIdx);
     if (cachedImage?.complete) {
-      await this.paintLoadedFrame(cachedImage, frameIdx, token);
+      await this.displayLoadedFrame(cachedImage, frameIdx, token);
       return;
     }
 
@@ -138,7 +137,7 @@ export class FrameCanvasService {
         return;
       }
       this.cacheFrameImage(frameIdx, image);
-      await this.paintLoadedFrame(image, frameIdx, token);
+      await this.displayLoadedFrame(image, frameIdx, token);
     };
 
     image.src = frameUrl;
@@ -147,23 +146,17 @@ export class FrameCanvasService {
   /** Repaint the frame that is currently displayed, if any. */
   redraw(): void {
     const frameIdx = this.store.displayedFrameIdx();
-    if (frameIdx < 0 || !this.state.currentBaseImage || !this.canvas) {
+    if (frameIdx < 0 || !this.state.currentBaseImage || !this.attached) {
       return;
     }
-    this.draw(this.state.currentBaseImage, frameIdx);
+    this.renderFrame(this.state.currentBaseImage, frameIdx);
   }
 
-  draw(img: HTMLImageElement, frameIdx: number): void {
-    const canvas = this.canvas;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+  private renderFrame(img: HTMLImageElement, frameIdx: number): void {
+    const overlays: MaskOverlay[] = [];
     const liveFrameMasks = this.store.masks().get(frameIdx);
     const liveEditedObjectIds =
       this.store.liveEditedObjectFrames().get(frameIdx) ?? new Set<number>();
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(img, 0, 0);
 
     if (this.store.hasManifestMasks() && Object.keys(this.state.currentMaskObjects).length > 0) {
       for (const [objIdStr, maskData] of Object.entries(this.state.currentMaskObjects)) {
@@ -172,7 +165,7 @@ export class FrameCanvasService {
           continue;
         }
         const obj = this.store.objects().find((candidate) => candidate.id === objId);
-        this.drawMaskFromRle(ctx, maskData, obj?.color || '#ff9800');
+        overlays.push({ objectId: objId, source: maskData, color: obj?.color || '#ff9800' });
       }
     }
 
@@ -184,15 +177,8 @@ export class FrameCanvasService {
         }
         const obj = this.store.objects().find((candidate) => candidate.id === objId);
         if (obj) {
-          this.drawMask(ctx, normalizedMask, obj.color);
+          overlays.push({ objectId: objId, source: mask, color: obj.color });
         }
-      });
-    }
-
-    const framePoints = this.store.points().get(frameIdx);
-    if (framePoints) {
-      framePoints.forEach((frameObjPoints) => {
-        frameObjPoints.forEach((point) => this.drawPoint(ctx, point));
       });
     }
 
@@ -213,26 +199,20 @@ export class FrameCanvasService {
     }
     this.store.lastMaskSource.set(maskSource);
 
-    this.drawTrackingOverlay(
-      ctx,
-      frameIdx,
-      this.store.trackingOverlayStyle(),
-      this.store.trackedPoints(),
-      this.store.objects(),
-    );
+    const points = Array.from(this.store.points().get(frameIdx)?.values() ?? []).flat();
+    const tracks = this.store.trackedPoints();
+    const objects = this.store.objects();
+    const style = this.store.trackingOverlayStyle();
+    untracked(() => this.viewport.render(img, overlays, points, tracks, objects, style, frameIdx));
   }
 
-  private async paintLoadedFrame(
+  private async displayLoadedFrame(
     image: HTMLImageElement,
     frameIdx: number,
     token: number,
   ): Promise<void> {
     this.state.currentBaseImage = image;
-    this.ensureCanvasSize(image.width, image.height);
-    if (this.canvas) {
-      this.canvas.dataset['frameIdx'] = String(frameIdx);
-    }
-    this.draw(image, frameIdx);
+    this.renderFrame(image, frameIdx);
     this.store.displayedFrameIdx.set(frameIdx);
     this.store.isFrameLoading.set(false);
     this.preloadNeighborFrames(frameIdx);
@@ -241,7 +221,7 @@ export class FrameCanvasService {
     if (token !== this.state.frameLoadToken) {
       return;
     }
-    this.draw(image, frameIdx);
+    this.renderFrame(image, frameIdx);
   }
 
   private cacheFrameImage(frameIdx: number, image: HTMLImageElement): void {
@@ -274,16 +254,6 @@ export class FrameCanvasService {
     }
   }
 
-  private ensureCanvasSize(width: number, height: number): void {
-    if (!this.canvas) {
-      return;
-    }
-    if (this.canvas.width !== width || this.canvas.height !== height) {
-      this.canvas.width = width;
-      this.canvas.height = height;
-    }
-  }
-
   private async loadMaskDataForFrame(frameIdx: number, token: number): Promise<void> {
     const generation = this.maskGeneration;
     if (!this.store.hasManifestMasks()) {
@@ -313,157 +283,6 @@ export class FrameCanvasService {
       }
       console.error(error);
       this.state.currentMaskObjects = {};
-    }
-  }
-
-  // --- primitive drawing helpers (from the former VideoMaskerRenderingService) ---
-
-  private drawMask(ctx: CanvasRenderingContext2D, mask: boolean[][], color: string): void {
-    const normalizedMask = normalizeMask2d(mask);
-    if (!normalizedMask?.length || !normalizedMask[0]?.length) {
-      return;
-    }
-    const width = normalizedMask[0].length;
-    const height = normalizedMask.length;
-    const imageData = ctx.createImageData(width, height);
-    const data = imageData.data;
-    const [r, g, b] = hexToRgb(color);
-
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        if (!normalizedMask[y][x]) {
-          continue;
-        }
-        const index = (y * width + x) * 4;
-        data[index] = r;
-        data[index + 1] = g;
-        data[index + 2] = b;
-        data[index + 3] = 120;
-      }
-    }
-
-    const tempCanvas = document.createElement('canvas');
-    tempCanvas.width = width;
-    tempCanvas.height = height;
-    tempCanvas.getContext('2d')?.putImageData(imageData, 0, 0);
-    ctx.drawImage(tempCanvas, 0, 0, ctx.canvas.width, ctx.canvas.height);
-  }
-
-  private drawMaskFromRle(
-    ctx: CanvasRenderingContext2D,
-    maskData: VideoMaskObjectData,
-    color: string,
-  ): void {
-    const size = maskData.size;
-    if (!Array.isArray(size) || size.length !== 2) {
-      return;
-    }
-    const height = Number(size[0]);
-    const width = Number(size[1]);
-    if (!Number.isFinite(height) || !Number.isFinite(width) || height <= 0 || width <= 0) {
-      return;
-    }
-
-    const imageData = ctx.createImageData(width, height);
-    const data = imageData.data;
-    const [r, g, b] = hexToRgb(color);
-
-    for (const run of maskData.rle || []) {
-      if (!Array.isArray(run) || run.length !== 2) {
-        continue;
-      }
-      const start = Math.max(0, Number(run[0]) | 0);
-      const length = Math.max(0, Number(run[1]) | 0);
-      const end = Math.min(width * height, start + length);
-      for (let index = start; index < end; index++) {
-        const pixelOffset = index * 4;
-        data[pixelOffset] = r;
-        data[pixelOffset + 1] = g;
-        data[pixelOffset + 2] = b;
-        data[pixelOffset + 3] = 120;
-      }
-    }
-
-    const tempCanvas = document.createElement('canvas');
-    tempCanvas.width = width;
-    tempCanvas.height = height;
-    tempCanvas.getContext('2d')?.putImageData(imageData, 0, 0);
-    ctx.drawImage(tempCanvas, 0, 0, ctx.canvas.width, ctx.canvas.height);
-  }
-
-  private drawPoint(ctx: CanvasRenderingContext2D, point: Point): void {
-    ctx.beginPath();
-    ctx.arc(point.x, point.y, 5, 0, 2 * Math.PI);
-    ctx.fillStyle = point.label === 1 ? '#00ff00' : '#ff0000';
-    ctx.fill();
-    ctx.strokeStyle = 'white';
-    ctx.lineWidth = 2;
-    ctx.stroke();
-  }
-
-  private drawTrackingOverlay(
-    ctx: CanvasRenderingContext2D,
-    frameIdx: number,
-    style: 'point' | 'short' | 'full',
-    trackedPoints: TrackedPointSeries[],
-    objects: MaskObject[],
-  ): void {
-    if (!trackedPoints.length) {
-      return;
-    }
-
-    for (const pointSeries of trackedPoints) {
-      if (frameIdx < 0 || frameIdx >= pointSeries.tracks.length) {
-        continue;
-      }
-
-      const obj = objects.find((candidate) => candidate.id === pointSeries.obj_id);
-      const color = obj?.color || '#ffd54f';
-      const visibleNow = pointSeries.visibility[frameIdx] !== false;
-
-      if (style !== 'point') {
-        const trailStart =
-          style === 'short'
-            ? Math.max(pointSeries.source_frame_idx, frameIdx - 20)
-            : Math.max(pointSeries.source_frame_idx, 0);
-
-        ctx.beginPath();
-        let started = false;
-        for (let idx = trailStart; idx <= frameIdx; idx++) {
-          if (
-            idx < 0 ||
-            idx >= pointSeries.tracks.length ||
-            pointSeries.visibility[idx] === false
-          ) {
-            continue;
-          }
-          const [x, y] = pointSeries.tracks[idx];
-          if (!started) {
-            ctx.moveTo(x, y);
-            started = true;
-          } else {
-            ctx.lineTo(x, y);
-          }
-        }
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 2;
-        ctx.globalAlpha = style === 'short' ? 0.75 : 0.55;
-        ctx.stroke();
-        ctx.globalAlpha = 1;
-      }
-
-      if (!visibleNow) {
-        continue;
-      }
-
-      const [currentX, currentY] = pointSeries.tracks[frameIdx];
-      ctx.beginPath();
-      ctx.arc(currentX, currentY, 4.5, 0, 2 * Math.PI);
-      ctx.fillStyle = color;
-      ctx.fill();
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
     }
   }
 }

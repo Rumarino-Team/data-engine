@@ -109,17 +109,58 @@
 
   <div class="main-area">
     <div class="canvas-container">
-      <canvas
-        #canvas
+      <div class="canvas-toolbar" role="toolbar" aria-label="Canvas view">
+        <button
+          type="button"
+          (click)="viewport.zoomBy(1 / 1.2)"
+          [disabled]="!viewport.ready()"
+          aria-label="Zoom out"
+        >
+          −
+        </button>
+        <output aria-label="Zoom level">{{ viewport.zoom() * 100 | number: '1.0-0' }}%</output>
+        <button
+          type="button"
+          (click)="viewport.zoomBy(1.2)"
+          [disabled]="!viewport.ready()"
+          aria-label="Zoom in"
+        >
+          +
+        </button>
+        <button type="button" (click)="viewport.fit()" [disabled]="!viewport.ready()">Fit</button>
+        <button
+          type="button"
+          (click)="viewport.zoomBy(1 / viewport.zoom())"
+          [disabled]="!viewport.ready()"
+        >
+          100%
+        </button>
+        <button
+          type="button"
+          (click)="viewport.panMode.set(!viewport.panMode())"
+          [disabled]="!viewport.ready()"
+          [attr.aria-pressed]="viewport.panMode()"
+        >
+          Pan
+        </button>
+        <span id="canvas-help">Scroll to zoom · Space + drag to pan</span>
+      </div>
+      <div
+        #canvasHost
         class="frame-canvas"
+        tabindex="0"
+        role="region"
+        aria-label="Video annotation canvas"
+        aria-describedby="canvas-help"
+        [class.pan-mode]="viewport.panMode() || viewport.spacePressed()"
+        [class.panning]="viewport.panning()"
         [class.ready]="
           store.isInitialized() &&
           store.selectedObjectId() !== null &&
           !store.isInteractionBusy() &&
           !store.isFrameLoading()
         "
-        (click)="onCanvasClick($event)"
-      ></canvas>
+      ></div>
     </div>
 
     <div class="sidebar">

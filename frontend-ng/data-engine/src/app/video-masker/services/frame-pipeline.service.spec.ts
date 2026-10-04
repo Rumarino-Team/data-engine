@@ -2,19 +2,24 @@ import { TestBed } from '@angular/core/testing';
 import { Subject, of } from 'rxjs';
 import { vi } from 'vitest';
 import { BackendService, VideoMaskDataResponse } from '../../services/backend.service';
-import { FrameCanvasService } from './frame-canvas.service';
+import { FramePipelineService } from './frame-pipeline.service';
+import { CanvasViewportService } from './canvas-viewport.service';
 import { VideoMaskerStateStore } from './video-masker-state.store';
 
-describe('FrameCanvasService', () => {
-  let service: FrameCanvasService;
+describe('FramePipelineService', () => {
+  let service: FramePipelineService;
   let store: VideoMaskerStateStore;
-  let canvas: HTMLCanvasElement;
   let images: FakeImage[];
   let backend: {
     getVideoFrameUrl: ReturnType<typeof vi.fn>;
     getVideoMaskData: ReturnType<typeof vi.fn>;
   };
-  let ctx: CanvasRenderingContext2D;
+  let viewport: {
+    attach: ReturnType<typeof vi.fn>;
+    detach: ReturnType<typeof vi.fn>;
+    reset: ReturnType<typeof vi.fn>;
+    render: ReturnType<typeof vi.fn>;
+  };
 
   class FakeImage {
     width = 100;
@@ -35,6 +40,7 @@ describe('FrameCanvasService', () => {
 
   beforeEach(() => {
     images = [];
+    viewport = { attach: vi.fn(), detach: vi.fn(), reset: vi.fn(), render: vi.fn() };
     vi.stubGlobal('Image', FakeImage);
     backend = {
       getVideoFrameUrl: vi.fn((idx: number) => `/frame/${idx}`),
@@ -42,33 +48,15 @@ describe('FrameCanvasService', () => {
     };
     TestBed.configureTestingModule({
       providers: [
-        FrameCanvasService,
+        FramePipelineService,
         VideoMaskerStateStore,
+        { provide: CanvasViewportService, useValue: viewport },
         { provide: BackendService, useValue: backend },
       ],
     });
-    service = TestBed.inject(FrameCanvasService);
+    service = TestBed.inject(FramePipelineService);
     store = TestBed.inject(VideoMaskerStateStore);
-    canvas = document.createElement('canvas');
-    ctx = {
-      canvas,
-      clearRect: vi.fn(),
-      drawImage: vi.fn(),
-      createImageData: vi.fn((width: number, height: number) => ({
-        width,
-        height,
-        data: new Uint8ClampedArray(width * height * 4),
-      })),
-      putImageData: vi.fn(),
-      beginPath: vi.fn(),
-      arc: vi.fn(),
-      fill: vi.fn(),
-      stroke: vi.fn(),
-      moveTo: vi.fn(),
-      lineTo: vi.fn(),
-    } as unknown as CanvasRenderingContext2D;
-    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(ctx);
-    service.attachCanvas(canvas);
+    service.attach(document.createElement('div'), () => {});
     store.objects.set([{ id: 1, name: 'Object 1', color: '#ff0000' }]);
     store.hasManifestMasks.set(true);
   });
@@ -84,7 +72,7 @@ describe('FrameCanvasService', () => {
     return images[images.length - 1];
   }
 
-  it('paints frame, manifest masks, and positive/negative prompts in image coordinates', async () => {
+  it('passes frame, mask data, and prompt coordinates to the Konva viewport', async () => {
     store.points.set(
       new Map([
         [
@@ -103,18 +91,17 @@ describe('FrameCanvasService', () => {
     );
     const image = await startFrame(0);
     await image.onload?.();
-    expect(canvas.width).toBe(100);
-    expect(canvas.height).toBe(50);
-    expect(canvas.dataset['frameIdx']).toBe('0');
-    expect(ctx.drawImage).toHaveBeenCalledWith(image, 0, 0);
-    expect(ctx.putImageData).toHaveBeenCalledWith(
-      expect.objectContaining({ data: new Uint8ClampedArray([255, 0, 0, 120, 0, 0, 0, 0]) }),
-      0,
-      0,
-    );
-    expect(ctx.arc).toHaveBeenCalledWith(12, 24, 5, 0, 2 * Math.PI);
-    expect(ctx.arc).toHaveBeenCalledWith(30, 40, 5, 0, 2 * Math.PI);
-    expect(ctx.fillStyle).toBe('#ff0000');
+    const rendered = viewport.render.mock.lastCall!;
+    expect(rendered[0]).toBe(image);
+    expect(rendered[1]).toEqual([
+      { objectId: 1, color: '#ff0000', source: maskResponse(0).objects['1'] },
+    ]);
+
+    expect(rendered[6]).toBe(0);
+    expect(rendered[2]).toEqual([
+      { x: 12, y: 24, label: 1 },
+      { x: 30, y: 40, label: 0 },
+    ]);
     expect(store.lastMaskSource()).toBe('none');
   });
 
@@ -124,21 +111,21 @@ describe('FrameCanvasService', () => {
     store.masks.set(new Map([[0, new Map([[1, [[false, false]]]])]]));
     const image = await startFrame(0);
     await image.onload?.();
-    expect(ctx.createImageData).not.toHaveBeenCalled();
+    expect(viewport.render.mock.lastCall![1]).toEqual([]);
     expect(store.lastMaskSource()).toBe('none');
   });
 
   it('does not paint deleted objects from cached or refetched manifests', async () => {
     const image = await startFrame(0);
     await image.onload?.();
-    expect(ctx.createImageData).toHaveBeenCalled();
+    expect(viewport.render.mock.lastCall![1]).toHaveLength(1);
     service.removeObject(1);
     store.objects.set([]);
-    vi.mocked(ctx.createImageData).mockClear();
+
     service.redraw();
     await service.loadFrame(0);
     expect(backend.getVideoMaskData).toHaveBeenCalledTimes(2);
-    expect(ctx.createImageData).not.toHaveBeenCalled();
+    expect(viewport.render.mock.lastCall![1]).toEqual([]);
   });
 
   it('ignores a mask response invalidated while it was in flight', async () => {
@@ -151,7 +138,7 @@ describe('FrameCanvasService', () => {
     pending.complete();
     await loaded;
     service.redraw();
-    expect(ctx.createImageData).not.toHaveBeenCalled();
+    expect(viewport.render.mock.lastCall![1]).toEqual([]);
   });
 
   it('does not let a previous frame mask failure erase the current mask', async () => {
@@ -163,9 +150,9 @@ describe('FrameCanvasService', () => {
     await currentImage.onload?.();
     oldRequest.error(new Error('Old frame failed'));
     await oldLoad;
-    vi.mocked(ctx.createImageData).mockClear();
+
     service.redraw();
-    expect(ctx.createImageData).toHaveBeenCalledTimes(1);
+    expect(viewport.render.mock.lastCall![1]).toHaveLength(1);
     expect(store.displayedFrameIdx()).toBe(1);
   });
 
@@ -197,6 +184,6 @@ describe('FrameCanvasService', () => {
     await image.onload?.();
     expect(service.currentBaseImage).toBeNull();
     expect(store.displayedFrameIdx()).toBe(-1);
-    expect(ctx.drawImage).not.toHaveBeenCalled();
+    expect(viewport.render).not.toHaveBeenCalled();
   });
 });
