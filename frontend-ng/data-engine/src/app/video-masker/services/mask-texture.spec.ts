@@ -61,4 +61,30 @@ describe('mask textures', () => {
       new Uint8ClampedArray([0, 0, 0, 0, 255, 255, 255, 120]),
     );
   });
+
+  it('clips negative and overlapping runs and ignores malformed or out-of-bounds runs', () => {
+    createMaskTexture({
+      objectId: 1,
+      color: '#123456',
+      source: {
+        size: [2, 3],
+        rle: [
+          [-2, 3],
+          [0, 2],
+          [4, 20],
+          [100, 1],
+          [1.5, 1],
+          [2, 0],
+          [2, -1],
+          [2, NaN],
+        ],
+        bbox: [0, 0, 3, 2],
+      },
+    });
+    expect(putImageData.mock.lastCall?.[0].data).toEqual(
+      new Uint8ClampedArray([
+        18, 52, 86, 120, 18, 52, 86, 120, 0, 0, 0, 0, 0, 0, 0, 0, 18, 52, 86, 120, 18, 52, 86, 120,
+      ]),
+    );
+  });
 });

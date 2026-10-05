@@ -30,23 +30,27 @@ export function createMaskTexture({ source, color }: MaskOverlay): HTMLCanvasEle
   const context = texture.getContext('2d');
   if (!context) return null;
   const pixels = context.createImageData(width, height);
-  const rgba = [...hexToRgb(color), 120];
+  // Read the RGBA bytes in native byte order, then write a whole pixel at once.
+  // RLE runs can use the typed array's bulk fill instead of four writes per pixel.
+  const rgba = new Uint8Array([...hexToRgb(color), 120]);
+  const packedColor = new Uint32Array(rgba.buffer)[0];
+  const packedPixels = new Uint32Array(
+    pixels.data.buffer,
+    pixels.data.byteOffset,
+    pixels.data.byteLength / 4,
+  );
   if (mask) {
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
-        if (mask[y][x]) pixels.data.set(rgba, (y * width + x) * 4);
+        if (mask[y][x]) packedPixels[y * width + x] = packedColor;
       }
     }
   } else {
     for (const [start, length] of runs?.rle ?? []) {
       if (!Number.isInteger(start) || !Number.isInteger(length) || length <= 0) continue;
-      for (
-        let index = Math.max(0, start);
-        index < Math.min(width * height, start + length);
-        index++
-      ) {
-        pixels.data.set(rgba, index * 4);
-      }
+      const firstPixel = Math.max(0, start);
+      const endPixel = Math.min(width * height, start + length);
+      if (firstPixel < endPixel) packedPixels.fill(packedColor, firstPixel, endPixel);
     }
   }
   context.putImageData(pixels, 0, 0);
