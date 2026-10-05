@@ -10,6 +10,7 @@ import {
   VideoPropagateResponse,
   VideoSaveInteractiveState,
   VideoSaveResponse,
+  LiveMask,
 } from '../../services/backend.service';
 import { DesktopBridgeService } from '../../services/desktop-bridge.service';
 import { LoadSourceMode, ToastSeverity } from '../state/video-masker-ui.types';
@@ -24,6 +25,7 @@ import {
   getErrorMessage,
   getMaskPixelCount,
   isObjectLiveEdited,
+  encodedMaskPixelCount,
   markObjectLiveEdited,
   normalizeInteractiveObjects,
   randomColor,
@@ -681,14 +683,37 @@ export class VideoMaskerActionsService {
         throw new Error(reason);
       }
 
+      if (
+        response.out_masks.length !== response.out_obj_ids.length ||
+        new Set(response.out_obj_ids).size !== response.out_obj_ids.length
+      ) {
+        throw new Error('Object IDs and masks do not match.');
+      }
+      response.out_obj_ids.forEach((id, index) => {
+        const mask = response.out_masks[index];
+        if (!Number.isSafeInteger(id) || id <= 0) throw new Error('Invalid mask object ID.');
+        if (Array.isArray(mask)) {
+          if (response.mask_encoding) throw new Error('Expected encoded mask.');
+          return;
+        }
+        const shape = response.mask_shapes?.[id];
+        const pixels = encodedMaskPixelCount(mask);
+        if (
+          !shape ||
+          shape[0] !== mask.size[0] ||
+          shape[1] !== mask.size[1] ||
+          response.mask_pixel_counts[id] !== pixels
+        ) {
+          throw new Error('Encoded mask metadata does not match its pixels.');
+        }
+      });
+
       const maskPixelCount = getMaskPixelCount(response.mask_pixel_counts, objId);
       this.store.lastMaskPixelCount.set(maskPixelCount);
       this.store.lastFallbackUsed.set(Boolean(response.single_frame_fallback_used));
 
       const masksMap = new Map(this.store.masks());
-      const frameMasksMap = new Map(
-        masksMap.get(requestFrameIdx) || new Map<number, boolean[][]>(),
-      );
+      const frameMasksMap = new Map(masksMap.get(requestFrameIdx) || new Map<number, LiveMask>());
       response.out_obj_ids.forEach((id, index) => {
         frameMasksMap.set(id, response.out_masks[index]);
       });

@@ -3,6 +3,7 @@ import {
   ApiHealthStatus,
   BackendJob,
   TrackPromptPointMetadata,
+  LiveMask,
 } from '../../services/backend.service';
 import {
   AppToast,
@@ -45,7 +46,7 @@ export class VideoMaskerStateStore {
   selectedObjectId = signal<number | null>(null);
   interactionMode = signal<'positive' | 'negative'>('positive');
 
-  masks = signal<Map<number, Map<number, boolean[][]>>>(new Map());
+  masks = signal<Map<number, Map<number, LiveMask>>>(new Map());
   points = signal<Map<number, Map<number, Point[]>>>(new Map());
   objectPointGroups = computed(() => {
     const frames = Array.from(this.points().entries()).sort(([a], [b]) => a - b);

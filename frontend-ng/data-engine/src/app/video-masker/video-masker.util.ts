@@ -3,6 +3,9 @@ import {
   InteractiveObject,
   InteractivePoint,
   VideoSaveInteractiveState,
+  LiveMask,
+  PackedBitMask,
+  VideoMaskObjectData,
 } from '../services/backend.service';
 import { LoadSourceMode } from './state/video-masker-ui.types';
 import { MaskObject, Point } from './services/video-masker-state.store';
@@ -106,8 +109,12 @@ export function normalizeMask2d(mask: unknown): boolean[][] | null {
   return candidate as boolean[][];
 }
 
-export function maskHasForeground(mask: boolean[][]): boolean {
-  for (const row of mask) {
+export function maskHasForeground(mask: LiveMask): boolean {
+  if (!Array.isArray(mask)) {
+    if ('encoding' in mask) return packedMaskBytes(mask).some((byte) => byte !== 0);
+    return mask.rle.some(([, length]) => length > 0);
+  }
+  for (const row of normalizeMask2d(mask) ?? []) {
     for (const value of row) {
       if (value) {
         return true;
@@ -192,8 +199,43 @@ export function getErrorMessage(error: any, fallback: string): string {
 }
 
 export function encodeMaskToCounts(
-  mask: boolean[][],
+  mask: LiveMask,
 ): { width: number; height: number; counts: number[] } | null {
+  if (!Array.isArray(mask)) {
+    if ('encoding' in mask) {
+      let bytes: Uint8Array;
+      try {
+        bytes = packedMaskBytes(mask);
+      } catch {
+        return null;
+      }
+      const [height, width] = mask.size;
+      const counts: number[] = [];
+      let current = false,
+        length = 0;
+      for (let i = 0; i < height * width; i++) {
+        const value = (bytes[i >> 3] & (128 >> (i & 7))) !== 0;
+        if (value !== current) {
+          counts.push(length);
+          length = 0;
+          current = value;
+        }
+        length++;
+      }
+      counts.push(length);
+      return { height, width, counts };
+    }
+    if (!isMaskRle(mask)) return null;
+    const [height, width] = mask.size;
+    const counts: number[] = [];
+    let cursor = 0;
+    for (const [start, length] of mask.rle) {
+      counts.push(start - cursor, length);
+      cursor = start + length;
+    }
+    if (cursor < width * height) counts.push(width * height - cursor);
+    return { height, width, counts };
+  }
   const normalizedMask = normalizeMask2d(mask);
   if (!normalizedMask || normalizedMask.length === 0 || normalizedMask[0].length === 0) {
     return null;
@@ -221,6 +263,129 @@ export function encodeMaskToCounts(
   }
   counts.push(currentRun);
   return { width, height, counts };
+}
+
+const packedBytesCache = new WeakMap<PackedBitMask, Uint8Array>();
+
+/** Validate and decode once; keep packed bytes rather than allocating a boolean grid. */
+export function packedMaskBytes(mask: PackedBitMask): Uint8Array {
+  const cached = packedBytesCache.get(mask);
+  if (cached) return cached;
+  if (
+    mask.encoding !== 'packed-bits' ||
+    !Array.isArray(mask.size) ||
+    mask.size.length !== 2 ||
+    !mask.size.every((n) => Number.isSafeInteger(n) && n > 0) ||
+    !Number.isSafeInteger(mask.size[0] * mask.size[1]) ||
+    typeof mask.data !== 'string'
+  )
+    throw new Error('Invalid packed mask dimensions.');
+  const total = mask.size[0] * mask.size[1];
+  const length = Math.ceil(total / 8);
+  if (
+    mask.data.length !== 4 * Math.ceil(length / 3) ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(mask.data)
+  )
+    throw new Error('Invalid packed mask base64.');
+  const raw = atob(mask.data);
+  if (raw.length !== length || btoa(raw) !== mask.data)
+    throw new Error('Invalid packed mask byte length.');
+  const bytes = Uint8Array.from(raw, (char) => char.charCodeAt(0));
+  if (total % 8 && bytes[length - 1] & ((1 << (8 - (total % 8))) - 1))
+    throw new Error('Nonzero packed mask padding.');
+  packedBytesCache.set(mask, bytes);
+  return bytes;
+}
+
+export function encodedMaskPixelCount(mask: Exclude<LiveMask, boolean[][]>): number {
+  if (!('encoding' in mask)) {
+    if (!isMaskRle(mask)) throw new Error('Invalid RLE mask response.');
+    return mask.rle.reduce((sum, [, length]) => sum + length, 0);
+  }
+  let count = 0;
+  for (let byte of packedMaskBytes(mask)) {
+    while (byte) {
+      byte &= byte - 1;
+      count++;
+    }
+  }
+  return count;
+}
+
+/** Validate foreground runs before trusting an API response or saving a snapshot. */
+export function isMaskRle(value: unknown): value is VideoMaskObjectData {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const mask = value as VideoMaskObjectData;
+  if (
+    !Array.isArray(mask.size) ||
+    mask.size.length !== 2 ||
+    !mask.size.every((size) => Number.isSafeInteger(size) && size > 0) ||
+    !Number.isSafeInteger(mask.size[0] * mask.size[1]) ||
+    !Array.isArray(mask.rle)
+  )
+    return false;
+  let end = 0;
+  for (const run of mask.rle) {
+    if (
+      !Array.isArray(run) ||
+      run.length !== 2 ||
+      !run.every(Number.isSafeInteger) ||
+      run[0] < end ||
+      run[1] <= 0 ||
+      run[0] + run[1] > mask.size[0] * mask.size[1]
+    )
+      return false;
+    end = run[0] + run[1];
+  }
+  return (
+    Array.isArray(mask.bbox) &&
+    mask.bbox.length === 4 &&
+    mask.bbox.every((value) => Number.isSafeInteger(value) && value >= 0) &&
+    mask.bbox[0] + mask.bbox[2] <= mask.size[1] &&
+    mask.bbox[1] + mask.bbox[3] <= mask.size[0]
+  );
+}
+
+/** Convert saved alternating counts to foreground runs without allocating a pixel grid. */
+export function maskFromCounts(entry: InteractiveMaskRle): VideoMaskObjectData | null {
+  const { height, width, counts } = entry;
+  if (
+    !Number.isSafeInteger(height) ||
+    !Number.isSafeInteger(width) ||
+    height <= 0 ||
+    width <= 0 ||
+    !Number.isSafeInteger(width * height) ||
+    !Array.isArray(counts) ||
+    !counts.length
+  )
+    return null;
+  const rle: number[][] = [];
+  let cursor = 0;
+  let foreground = false;
+  let xMin = width,
+    yMin = height,
+    xMax = -1,
+    yMax = -1;
+  for (const count of counts) {
+    if (!Number.isSafeInteger(count) || count < 0 || cursor + count > width * height) return null;
+    if (foreground && count) {
+      rle.push([cursor, count]);
+      const firstRow = Math.floor(cursor / width);
+      const lastRow = Math.floor((cursor + count - 1) / width);
+      xMin = Math.min(xMin, firstRow === lastRow ? cursor % width : 0);
+      xMax = Math.max(xMax, firstRow === lastRow ? (cursor + count - 1) % width : width - 1);
+      yMin = Math.min(yMin, firstRow);
+      yMax = Math.max(yMax, lastRow);
+    }
+    cursor += count;
+    foreground = !foreground;
+  }
+  if (cursor !== width * height) return null;
+  return {
+    size: [height, width],
+    rle,
+    bbox: rle.length ? [xMin, yMin, xMax - xMin + 1, yMax - yMin + 1] : [0, 0, 0, 0],
+  };
 }
 
 export function decodeMaskFromCounts(maskRle: InteractiveMaskRle): boolean[][] | null {
@@ -320,14 +485,14 @@ export function deserializePoints(points: InteractivePoint[]): Map<number, Map<n
 }
 
 export function deserializeLiveMasks(liveMasks: InteractiveMaskRle[]): {
-  masks: Map<number, Map<number, boolean[][]>>;
+  masks: Map<number, Map<number, LiveMask>>;
   liveEditedFrames: Map<number, Set<number>>;
 } {
-  const masksByFrame = new Map<number, Map<number, boolean[][]>>();
+  const masksByFrame = new Map<number, Map<number, LiveMask>>();
   const editedByFrame = new Map<number, Set<number>>();
   for (const entry of liveMasks) {
-    const decodedMask = decodeMaskFromCounts(entry);
-    if (!decodedMask) {
+    const encodedMask = maskFromCounts(entry);
+    if (!encodedMask) {
       continue;
     }
     const frameIdx = Math.trunc(entry.frame_idx);
@@ -337,10 +502,10 @@ export function deserializeLiveMasks(liveMasks: InteractiveMaskRle[]): {
     }
     let frameMasks = masksByFrame.get(frameIdx);
     if (!frameMasks) {
-      frameMasks = new Map<number, boolean[][]>();
+      frameMasks = new Map<number, LiveMask>();
       masksByFrame.set(frameIdx, frameMasks);
     }
-    frameMasks.set(objId, decodedMask);
+    frameMasks.set(objId, encodedMask);
 
     const editedSet = editedByFrame.get(frameIdx) || new Set<number>();
     editedSet.add(objId);
@@ -355,7 +520,7 @@ export function buildInteractiveStateSnapshot(args: {
   interactionMode: 'positive' | 'negative';
   currentFrameIdx: number;
   pointsByFrame: Map<number, Map<number, Point[]>>;
-  masksByFrame: Map<number, Map<number, boolean[][]>>;
+  masksByFrame: Map<number, Map<number, LiveMask>>;
 }): VideoSaveInteractiveState {
   const objects = args.objects.map((entry) => ({
     id: entry.id,

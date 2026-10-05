@@ -44,6 +44,22 @@ describe('mask textures', () => {
     expect(putImageData.mock.lastCall?.[0].data).toEqual(expected);
   });
 
+  it('renders packed pixels identically to grids including partial final bytes', () => {
+    const source = [
+      [true, false, true],
+      [false, true, false],
+      [true, false, true],
+    ];
+    createMaskTexture({ objectId: 1, color: '#ff8800', source });
+    const expected = putImageData.mock.lastCall?.[0].data;
+    createMaskTexture({
+      objectId: 1,
+      color: '#ff8800',
+      source: { size: [3, 3], encoding: 'packed-bits', data: 'qoA=' },
+    });
+    expect(putImageData.mock.lastCall?.[0].data).toEqual(expected);
+  });
+
   it('rejects invalid dimensions and clips runs to the texture bounds', () => {
     expect(
       createMaskTexture({

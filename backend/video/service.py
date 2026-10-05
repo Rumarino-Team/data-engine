@@ -18,6 +18,7 @@ from utils import load_mask_manifest, write_mask_manifest
 from video.io import copy_frames_directory_to_session, create_active_session, extract_video_to_session_frames
 from video.masks import mask_logits_to_2d_bool
 from video.manifest_cache import load_cached_mask_manifest
+from video.mask_encoding import encode_live_mask_payload
 from video.prompts import record_prompt_event
 from tracking.results import restored_tracking_result_payload
 
@@ -395,12 +396,12 @@ async def add_new_points_or_box(request: VideoAddPointsOrBoxRequest):
             ),
         )
 
-    masks_list: list[list[list[bool]]] = []
+    masks_list: list[np.ndarray] = []
     mask_pixel_counts: dict[int, int] = {}
     mask_shapes: dict[int, list[int]] = {}
     for index, obj_id in enumerate(normalized_obj_ids):
         mask_2d = mask_logits_to_2d_bool(out_mask_logits[index])
-        masks_list.append(mask_2d.tolist())
+        masks_list.append(mask_2d)
         mask_pixel_counts[int(obj_id)] = int(np.count_nonzero(mask_2d))
         mask_shapes[int(obj_id)] = [int(mask_2d.shape[0]), int(mask_2d.shape[1])]
 
@@ -430,7 +431,7 @@ async def add_new_points_or_box(request: VideoAddPointsOrBoxRequest):
                 if fallback_mask_2d.ndim == 2:
                     fallback_pixels = int(np.count_nonzero(fallback_mask_2d))
                     if fallback_pixels > 0:
-                        masks_list[selected_obj_index] = fallback_mask_2d.tolist()
+                        masks_list[selected_obj_index] = fallback_mask_2d
                         mask_pixel_counts[selected_obj_id] = fallback_pixels
                         mask_shapes[selected_obj_id] = [int(fallback_mask_2d.shape[0]), int(fallback_mask_2d.shape[1])]
                         used_single_frame_fallback = True
@@ -455,7 +456,8 @@ async def add_new_points_or_box(request: VideoAddPointsOrBoxRequest):
         "frame_idx": returned_frame_idx,
         "frame_file": state.video_frame_files[returned_frame_idx],
         "out_obj_ids": normalized_obj_ids,
-        "out_masks": masks_list,
+        "out_masks": [encode_live_mask_payload(mask) for mask in masks_list],
+        "mask_encoding": "mixed",
         "mask_pixel_counts": mask_pixel_counts,
         "mask_shapes": mask_shapes,
         "single_frame_fallback_used": used_single_frame_fallback,
@@ -476,11 +478,12 @@ async def add_new_mask(request: VideoAddMaskRequest):
         mask=mask
     )
     
-    masks_list = [mask_logits_to_2d_bool(out_mask_logits[i]).tolist() for i in range(len(out_obj_ids))]
+    masks_list = [encode_live_mask_payload(mask_logits_to_2d_bool(out_mask_logits[i])) for i in range(len(out_obj_ids))]
     return {
         "frame_idx": frame_idx,
-        "out_obj_ids": out_obj_ids,
-        "out_masks": masks_list
+        "out_obj_ids": [int(obj_id) for obj_id in out_obj_ids],
+        "out_masks": masks_list,
+        "mask_encoding": "mixed",
     }
 
 async def save_video_session(request: VideoSaveRequest):

@@ -5,12 +5,7 @@ import { MaskOverlay } from './mask-texture';
 import { CanvasViewportService } from './canvas-viewport.service';
 import { DebugMaskSource } from '../state/video-masker-ui.types';
 import { VideoMaskerStateStore } from './video-masker-state.store';
-import {
-  evictWithLimit,
-  isObjectLiveEdited,
-  maskHasForeground,
-  normalizeMask2d,
-} from '../video-masker.util';
+import { evictWithLimit, isObjectLiveEdited, maskHasForeground } from '../video-masker.util';
 
 interface FramePipelineState {
   frameLoadToken: number;
@@ -191,8 +186,7 @@ export class FramePipelineService {
 
     if (liveFrameMasks) {
       liveFrameMasks.forEach((mask, objId) => {
-        const normalizedMask = normalizeMask2d(mask);
-        if (!normalizedMask || !maskHasForeground(normalizedMask)) {
+        if (!maskHasForeground(mask)) {
           return;
         }
         const obj = this.store.objects().find((candidate) => candidate.id === objId);
@@ -206,8 +200,7 @@ export class FramePipelineService {
     let maskSource: DebugMaskSource = 'none';
     if (selectedObjectId !== null) {
       const selectedLiveMask = liveFrameMasks?.get(selectedObjectId);
-      const normalizedLiveMask = selectedLiveMask ? normalizeMask2d(selectedLiveMask) : null;
-      const hasLiveMask = Boolean(normalizedLiveMask && maskHasForeground(normalizedLiveMask));
+      const hasLiveMask = Boolean(selectedLiveMask && maskHasForeground(selectedLiveMask));
       if (hasLiveMask) {
         maskSource = 'live';
       } else if (

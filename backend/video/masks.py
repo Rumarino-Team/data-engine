@@ -1,6 +1,6 @@
 from typing import Any
 import numpy as np
-from utils import encode_mask_to_rle, mask_bbox_xywh
+from video.mask_encoding import encode_mask_payload
 
 def manifest_frame_payload(frame_masks: dict[int, np.ndarray]) -> dict[str, Any]:
     objects: dict[str, Any] = {}
@@ -10,11 +10,7 @@ def manifest_frame_payload(frame_masks: dict[int, np.ndarray]) -> dict[str, Any]
             mask_array = np.squeeze(mask_array)
         if mask_array.ndim != 2:
             continue
-        objects[str(int(obj_id))] = {
-            "size": [int(mask_array.shape[0]), int(mask_array.shape[1])],
-            "rle": encode_mask_to_rle(mask_array),
-            "bbox": mask_bbox_xywh(mask_array),
-        }
+        objects[str(int(obj_id))] = encode_mask_payload(mask_array)
     return {"objects": objects}
 
 def mask_logits_to_2d_bool(mask_logits: Any) -> np.ndarray:
@@ -60,4 +56,3 @@ def serialize_video_segments_for_response(
 
     truncated = returned_frames < len(video_segments)
     return serialized, truncated, returned_frames, total_mask_values
-

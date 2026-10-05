@@ -37,12 +37,8 @@ describe('VideoMaskerComponent sync contract', () => {
     frame_idx: 5,
     frame_file: '00005.jpg',
     out_obj_ids: [1],
-    out_masks: [
-      [
-        [true, false],
-        [false, false],
-      ],
-    ],
+    out_masks: [{ size: [2, 2], rle: [[0, 1]], bbox: [0, 0, 1, 1] }],
+    mask_encoding: 'rle',
     mask_pixel_counts: { 1: 1 },
     mask_shapes: { 1: [2, 2] },
     state_epoch: 3,
@@ -361,10 +357,11 @@ describe('VideoMaskerComponent sync contract', () => {
     expect(backendMock.addNewPointsOrBox).toHaveBeenCalledWith(
       expect.objectContaining({ frame_idx: 5 }),
     );
-    expect(component.store.masks().get(5)?.get(1)).toEqual([
-      [true, false],
-      [false, false],
-    ]);
+    expect(component.store.masks().get(5)?.get(1)).toEqual({
+      size: [2, 2],
+      rle: [[0, 1]],
+      bbox: [0, 0, 1, 1],
+    });
     expect(component.store.lastDiscardReason()).toBeNull();
   });
 
@@ -378,6 +375,59 @@ describe('VideoMaskerComponent sync contract', () => {
     expect(component.store.masks().get(5)?.get(1)).toBeUndefined();
     expect(component.store.points().get(5)?.get(1)?.length ?? 0).toBe(0);
     expect(component.store.lastDiscardReason()).toContain('frame mismatch');
+  });
+
+  it('accepts boolean-grid responses from an older backend', async () => {
+    const mask = [
+      [true, false],
+      [false, false],
+    ];
+    backendMock.addNewPointsOrBox.mockReturnValue(
+      of(makeResponse({ out_masks: [mask], mask_encoding: undefined })),
+    );
+    await component.addPoint(12, 24, 1, 5);
+    expect(component.store.masks().get(5)?.get(1)).toBe(mask);
+  });
+
+  it('accepts packed masks with matching pixel metadata', async () => {
+    const mask = {
+      size: [2, 2] as [number, number],
+      encoding: 'packed-bits' as const,
+      data: 'gA==',
+    };
+    backendMock.addNewPointsOrBox.mockReturnValue(
+      of(makeResponse({ out_masks: [mask], mask_encoding: 'mixed' })),
+    );
+    await component.addPoint(12, 24, 1, 5);
+    expect(component.store.masks().get(5)?.get(1)).toBe(mask);
+  });
+
+  it.each([
+    { out_masks: [] },
+    {
+      out_masks: [{ size: [2, 2], encoding: 'packed-bits', data: 'gQ==' }],
+      mask_encoding: 'mixed',
+    },
+    {
+      out_masks: [{ size: [2, 2], encoding: 'packed-bits', data: 'wA==' }],
+      mask_encoding: 'mixed',
+    },
+    { out_masks: [{ size: [2, 2], rle: [[3, 2]], bbox: [0, 0, 2, 2] }] },
+    { mask_pixel_counts: { 1: 2 } },
+    { mask_shapes: { 1: [3, 2] } },
+  ])('rejects malformed encoded responses before applying masks (%j)', async (overrides) => {
+    const previous = {
+      size: [2, 2] as [number, number],
+      rle: [],
+      bbox: [0, 0, 0, 0] as [number, number, number, number],
+    };
+    component.store.masks.set(new Map([[5, new Map([[1, previous]])]]));
+    backendMock.addNewPointsOrBox.mockReturnValue(
+      of(makeResponse(overrides as Partial<VideoAddPointsResponse>)),
+    );
+    await component.addPoint(12, 24, 1, 5);
+    expect(component.store.masks().get(5)?.get(1)).toBe(previous);
+    expect(component.store.points().get(5)?.get(1)?.length ?? 0).toBe(0);
   });
 
   it('discards stale epoch responses and clears live masks', async () => {
@@ -400,12 +450,7 @@ describe('VideoMaskerComponent sync contract', () => {
     backendMock.addNewPointsOrBox.mockReturnValue(
       of(
         makeResponse({
-          out_masks: [
-            [
-              [false, false],
-              [false, false],
-            ],
-          ],
+          out_masks: [{ size: [2, 2], rle: [], bbox: [0, 0, 0, 0] }],
           mask_pixel_counts: { 1: 0 },
         }),
       ),
@@ -730,10 +775,11 @@ describe('VideoMaskerComponent sync contract', () => {
     expect(component.store.interactionMode()).toBe('negative');
     expect(component.store.targetFrameIdx()).toBe(4);
     expect(component.store.points().get(4)?.get(1)?.length).toBe(1);
-    expect(component.store.masks().get(4)?.get(1)).toEqual([
-      [true, false],
-      [false, false],
-    ]);
+    expect(component.store.masks().get(4)?.get(1)).toEqual({
+      size: [2, 2],
+      rle: [[0, 1]],
+      bbox: [0, 0, 1, 1],
+    });
   });
 
   it('restores persisted tracking result from saved-session init result', async () => {

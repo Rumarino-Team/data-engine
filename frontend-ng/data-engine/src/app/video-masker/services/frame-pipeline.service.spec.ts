@@ -131,6 +131,48 @@ describe('FramePipelineService', () => {
     expect(viewport.render.mock.lastCall![1]).toEqual([]);
   });
 
+  it('renders encoded live masks directly and marks their source as live', async () => {
+    const mask = {
+      size: [1, 2] as [number, number],
+      rle: [[1, 1]],
+      bbox: [1, 0, 1, 1] as [number, number, number, number],
+    };
+    store.selectedObjectId.set(1);
+    store.liveEditedObjectFrames.set(new Map([[0, new Set([1])]]));
+    store.masks.set(new Map([[0, new Map([[1, mask]])]]));
+    const image = await startFrame(0);
+    await image.onload?.();
+    expect(viewport.render.mock.lastCall![1]).toEqual([
+      { objectId: 1, source: mask, color: '#ff0000' },
+    ]);
+    expect(viewport.render.mock.lastCall![1][0].source).toBe(mask);
+    expect(store.lastMaskSource()).toBe('live');
+  });
+
+  it('suppresses saved foreground when an encoded live edit is empty', async () => {
+    store.liveEditedObjectFrames.set(new Map([[0, new Set([1])]]));
+    store.masks.set(
+      new Map([
+        [
+          0,
+          new Map([
+            [
+              1,
+              {
+                size: [1, 2] as [number, number],
+                rle: [],
+                bbox: [0, 0, 0, 0] as [number, number, number, number],
+              },
+            ],
+          ]),
+        ],
+      ]),
+    );
+    const image = await startFrame(0);
+    await image.onload?.();
+    expect(viewport.render.mock.lastCall![1]).toEqual([]);
+  });
+
   it('ignores a mask response invalidated while it was in flight', async () => {
     const pending = new Subject<VideoMaskDataResponse>();
     backend.getVideoMaskData.mockReturnValue(pending);

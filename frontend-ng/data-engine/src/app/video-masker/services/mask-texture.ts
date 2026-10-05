@@ -1,10 +1,10 @@
-import { VideoMaskObjectData } from '../../services/backend-api.types';
-import { hexToRgb, normalizeMask2d } from '../video-masker.util';
+import { LiveMask } from '../../services/backend-api.types';
+import { hexToRgb, normalizeMask2d, packedMaskBytes } from '../video-masker.util';
 
 export interface MaskOverlay {
   objectId: number;
   color: string;
-  source: boolean[][] | VideoMaskObjectData;
+  source: LiveMask;
 }
 
 /** Converts backend mask pixels to a native-resolution texture for a Konva Image.
@@ -44,6 +44,11 @@ export function createMaskTexture({ source, color }: MaskOverlay): HTMLCanvasEle
       for (let x = 0; x < width; x++) {
         if (mask[y][x]) packedPixels[y * width + x] = packedColor;
       }
+    }
+  } else if (runs && 'encoding' in runs) {
+    const bytes = packedMaskBytes(runs);
+    for (let i = 0; i < width * height; i++) {
+      if (bytes[i >> 3] & (128 >> (i & 7))) packedPixels[i] = packedColor;
     }
   } else {
     for (const [start, length] of runs?.rle ?? []) {

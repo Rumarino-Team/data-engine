@@ -54,7 +54,8 @@ export interface VideoAddPointsResponse {
   frame_idx: number;
   frame_file: string;
   out_obj_ids: number[];
-  out_masks: boolean[][][];
+  out_masks: LiveMask[];
+  mask_encoding?: 'rle' | 'mixed';
   mask_pixel_counts: Record<number, number>;
   mask_shapes: Record<number, [number, number]>;
   single_frame_fallback_used?: boolean;
@@ -140,6 +141,16 @@ export interface VideoMaskObjectData {
   rle: number[][];
   bbox: [number, number, number, number];
 }
+
+/** Row-major pixels, most significant bit first; final unused bits must be zero. */
+export interface PackedBitMask {
+  size: [number, number];
+  encoding: 'packed-bits';
+  data: string;
+}
+
+/** Legacy grids remain accepted from older backends. */
+export type LiveMask = VideoMaskObjectData | PackedBitMask | boolean[][];
 
 export interface VideoMaskDataResponse {
   frame_idx: number;
