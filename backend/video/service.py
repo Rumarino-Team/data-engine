@@ -17,6 +17,7 @@ from sessions.paths import path_is_relative_to, resolve_input_path, resolve_save
 from utils import load_mask_manifest, write_mask_manifest
 from video.io import copy_frames_directory_to_session, create_active_session, extract_video_to_session_frames
 from video.masks import mask_logits_to_2d_bool
+from video.manifest_cache import load_cached_mask_manifest
 from video.prompts import record_prompt_event
 from tracking.results import restored_tracking_result_payload
 
@@ -583,7 +584,7 @@ async def get_mask_manifest():
     if not manifest_path.exists():
         return {"error": "Mask manifest not found. Run /video/propagate_in_video first."}
 
-    manifest = load_mask_manifest(manifest_path)
+    manifest = load_cached_mask_manifest(manifest_path)
     return {
         "version": manifest.get("version"),
         "source_video_path": manifest.get("source_video_path"),
@@ -605,7 +606,7 @@ async def get_mask_data(frame_idx: int):
     if not manifest_path.exists():
         return {"frame_idx": frame_idx, "objects": {}}
 
-    manifest = load_mask_manifest(manifest_path)
+    manifest = load_cached_mask_manifest(manifest_path)
     num_frames = int(manifest.get("num_frames", 0))
     if frame_idx >= num_frames:
         return {"error": "Frame index out of bounds"}

@@ -1,5 +1,5 @@
 import { Injectable, inject, untracked } from '@angular/core';
-import { firstValueFrom } from 'rxjs';
+import { firstValueFrom, Subject, takeUntil } from 'rxjs';
 import { BackendService, VideoMaskObjectData } from '../../services/backend.service';
 import { MaskOverlay } from './mask-texture';
 import { CanvasViewportService } from './canvas-viewport.service';
@@ -19,8 +19,19 @@ interface FramePipelineState {
   frameImageCache: Map<number, HTMLImageElement>;
   maskDataCache: Map<number, { [objId: string]: VideoMaskObjectData }>;
   maxFrameCacheSize: number;
+  frameCacheBytes: number;
   currentBaseImage: HTMLImageElement | null;
   currentMaskObjects: { [objId: string]: VideoMaskObjectData };
+}
+
+type FrameMasks = { [objId: string]: VideoMaskObjectData };
+interface PendingImage {
+  image: HTMLImageElement;
+  token: number | null;
+}
+interface PendingMasks {
+  promise: Promise<FrameMasks | null>;
+  cancel: () => void;
 }
 
 /**
@@ -36,6 +47,10 @@ export class FramePipelineService {
   private attached = false;
   private cacheGeneration = 0;
   private maskGeneration = 0;
+  private readonly pendingImages = new Map<number, PendingImage>();
+  private readonly pendingMasks = new Map<number, PendingMasks>();
+  // Estimated decoded RGBA pixels, excluding browser overhead and mask textures.
+  private readonly maxFrameCacheBytes = 128 * 1024 * 1024;
   private readonly removedObjectIds = new Set<number>();
   private readonly state: FramePipelineState = {
     frameLoadToken: 0,
@@ -44,6 +59,7 @@ export class FramePipelineService {
     frameImageCache: new Map<number, HTMLImageElement>(),
     maskDataCache: new Map<number, { [objId: string]: VideoMaskObjectData }>(),
     maxFrameCacheSize: 24,
+    frameCacheBytes: 0,
     currentBaseImage: null,
     currentMaskObjects: {},
   };
@@ -65,6 +81,8 @@ export class FramePipelineService {
 
   clearMaskDataCache(): void {
     this.maskGeneration++;
+    for (const pending of this.pendingMasks.values()) pending.cancel();
+    this.pendingMasks.clear();
     this.state.maskDataCache.clear();
     this.state.currentMaskObjects = {};
   }
@@ -80,7 +98,9 @@ export class FramePipelineService {
     this.cacheGeneration++;
     this.clearMaskDataCache();
     this.removedObjectIds.clear();
+    for (const [frameIdx] of this.pendingImages) this.cancelImage(frameIdx);
     this.state.frameImageCache.clear();
+    this.state.frameCacheBytes = 0;
     this.state.currentBaseImage = null;
     this.state.currentMaskObjects = {};
     this.state.frameLoadToken++;
@@ -113,34 +133,34 @@ export class FramePipelineService {
     }
 
     const token = ++this.state.frameLoadToken;
-    this.state.currentMaskObjects = {};
+    // Keep only the requested image and useful immediate neighbors in flight.
+    for (const [index, pending] of this.pendingImages) {
+      if (Math.abs(index - frameIdx) > 1) this.cancelImage(index);
+      else pending.token = null;
+    }
+    for (const [index, pending] of this.pendingMasks) {
+      if (index !== frameIdx) {
+        pending.cancel();
+        this.pendingMasks.delete(index);
+      }
+    }
     const cachedImage = this.state.frameImageCache.get(frameIdx);
     if (cachedImage?.complete) {
+      // Map insertion order is the eviction order; refresh it on a cache hit.
+      this.state.frameImageCache.delete(frameIdx);
+      this.state.frameImageCache.set(frameIdx, cachedImage);
       await this.displayLoadedFrame(cachedImage, frameIdx, token);
       return;
     }
 
     this.store.isFrameLoading.set(true);
-    const image = new Image();
-    const frameUrl = this.backend.getVideoFrameUrl(frameIdx);
-
-    image.onerror = () => {
-      if (token !== this.state.frameLoadToken) {
-        return;
-      }
-      console.error(`Failed to load frame image: ${frameUrl}`);
-      this.store.isFrameLoading.set(false);
-    };
-
-    image.onload = async () => {
-      if (token !== this.state.frameLoadToken) {
-        return;
-      }
-      this.cacheFrameImage(frameIdx, image);
-      await this.displayLoadedFrame(image, frameIdx, token);
-    };
-
-    image.src = frameUrl;
+    // Fetch masks alongside the image rather than starting another round trip after it.
+    if (this.store.hasManifestMasks() && !this.state.maskDataCache.has(frameIdx)) {
+      void this.loadMaskDataForFrame(frameIdx);
+    }
+    const pending = this.pendingImages.get(frameIdx);
+    if (pending) pending.token = token;
+    else this.requestImage(frameIdx, token);
   }
 
   /** Repaint the frame that is currently displayed, if any. */
@@ -211,78 +231,139 @@ export class FramePipelineService {
     frameIdx: number,
     token: number,
   ): Promise<void> {
+    if (token !== this.state.frameLoadToken || !this.attached) return;
     this.state.currentBaseImage = image;
+    const cachedMasks = this.state.maskDataCache.get(frameIdx);
+    if (cachedMasks) {
+      this.state.maskDataCache.delete(frameIdx);
+      this.state.maskDataCache.set(frameIdx, cachedMasks);
+    }
+    this.state.currentMaskObjects = cachedMasks ?? {};
     this.renderFrame(image, frameIdx);
     this.store.displayedFrameIdx.set(frameIdx);
     this.store.isFrameLoading.set(false);
     this.preloadNeighborFrames(frameIdx);
 
-    await this.loadMaskDataForFrame(frameIdx, token);
-    if (token !== this.state.frameLoadToken) {
+    if (cachedMasks || !this.store.hasManifestMasks()) return;
+    const generation = this.maskGeneration;
+    const masks = await this.loadMaskDataForFrame(frameIdx);
+    if (token !== this.state.frameLoadToken || generation !== this.maskGeneration || !masks) {
       return;
     }
-    this.renderFrame(image, frameIdx);
+    this.state.currentMaskObjects = masks;
+    if (Object.keys(masks).length) this.renderFrame(image, frameIdx);
   }
 
   private cacheFrameImage(frameIdx: number, image: HTMLImageElement): void {
     if (this.state.frameImageCache.has(frameIdx)) {
+      this.state.frameCacheBytes -= this.imageBytes(this.state.frameImageCache.get(frameIdx)!);
       this.state.frameImageCache.delete(frameIdx);
     }
     this.state.frameImageCache.set(frameIdx, image);
-    evictWithLimit(this.state.frameImageCache, this.state.maxFrameCacheSize, (oldestKey) => {
+    this.state.frameCacheBytes += this.imageBytes(image);
+    // Keep a single oversized image usable, but don't retain other images beside it.
+    while (
+      this.state.frameImageCache.size > 1 &&
+      (this.state.frameImageCache.size > this.state.maxFrameCacheSize ||
+        this.state.frameCacheBytes > this.maxFrameCacheBytes)
+    ) {
+      const oldestKey = this.state.frameImageCache.keys().next().value!;
+      const oldest = this.state.frameImageCache.get(oldestKey)!;
+      this.state.frameCacheBytes -= this.imageBytes(oldest);
+      this.state.frameImageCache.delete(oldestKey);
       this.state.maskDataCache.delete(oldestKey);
-    });
+    }
+  }
+
+  private imageBytes(image: HTMLImageElement): number {
+    return (image.naturalWidth || image.width) * (image.naturalHeight || image.height) * 4;
+  }
+
+  private cancelImage(frameIdx: number): void {
+    const pending = this.pendingImages.get(frameIdx);
+    if (!pending) return;
+    this.pendingImages.delete(frameIdx);
+    pending.image.onload = pending.image.onerror = null;
+    // Remove the resource to stop obsolete image loading where the browser supports it.
+    pending.image.removeAttribute('src');
+  }
+
+  private requestImage(frameIdx: number, token: number | null): void {
+    const image = new Image();
+    const pending: PendingImage = { image, token };
+    const generation = this.cacheGeneration;
+    this.pendingImages.set(frameIdx, pending);
+    image.onload = async () => {
+      if (generation !== this.cacheGeneration || this.pendingImages.get(frameIdx) !== pending)
+        return;
+      this.pendingImages.delete(frameIdx);
+      this.cacheFrameImage(frameIdx, image);
+      if (pending.token !== null && pending.token === this.state.frameLoadToken) {
+        await this.displayLoadedFrame(image, frameIdx, pending.token);
+      }
+    };
+    image.onerror = () => {
+      if (this.pendingImages.get(frameIdx) !== pending) return;
+      this.pendingImages.delete(frameIdx);
+      if (pending.token === this.state.frameLoadToken) {
+        this.pendingMasks.get(frameIdx)?.cancel();
+        this.pendingMasks.delete(frameIdx);
+        console.error(`Failed to load frame image: ${image.src}`);
+        this.store.isFrameLoading.set(false);
+      }
+    };
+    image.src = this.backend.getVideoFrameUrl(frameIdx);
   }
 
   private preloadNeighborFrames(frameIdx: number): void {
-    const generation = this.cacheGeneration;
     for (const neighborIdx of [frameIdx + 1, frameIdx - 1]) {
       if (
         neighborIdx < 0 ||
         neighborIdx >= this.store.numFrames() ||
-        this.state.frameImageCache.has(neighborIdx)
+        this.state.frameImageCache.has(neighborIdx) ||
+        this.pendingImages.has(neighborIdx)
       ) {
         continue;
       }
-      const image = new Image();
-      image.onload = () => {
-        if (generation === this.cacheGeneration) {
-          this.cacheFrameImage(neighborIdx, image);
-        }
-      };
-      image.src = this.backend.getVideoFrameUrl(neighborIdx);
+      this.requestImage(neighborIdx, null);
     }
   }
 
-  private async loadMaskDataForFrame(frameIdx: number, token: number): Promise<void> {
+  private loadMaskDataForFrame(frameIdx: number): Promise<FrameMasks | null> {
+    const existing = this.pendingMasks.get(frameIdx);
+    if (existing) return existing.promise;
     const generation = this.maskGeneration;
-    if (!this.store.hasManifestMasks()) {
-      this.state.currentMaskObjects = {};
-      return;
-    }
-    const cachedMaskData = this.state.maskDataCache.get(frameIdx);
-    if (cachedMaskData) {
-      this.state.currentMaskObjects = cachedMaskData;
-      return;
-    }
-
-    try {
-      const response = await firstValueFrom(this.backend.getVideoMaskData(frameIdx));
-      if (token !== this.state.frameLoadToken || generation !== this.maskGeneration) {
-        return;
+    const abort = new Subject<void>();
+    let cancelled = false;
+    const pending: PendingMasks = {
+      cancel: () => {
+        cancelled = true;
+        abort.next();
+        abort.complete();
+      },
+      promise: Promise.resolve(null),
+    };
+    this.pendingMasks.set(frameIdx, pending);
+    pending.promise = (async () => {
+      if (cancelled) return null;
+      try {
+        const response = await firstValueFrom(
+          this.backend.getVideoMaskData(frameIdx).pipe(takeUntil(abort)),
+        );
+        if (cancelled || generation !== this.maskGeneration || (response as any)?.error)
+          return null;
+        const masks = response.objects || {};
+        this.state.maskDataCache.set(frameIdx, masks);
+        evictWithLimit(this.state.maskDataCache, this.state.maxFrameCacheSize);
+        return masks;
+      } catch (error) {
+        if (!cancelled && generation === this.maskGeneration) console.error(error);
+        return null;
+      } finally {
+        if (this.pendingMasks.get(frameIdx) === pending) this.pendingMasks.delete(frameIdx);
+        abort.complete();
       }
-      if ((response as any)?.error) {
-        this.state.currentMaskObjects = {};
-        return;
-      }
-      this.state.currentMaskObjects = response.objects || {};
-      this.state.maskDataCache.set(frameIdx, this.state.currentMaskObjects);
-    } catch (error) {
-      if (token !== this.state.frameLoadToken || generation !== this.maskGeneration) {
-        return;
-      }
-      console.error(error);
-      this.state.currentMaskObjects = {};
-    }
+    })();
+    return pending.promise;
   }
 }
