@@ -167,14 +167,55 @@
       <div class="section">
         <h3>Objects</h3>
         <div class="object-list">
-          <div
-            *ngFor="let obj of store.objects()"
-            class="object-item"
-            [class.selected]="store.selectedObjectId() === obj.id"
-            (click)="store.selectedObjectId.set(obj.id)"
-          >
-            <span class="color-indicator" [style.background-color]="obj.color"></span>
-            {{ obj.name }}
+          <div *ngFor="let obj of store.objectPointGroups()" class="object-family">
+            <button
+              type="button"
+              class="object-item"
+              [class.selected]="store.selectedObjectId() === obj.id"
+              [disabled]="store.isInteractionBusy()"
+              (click)="store.selectedObjectId.set(obj.id)"
+              [attr.aria-pressed]="store.selectedObjectId() === obj.id"
+            >
+              <span class="color-indicator" [style.background-color]="obj.color"></span>
+              <span>{{ obj.name }}</span>
+              <small>{{ obj.children.length }} points</small>
+            </button>
+            <div class="object-children" *ngIf="store.selectedObjectId() === obj.id">
+              <label>
+                Object label
+                <input
+                  #objectLabel
+                  type="text"
+                  [value]="obj.name"
+                  maxlength="200"
+                  [disabled]="store.isInteractionBusy()"
+                  (change)="renameObject(obj.id, objectLabel)"
+                  (keydown.enter)="renameObject(obj.id, objectLabel)"
+                />
+              </label>
+              <p *ngIf="!obj.children.length" class="point-empty">
+                Click the canvas to add child points.
+              </p>
+              <ul class="child-point-list" aria-label="Child points">
+                <li *ngFor="let point of obj.children">
+                  <button
+                    type="button"
+                    [disabled]="store.isInteractionBusy()"
+                    [class.current-frame]="store.displayedFrameIdx() === point.frameIdx"
+                    (click)="showObjectPoint(obj.id, point.frameIdx)"
+                  >
+                    <span
+                      >{{ point.label === 1 ? 'Positive' : 'Negative' }} point
+                      {{ point.number }}</span
+                    >
+                    <small
+                      >Frame {{ point.frameIdx }} · ({{ point.x | number: '1.0-1' }},
+                      {{ point.y | number: '1.0-1' }})</small
+                    >
+                  </button>
+                </li>
+              </ul>
+            </div>
           </div>
         </div>
         <div class="button-group">

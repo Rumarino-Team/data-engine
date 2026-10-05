@@ -302,6 +302,17 @@ export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
     this.actions.addObject();
   }
 
+  renameObject(id: number, input: HTMLInputElement): void {
+    this.actions.renameObject(id, input.value);
+    input.value = this.store.objects().find((object) => object.id === id)?.name ?? '';
+  }
+
+  showObjectPoint(objectId: number, frameIdx: number): void {
+    if (this.store.isInteractionBusy()) return;
+    this.store.selectedObjectId.set(objectId);
+    this.onScrubberFrameChange(frameIdx);
+  }
+
   removeObject(): void {
     this.actions.removeObject();
   }

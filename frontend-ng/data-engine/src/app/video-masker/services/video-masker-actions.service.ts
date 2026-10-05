@@ -483,6 +483,16 @@ export class VideoMaskerActionsService {
 
   // --- objects -----------------------------------------------------------
 
+  renameObject(id: number, value: string): void {
+    if (this.isBusy) return;
+    const name = value.trim().slice(0, 200);
+    if (!name) return;
+    this.store.objects.update((objects) =>
+      objects.map((object) => (object.id === id ? { ...object, name } : object)),
+    );
+    this.framePipeline.redraw();
+  }
+
   addObject(): void {
     if (this.isBusy) return;
     const newId = this.reserveNextObjectId();

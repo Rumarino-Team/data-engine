@@ -110,6 +110,46 @@ describe('VideoMaskerComponent sync contract', () => {
     component.store.displayedFrameIdx.set(5);
   });
 
+  it('shows separately placed points under their owning object and navigates to their frame', () => {
+    component.store.objects.set([
+      { id: 1, name: 'Car', color: '#ff0000' },
+      { id: 2, name: 'Person', color: '#00ff00' },
+    ]);
+    component.store.numFrames.set(20);
+    component.store.points.set(
+      new Map([
+        [10, new Map([[1, [{ x: 4, y: 5, label: 0 }]]])],
+        [
+          2,
+          new Map([
+            [2, [{ x: 8, y: 9, label: 1 }]],
+            [1, [{ x: 1, y: 3, label: 1 }]],
+          ]),
+        ],
+      ]),
+    );
+    const groups = component.store.objectPointGroups();
+    expect(groups[0].children.map((point) => point.frameIdx)).toEqual([2, 10]);
+    expect(groups[1].children).toHaveLength(1);
+    component.showObjectPoint(2, 2);
+    expect(component.store.selectedObjectId()).toBe(2);
+    expect(component.store.targetFrameIdx()).toBe(2);
+    component.store.isPointRequestInFlight.set(true);
+    component.showObjectPoint(1, 10);
+    expect(component.store.targetFrameIdx()).toBe(2);
+    expect(component.store.selectedObjectId()).toBe(2);
+  });
+
+  it('edits object labels without changing point ownership and rejects blank labels', () => {
+    const input = document.createElement('input');
+    input.value = '  Left hand  ';
+    component.renameObject(1, input);
+    expect(component.store.objects()[0]).toEqual({ id: 1, name: 'Left hand', color: '#ff0000' });
+    input.value = '   ';
+    component.renameObject(1, input);
+    expect(input.value).toBe('Left hand');
+  });
+
   it('allocates unique IDs across sparse objects and removal of the highest ID', () => {
     component.store.objects.set([
       { id: 1, name: 'One', color: '#ff0000' },
@@ -1055,6 +1095,7 @@ describe('VideoMaskerComponent sync contract', () => {
     );
     component.store.isInitialized.set(true);
     component.store.saveName.set('review-run');
+    component.actions.renameObject(1, 'Left hand');
 
     component.save();
     await Promise.resolve();
@@ -1063,7 +1104,7 @@ describe('VideoMaskerComponent sync contract', () => {
       'review-run',
       expect.objectContaining({
         version: 1,
-        objects: expect.any(Array),
+        objects: [{ id: 1, name: 'Left hand', color: '#ff0000' }],
         points: expect.any(Array),
         live_masks: expect.any(Array),
       }),

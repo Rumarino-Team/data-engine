@@ -47,6 +47,19 @@ export class VideoMaskerStateStore {
 
   masks = signal<Map<number, Map<number, boolean[][]>>>(new Map());
   points = signal<Map<number, Map<number, Point[]>>>(new Map());
+  objectPointGroups = computed(() => {
+    const frames = Array.from(this.points().entries()).sort(([a], [b]) => a - b);
+    return this.objects().map((object) => ({
+      ...object,
+      children: frames.flatMap(([frameIdx, objects]) =>
+        (objects.get(object.id) ?? []).map((point, index) => ({
+          ...point,
+          frameIdx,
+          number: index + 1,
+        })),
+      ),
+    }));
+  });
   liveEditedObjectFrames = signal<Map<number, Set<number>>>(new Map());
   hasManifestMasks = signal<boolean>(false);
   saveName = signal<string>('');
