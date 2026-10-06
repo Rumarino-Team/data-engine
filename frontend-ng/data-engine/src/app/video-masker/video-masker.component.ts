@@ -313,6 +313,12 @@ export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
     this.onScrubberFrameChange(frameIdx);
   }
 
+  removePoint(objectId: number, frameIdx: number, pointNumber: number): void {
+    if (this.store.isInteractionBusy()) return;
+    this.showObjectPoint(objectId, frameIdx);
+    void this.actions.removePoint(objectId, frameIdx, pointNumber - 1);
+  }
+
   removeObject(): void {
     this.actions.removeObject();
   }

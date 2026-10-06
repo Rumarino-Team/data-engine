@@ -118,6 +118,27 @@ describe('FramePipelineService', () => {
     expect(store.lastMaskSource()).toBe('none');
   });
 
+  it('renders a returned live mask once even when that object was not the clicked object', async () => {
+    const liveMask = [[false, true]];
+    store.selectedObjectId.set(1);
+    store.masks.set(new Map([[0, new Map([[1, liveMask]])]]));
+    const image = await startFrame(0);
+    await image.onload?.();
+    expect(viewport.render.mock.lastCall![1]).toEqual([
+      { objectId: 1, color: '#ff0000', source: liveMask },
+    ]);
+    expect(store.lastMaskSource()).toBe('live');
+  });
+
+  it('does not resurrect a saved mask behind an empty live result for another object', async () => {
+    store.selectedObjectId.set(1);
+    store.masks.set(new Map([[0, new Map([[1, [[false, false]]]])]]));
+    const image = await startFrame(0);
+    await image.onload?.();
+    expect(viewport.render.mock.lastCall![1]).toEqual([]);
+    expect(store.lastMaskSource()).toBe('none');
+  });
+
   it('does not paint deleted objects from cached or refetched manifests', async () => {
     const image = await startFrame(0);
     await image.onload?.();

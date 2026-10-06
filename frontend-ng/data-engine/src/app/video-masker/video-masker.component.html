@@ -143,6 +143,15 @@
         >
           Pan
         </button>
+        <button
+          type="button"
+          (click)="viewport.toggleMasksOnly()"
+          [disabled]="!viewport.ready()"
+          [attr.aria-pressed]="viewport.masksOnly()"
+          title="Hide the video image and annotations to view only masks"
+        >
+          Masks only
+        </button>
         <span id="canvas-help">Scroll to zoom · Space + drag to pan</span>
       </div>
       <div
@@ -168,31 +177,38 @@
         <h3>Objects</h3>
         <div class="object-list">
           <div *ngFor="let obj of store.objectPointGroups()" class="object-family">
-            <button
-              type="button"
-              class="object-item"
-              [class.selected]="store.selectedObjectId() === obj.id"
-              [disabled]="store.isInteractionBusy()"
-              (click)="store.selectedObjectId.set(obj.id)"
-              [attr.aria-pressed]="store.selectedObjectId() === obj.id"
+            <div
+              *ngIf="store.selectedObjectId() === obj.id; else unselectedObject"
+              class="object-item selected"
             >
               <span class="color-indicator" [style.background-color]="obj.color"></span>
-              <span>{{ obj.name }}</span>
+              <input
+                #objectLabel
+                type="text"
+                class="object-name-input"
+                aria-label="Object label"
+                [value]="obj.name"
+                maxlength="200"
+                [disabled]="store.isInteractionBusy()"
+                (change)="renameObject(obj.id, objectLabel)"
+                (keydown.enter)="objectLabel.blur()"
+              />
               <small>{{ obj.children.length }} points</small>
-            </button>
+            </div>
+            <ng-template #unselectedObject>
+              <button
+                type="button"
+                class="object-item"
+                [disabled]="store.isInteractionBusy()"
+                (click)="store.selectedObjectId.set(obj.id)"
+                aria-pressed="false"
+              >
+                <span class="color-indicator" [style.background-color]="obj.color"></span>
+                <span>{{ obj.name }}</span>
+                <small>{{ obj.children.length }} points</small>
+              </button>
+            </ng-template>
             <div class="object-children" *ngIf="store.selectedObjectId() === obj.id">
-              <label>
-                Object label
-                <input
-                  #objectLabel
-                  type="text"
-                  [value]="obj.name"
-                  maxlength="200"
-                  [disabled]="store.isInteractionBusy()"
-                  (change)="renameObject(obj.id, objectLabel)"
-                  (keydown.enter)="renameObject(obj.id, objectLabel)"
-                />
-              </label>
               <p *ngIf="!obj.children.length" class="point-empty">
                 Click the canvas to add child points.
               </p>
@@ -200,6 +216,7 @@
                 <li *ngFor="let point of obj.children">
                   <button
                     type="button"
+                    class="point-show"
                     [disabled]="store.isInteractionBusy()"
                     [class.current-frame]="store.displayedFrameIdx() === point.frameIdx"
                     (click)="showObjectPoint(obj.id, point.frameIdx)"
@@ -212,6 +229,18 @@
                       >Frame {{ point.frameIdx }} · ({{ point.x | number: '1.0-1' }},
                       {{ point.y | number: '1.0-1' }})</small
                     >
+                  </button>
+                  <button
+                    type="button"
+                    class="point-remove"
+                    [disabled]="store.isInteractionBusy()"
+                    [attr.aria-label]="
+                      'Remove point ' + point.number + ' on frame ' + point.frameIdx
+                    "
+                    title="Remove point"
+                    (click)="removePoint(obj.id, point.frameIdx, point.number)"
+                  >
+                    ×
                   </button>
                 </li>
               </ul>
@@ -286,7 +315,7 @@
                 !store.isInitialized() || store.isInteractionBusy() || store.displayedFrameIdx() < 0
               "
             >
-              Start Frame: {{ store.propagationStartFrameIdx() }}
+              Start Frame
             </button>
             <button
               class="panel-action-btn"
@@ -295,7 +324,7 @@
                 !store.isInitialized() || store.isInteractionBusy() || store.displayedFrameIdx() < 0
               "
             >
-              End Frame: {{ store.propagationEndFrameIdx() }}
+              End Frame
             </button>
           </div>
           <button

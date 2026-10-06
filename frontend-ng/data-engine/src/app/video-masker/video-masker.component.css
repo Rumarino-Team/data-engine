@@ -231,11 +231,24 @@
   display: flex;
   align-items: center;
   gap: 5px;
+  box-sizing: border-box;
 }
 
 .object-item small {
   margin-left: auto;
   white-space: nowrap;
+}
+
+.object-name-input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  border: 1px solid transparent;
+  background: none;
+}
+.object-name-input:focus {
+  border-color: #5b7cfa;
+  background: #fff;
 }
 
 .object-children {
@@ -250,16 +263,20 @@
   margin: 0;
 }
 
-.child-point-list button {
+.child-point-list li {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  width: 100%;
-  text-align: left;
+  gap: 4px;
   margin-top: 4px;
 }
 
-.child-point-list button.current-frame {
+.point-show {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.point-show.current-frame {
   background: #e8eeff;
   border-color: #5b7cfa;
 }
@@ -307,10 +324,8 @@
   border: 1px solid #d7d7d7;
   border-radius: 4px;
   background: #fafafa;
-  transition:
-    background-color 120ms ease,
-    border-color 120ms ease,
-    color 120ms ease;
+  position: relative;
+  transition: 120ms ease;
 }
 
 .tool-group label input {
@@ -387,7 +402,9 @@
 
 .propagation-range .panel-action-btn {
   min-width: 0;
-  font-size: 0.8rem;
+  padding: 7px 4px;
+  font-size: 0.75rem;
+  text-align: center;
   white-space: nowrap;
 }
 

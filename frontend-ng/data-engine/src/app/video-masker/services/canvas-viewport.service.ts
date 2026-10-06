@@ -22,6 +22,7 @@ export class CanvasViewportService {
   readonly panMode = signal(false);
   readonly spacePressed = signal(false);
   readonly panning = signal(false);
+  readonly masksOnly = signal(false);
   private stage: Stage | null = null;
   private scene: Group | null = null;
   private frame: CanvasImage | null = null;
@@ -53,9 +54,9 @@ export class CanvasViewportService {
     });
     const layer = new Layer({ listening: false });
     this.scene = new Group();
-    this.frame = new CanvasImage({ image: undefined });
+    this.frame = new CanvasImage({ image: undefined, visible: !this.masksOnly() });
     this.masks = new Group({ name: 'masks' });
-    this.annotations = new Group();
+    this.annotations = new Group({ visible: !this.masksOnly() });
     this.scene.add(this.frame, this.masks, this.annotations);
     layer.add(this.scene);
     this.stage.add(layer);
@@ -180,6 +181,13 @@ export class CanvasViewportService {
     this.masks = null;
     this.annotations = null;
     this.reset();
+  }
+
+  toggleMasksOnly(): void {
+    this.masksOnly.update((enabled) => !enabled);
+    this.frame?.visible(!this.masksOnly());
+    this.annotations?.visible(!this.masksOnly());
+    this.stage?.batchDraw();
   }
 
   reset(): void {

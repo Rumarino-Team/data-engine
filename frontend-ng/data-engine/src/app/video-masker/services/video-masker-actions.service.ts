@@ -404,7 +404,16 @@ export class VideoMaskerActionsService {
     if (!response) {
       return;
     }
+    const previousMasks = this.store.masks();
+    const previousLiveEdits = this.store.liveEditedObjectFrames();
     this.updateStateEpoch(response.state_epoch, 'propagation');
+    // The restored predictor has a new epoch, but propagation only replaces this range.
+    this.store.masks.set(
+      new Map([...previousMasks].filter(([frame]) => frame < startFrameIdx || frame > endFrameIdx)),
+    );
+    this.store.liveEditedObjectFrames.set(
+      new Map([...previousLiveEdits].filter(([frame]) => frame < startFrameIdx || frame > endFrameIdx)),
+    );
     const maskManifestPath = response.mask_manifest_path || response['state.mask_manifest_path'];
     this.store.hasManifestMasks.set(Boolean(maskManifestPath));
     if (response.tracked_points_skipped_reason) {
@@ -598,15 +607,68 @@ export class VideoMaskerActionsService {
     const objId = this.store.selectedObjectId();
     if (objId === null || !this.store.objects().some((object) => object.id === objId)) return;
 
-    const expectedEpoch = this.store.stateEpoch();
+    const previousObjectPoints = this.store.points().get(frameIdx)?.get(objId) || [];
+    await this.submitObjectPoints(objId, frameIdx, previousObjectPoints, [
+      ...previousObjectPoints,
+      { x, y, label },
+    ]);
+  }
 
+  /** Removes one prompt point and re-segments the object on that frame from the rest. */
+  async removePoint(objId: number, frameIdx: number, pointIndex: number): Promise<void> {
+    if (this.isBusy) return;
+    const previousObjectPoints = this.store.points().get(frameIdx)?.get(objId) || [];
+    if (pointIndex < 0 || pointIndex >= previousObjectPoints.length) return;
+    const objectPoints = previousObjectPoints.filter((_point, index) => index !== pointIndex);
+    if (objectPoints.length > 0) {
+      await this.submitObjectPoints(objId, frameIdx, previousObjectPoints, objectPoints, false);
+      return;
+    }
+
+    this.store.isPointRequestInFlight.set(true);
+    try {
+      const response = await firstValueFrom(this.backend.clearAllPromptsInFrame(frameIdx, objId));
+      if (response?.error) throw new Error(response.error);
+      this.setObjectPoints(frameIdx, objId, []);
+      const masksMap = new Map(this.store.masks());
+      const frameMasksMap = new Map(masksMap.get(frameIdx) || new Map<number, LiveMask>());
+      frameMasksMap.delete(objId);
+      if (frameMasksMap.size) masksMap.set(frameIdx, frameMasksMap);
+      else masksMap.delete(frameIdx);
+      this.store.masks.set(masksMap);
+      this.unmarkObjectAsLiveEdited(frameIdx, objId);
+      this.invalidateTracking();
+      this.framePipeline.redraw();
+    } catch (error) {
+      this.showError('Point removal failed', 'Unable to remove point.', error);
+    } finally {
+      this.store.isPointRequestInFlight.set(false);
+    }
+  }
+
+  private setObjectPoints(frameIdx: number, objId: number, objectPoints: Point[]): void {
     const pointsMap = new Map(this.store.points());
     const framePointsMap = new Map(pointsMap.get(frameIdx) || new Map<number, Point[]>());
-    const previousObjectPoints = framePointsMap.get(objId) || [];
-    const objectPoints = [...previousObjectPoints, { x, y, label }];
-    framePointsMap.set(objId, objectPoints);
-    pointsMap.set(frameIdx, framePointsMap);
+    if (objectPoints.length > 0) framePointsMap.set(objId, objectPoints);
+    else framePointsMap.delete(objId);
+    if (framePointsMap.size > 0) pointsMap.set(frameIdx, framePointsMap);
+    else pointsMap.delete(frameIdx);
     this.store.points.set(pointsMap);
+  }
+
+  /**
+   * Replaces the object's prompt points on a frame and applies the backend's mask response,
+   * rolling back to `previousObjectPoints` on failure.
+   */
+  private async submitObjectPoints(
+    objId: number,
+    frameIdx: number,
+    previousObjectPoints: Point[],
+    objectPoints: Point[],
+    requireDisplayedFrame = true,
+  ): Promise<void> {
+    const expectedEpoch = this.store.stateEpoch();
+    this.setObjectPoints(frameIdx, objId, objectPoints);
 
     const requestFrameIdx = frameIdx;
     this.store.lastClickRequestFrameIdx.set(requestFrameIdx);
@@ -677,7 +739,7 @@ export class VideoMaskerActionsService {
         throw new Error(reason);
       }
 
-      if (this.store.displayedFrameIdx() !== requestFrameIdx) {
+      if (requireDisplayedFrame && this.store.displayedFrameIdx() !== requestFrameIdx) {
         const reason = `Discarded response because displayed frame moved from ${requestFrameIdx} to ${this.store.displayedFrameIdx()}.`;
         this.store.lastDiscardReason.set(reason);
         throw new Error(reason);
@@ -742,24 +804,10 @@ export class VideoMaskerActionsService {
         !this.store.objects().some((object) => object.id === objId)
       )
         return;
-      const rollbackPointsMap = new Map(this.store.points());
-      const rollbackFramePointsMap = new Map(
-        rollbackPointsMap.get(frameIdx) || new Map<number, Point[]>(),
-      );
-      if (previousObjectPoints.length > 0) {
-        rollbackFramePointsMap.set(objId, previousObjectPoints);
-      } else {
-        rollbackFramePointsMap.delete(objId);
-      }
-      if (rollbackFramePointsMap.size === 0) {
-        rollbackPointsMap.delete(frameIdx);
-      } else {
-        rollbackPointsMap.set(frameIdx, rollbackFramePointsMap);
-      }
       if (!liveEditedBeforeRequest) {
         this.unmarkObjectAsLiveEdited(frameIdx, objId);
       }
-      this.store.points.set(rollbackPointsMap);
+      this.setObjectPoints(frameIdx, objId, previousObjectPoints);
       this.framePipeline.redraw();
     } finally {
       this.store.isPointRequestInFlight.set(false);

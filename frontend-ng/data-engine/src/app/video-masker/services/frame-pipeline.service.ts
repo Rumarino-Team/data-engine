@@ -176,7 +176,11 @@ export class FramePipelineService {
     if (this.store.hasManifestMasks() && Object.keys(this.state.currentMaskObjects).length > 0) {
       for (const [objIdStr, maskData] of Object.entries(this.state.currentMaskObjects)) {
         const objId = parseInt(objIdStr, 10);
-        if (liveEditedObjectIds.has(objId) || this.removedObjectIds.has(objId)) {
+        if (
+          liveFrameMasks?.has(objId) ||
+          liveEditedObjectIds.has(objId) ||
+          this.removedObjectIds.has(objId)
+        ) {
           continue;
         }
         const obj = this.store.objects().find((candidate) => candidate.id === objId);
@@ -204,6 +208,7 @@ export class FramePipelineService {
       if (hasLiveMask) {
         maskSource = 'live';
       } else if (
+        !liveFrameMasks?.has(selectedObjectId) &&
         !isObjectLiveEdited(this.store.liveEditedObjectFrames(), frameIdx, selectedObjectId) &&
         Boolean(this.state.currentMaskObjects[String(selectedObjectId)])
       ) {

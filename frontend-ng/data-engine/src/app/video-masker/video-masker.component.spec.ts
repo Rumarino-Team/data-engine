@@ -1025,7 +1025,7 @@ describe('VideoMaskerComponent sync contract', () => {
     ]);
   });
 
-  it('enables manifest mask loading after propagation with legacy manifest key', async () => {
+  it('loads the propagated manifest while preserving live masks outside the requested range', async () => {
     backendMock.propagateInVideo.mockReturnValue(
       of({
         job_id: 'job-propagate',
@@ -1068,14 +1068,27 @@ describe('VideoMaskerComponent sync contract', () => {
       }),
     );
     component.store.isInitialized.set(true);
-    component.store.numFrames.set(2);
-    component.store.propagationEndFrameIdx.set(1);
+    component.store.numFrames.set(5);
+    component.store.stateEpoch.set(2);
+    component.store.propagationStartFrameIdx.set(1);
+    component.store.propagationEndFrameIdx.set(2);
+    const originalMask = [[true, false]];
+    component.store.masks.set(
+      new Map([0, 1, 2, 4].map((frame) => [frame, new Map([[1, originalMask]])])),
+    );
+    component.store.liveEditedObjectFrames.set(
+      new Map([0, 1, 2, 4].map((frame) => [frame, new Set([1])])),
+    );
 
     await component.propagate();
 
     expect(component.store.hasManifestMasks()).toBe(true);
+    expect(component.store.stateEpoch()).toBe(3);
+    expect([...component.store.masks().keys()]).toEqual([0, 4]);
+    expect(component.store.masks().get(4)?.get(1)).toBe(originalMask);
+    expect([...component.store.liveEditedObjectFrames().keys()]).toEqual([0, 4]);
     expect(backendMock.propagateInVideo).toHaveBeenCalledWith({
-      start_frame_idx: 0,
+      start_frame_idx: 1,
       max_frame_num_to_track: 2,
       include_masks_in_response: false,
       include_saved_mask_paths: false,
