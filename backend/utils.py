@@ -194,7 +194,7 @@ def save_video_masks(video_dir, video_segments):
     return saved_paths
 
 
-def prepare_video_masks_output(video_dir, masks_dir=None):
+def prepare_video_masks_output(video_dir, masks_dir=None, *, clear_existing=True):
     """
     Prepare output directory and frame file list for streaming mask writes.
 
@@ -205,7 +205,7 @@ def prepare_video_masks_output(video_dir, masks_dir=None):
     video_path = Path(video_dir)
     masks_dir = Path(masks_dir) if masks_dir is not None else video_path / "masks"
 
-    if masks_dir.exists():
+    if clear_existing and masks_dir.exists():
         shutil.rmtree(masks_dir)
     masks_dir.mkdir(exist_ok=True)
 

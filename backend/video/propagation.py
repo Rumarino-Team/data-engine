@@ -12,7 +12,7 @@ from core.state import state
 from schemas.video import VideoPropagateRequest
 from sessions.cache import clear_window_cache
 from sessions.metadata import current_masks_dir, write_session_metadata
-from utils import build_empty_mask_manifest, prepare_video_masks_output, save_single_video_mask_frame, write_mask_manifest
+from utils import build_empty_mask_manifest, load_mask_manifest, prepare_video_masks_output, save_single_video_mask_frame, write_mask_manifest
 from video.io import build_window_dir
 from video.masks import manifest_frame_payload
 from video.prompts import restore_video_masker_from_prompt_events
@@ -130,8 +130,8 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="Video session cache is not initialized.")
     clear_window_cache()
     update_job(
-        stage="clearing_previous_masks",
-        stage_label="Clearing previous masks",
+        stage="preparing_masks",
+        stage_label="Preparing mask output",
         progress=0.02,
         current=0,
         total=expected_total_frames,
@@ -142,7 +142,7 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
         message="Preparing mask output directory",
     )
 
-    frame_files, masks_dir = prepare_video_masks_output(state.video_dir, masks_root)
+    frame_files, masks_dir = prepare_video_masks_output(state.video_dir, masks_root, clear_existing=False)
     manifest_file_path = masks_dir / "manifest.json"
 
     first_frame = cv2.imread(str(Path(state.video_dir) / state.video_frame_files[start_frame_idx]))
@@ -157,6 +157,9 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
         frame_width=int(first_frame.shape[1]),
     )
     manifest_frames: dict[str, Any] = manifest["frames"]
+    if manifest_file_path.exists():
+        # Each processed frame replaces its previous result; other ranges survive.
+        manifest_frames.update(load_mask_manifest(manifest_file_path).get("frames", {}))
     frame_height = int(first_frame.shape[0])
     frame_width = int(first_frame.shape[1])
 

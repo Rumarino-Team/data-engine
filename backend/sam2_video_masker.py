@@ -2,11 +2,22 @@ import torch
 import numpy as np
 import os
 import gc
+from contextlib import nullcontext
+from functools import wraps
 from pathlib import Path
 from typing import Callable, Optional
 from sam2.sam2_video_predictor import SAM2VideoPredictor
 from utils import extract_video_to_frames
 from core.config import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, PROJECT_ROOT, GENERATED_FRAMES_ROOT
+
+
+def _with_inference_context(method):
+    @wraps(method)
+    def run(self, *args, **kwargs):
+        # Autocast is thread-local: jobs and HTTP requests need their own scope.
+        with torch.inference_mode(), self._autocast_context():
+            return method(self, *args, **kwargs)
+    return run
 
 
 class SAM2VideoMasker:
@@ -22,6 +33,7 @@ class SAM2VideoMasker:
 
         print(f"Utilizing device: {self.device}")
 
+        self.autocast_dtype = None
         if self.device.type == "cuda":
             device_props = torch.cuda.get_device_properties(0)
             gpu_name = device_props.name
@@ -32,8 +44,7 @@ class SAM2VideoMasker:
             supports_bf16 = bool(getattr(torch.cuda, "is_bf16_supported", lambda: False)())
             use_bf16 = is_ampere_or_newer and supports_bf16
 
-            autocast_dtype = torch.bfloat16 if use_bf16 else torch.float16
-            torch.autocast("cuda", dtype=autocast_dtype).__enter__()
+            self.autocast_dtype = torch.bfloat16 if use_bf16 else torch.float16
 
             torch.backends.cuda.matmul.allow_tf32 = is_ampere_or_newer
             torch.backends.cudnn.allow_tf32 = is_ampere_or_newer
@@ -49,12 +60,13 @@ class SAM2VideoMasker:
                 "CUDA precision config | "
                 f"GPU: {gpu_name} (cc {compute_capability[0]}.{compute_capability[1]}) | "
                 f"family: {gpu_family} | "
-                f"autocast: {autocast_dtype} | "
+                f"per-operation autocast: {self.autocast_dtype} | "
                 f"tf32: {is_ampere_or_newer}"
             )
 
         _report("loading_sam2_model", "Loading SAM2 model", None, "Loading SAM2 model weights")
-        self.predictor = SAM2VideoPredictor.from_pretrained("facebook/sam2.1-hiera-large", device=self.device)
+        with self._autocast_context():
+            self.predictor = SAM2VideoPredictor.from_pretrained("facebook/sam2.1-hiera-large", device=self.device)
         _report("model_ready", "SAM2 model ready", 0.35, "SAM2 model loaded")
 
         self.inference_state = None
@@ -63,6 +75,12 @@ class SAM2VideoMasker:
         self.offload_video_to_cpu = True
         self.offload_state_to_cpu = False
     
+    def _autocast_context(self):
+        if self.device.type == "cuda":
+            return torch.autocast("cuda", dtype=self.autocast_dtype)
+        return nullcontext()
+
+    @_with_inference_context
     def init_state(
         self,
         video_dir,
@@ -140,9 +158,11 @@ class SAM2VideoMasker:
                 "SAM2 state initialized; indexing frame files",
             )
 
+    @_with_inference_context
     def reset_state(self):
         self.predictor.reset_state(self.inference_state)
 
+    @_with_inference_context
     def add_new_points_or_box(self, frame_idx, obj_id, points=None, labels=None, clear_old_points=True, box=None):
         out_frame_idx, out_obj_ids, out_mask_logits = self.predictor.add_new_points_or_box(
             inference_state=self.inference_state,
@@ -156,6 +176,7 @@ class SAM2VideoMasker:
 
         return out_frame_idx, out_obj_ids, out_mask_logits
 
+    @_with_inference_context
     def add_new_mask(self, frame_idx, obj_id, mask):
         """Add new mask to a frame."""
         frame_idx, out_obj_ids, out_mask_logits = self.predictor.add_new_mask(
@@ -368,6 +389,9 @@ class SAM2VideoMasker:
 
         return video_segments if collect_segments else {}
 
+    # Keep the context active while consuming the predictor's lazy generator,
+    # including batched preflight and every batch, not just generator creation.
+    @_with_inference_context
     def propagate_in_video(
         self,
         start_frame_idx=None,
@@ -407,6 +431,7 @@ class SAM2VideoMasker:
 
         return video_segments if collect_segments else {}
 
+    @_with_inference_context
     def clear_all_prompts_in_frame(self, frame_idx, obj_id):
         self.predictor.clear_all_prompts_in_frame(
             inference_state=self.inference_state,
@@ -414,6 +439,7 @@ class SAM2VideoMasker:
         )
         return
 
+    @_with_inference_context
     def remove_object(self, obj_id):
         self.predictor.remove_object(
             inference_state=self.inference_state,
