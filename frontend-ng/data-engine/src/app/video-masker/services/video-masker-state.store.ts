@@ -42,6 +42,15 @@ export class VideoMaskerStateStore {
   propagationEndFrameIdx = signal<number>(0);
   stateEpoch = signal<number>(0);
 
+  // Session-scoped bookkeeping shared by object and tracking workflows.
+  nextObjectId = 1;
+  trackingRevision = 0;
+
+  invalidateTracking(): void {
+    this.trackingRevision++;
+    this.trackedPoints.set([]);
+  }
+
   objects = signal<MaskObject[]>([]);
   selectedObjectId = signal<number | null>(null);
   interactionMode = signal<'positive' | 'negative'>('positive');

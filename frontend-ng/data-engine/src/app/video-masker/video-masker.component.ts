@@ -15,6 +15,8 @@ import { ToastStackComponent } from './components/toast-stack/toast-stack.compon
 import { VideoMaskerStateStore } from './services/video-masker-state.store';
 import { FramePipelineService } from './services/frame-pipeline.service';
 import { CanvasViewportService } from './services/canvas-viewport.service';
+import { ObjectSidebarComponent } from './components/object-sidebar/object-sidebar.component';
+import { ObjectOperationsService } from './services/object-operations.service';
 import { VideoMaskerActionsService } from './services/video-masker-actions.service';
 import { LoadSourceMode } from './state/video-masker-ui.types';
 import {
@@ -33,7 +35,13 @@ import {
 @Component({
   selector: 'app-video-masker',
   standalone: true,
-  imports: [CommonModule, FormsModule, ToastStackComponent, JobStatusPanelComponent],
+  imports: [
+    CommonModule,
+    FormsModule,
+    ToastStackComponent,
+    JobStatusPanelComponent,
+    ObjectSidebarComponent,
+  ],
   templateUrl: './video-masker.component.html',
   styleUrls: ['./video-masker.component.css'],
   providers: [
@@ -41,6 +49,7 @@ import {
     FramePipelineService,
     CanvasViewportService,
     VideoMaskerActionsService,
+    ObjectOperationsService,
   ],
 })
 export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
@@ -154,20 +163,6 @@ export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
     this.store.saveName.set(value);
   }
 
-  // --- API URL (delegates) --------------------------------------------------
-
-  applyApiUrl(): void {
-    this.actions.applyApiUrl();
-  }
-
-  resetApiUrl(): void {
-    this.actions.resetApiUrl();
-  }
-
-  isApiUrlDirty(): boolean {
-    return this.actions.isApiUrlDirty();
-  }
-
   // --- source picking ---------------------------------------------------
 
   openVideoFilePicker(): void {
@@ -276,61 +271,6 @@ export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
     );
   }
 
-  // --- session / workflow (delegates) -----------------------------------
-
-  initVideo(): Promise<boolean> {
-    return this.actions.initVideo();
-  }
-
-  propagate(): Promise<void> {
-    return this.actions.propagate();
-  }
-
-  runTracking(): Promise<void> {
-    return this.actions.runTracking();
-  }
-
-  clearMasks(): void {
-    this.actions.clearMasks();
-  }
-
-  save(): void {
-    this.actions.save();
-  }
-
-  addObject(): void {
-    this.actions.addObject();
-  }
-
-  renameObject(id: number, input: HTMLInputElement): void {
-    this.actions.renameObject(id, input.value);
-    input.value = this.store.objects().find((object) => object.id === id)?.name ?? '';
-  }
-
-  showObjectPoint(objectId: number, frameIdx: number): void {
-    if (this.store.isInteractionBusy()) return;
-    this.store.selectedObjectId.set(objectId);
-    this.onScrubberFrameChange(frameIdx);
-  }
-
-  removePoint(objectId: number, frameIdx: number, pointNumber: number): void {
-    if (this.store.isInteractionBusy()) return;
-    this.showObjectPoint(objectId, frameIdx);
-    void this.actions.removePoint(objectId, frameIdx, pointNumber - 1);
-  }
-
-  removeObject(): void {
-    this.actions.removeObject();
-  }
-
-  removeAllObjects(): Promise<void> {
-    return this.actions.removeAllObjects();
-  }
-
-  dismissToast(id: number): void {
-    this.actions.dismissToast(id);
-  }
-
   // --- canvas / scrubber interaction ----------------------------------
 
   onCanvasPoint(point: { x: number; y: number }): void {
@@ -350,11 +290,7 @@ export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
     if (frameIdx < 0) {
       return;
     }
-    void this.addPoint(point.x, point.y, label, frameIdx);
-  }
-
-  addPoint(x: number, y: number, label: number, frameIdx: number): Promise<void> {
-    return this.actions.addPoint(x, y, label, frameIdx);
+    void this.actions.addPoint(point.x, point.y, label, frameIdx);
   }
 
   onScrubberFrameChange(value: number | string): void {

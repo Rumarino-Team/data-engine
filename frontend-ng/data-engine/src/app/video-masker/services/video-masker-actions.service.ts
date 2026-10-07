@@ -49,16 +49,9 @@ export class VideoMaskerActionsService {
   private readonly framePipeline = inject(FramePipelineService);
 
   private lastCompletedJobId: string | null = null;
-  private nextObjectId = 1;
-  private trackingRevision = 0;
 
   private get isBusy(): boolean {
     return this.store.isInteractionBusy();
-  }
-
-  private invalidateTracking(): void {
-    this.trackingRevision++;
-    this.store.trackedPoints.set([]);
   }
 
   // --- API URL + health ------------------------------------------------------
@@ -247,8 +240,8 @@ export class VideoMaskerActionsService {
     this.store.propagationStartFrameIdx.set(0);
     this.store.propagationEndFrameIdx.set(Math.max(0, res.num_frames - 1));
     this.store.saveName.set('');
-    this.invalidateTracking();
-    this.nextObjectId = 1;
+    this.store.invalidateTracking();
+    this.store.nextObjectId = 1;
     this.resetInteractiveMaps();
     this.framePipeline.clearFrameCaches();
     this.store.objects.set([{ id: 1, name: 'Object 1', color: randomColor() }]);
@@ -412,7 +405,9 @@ export class VideoMaskerActionsService {
       new Map([...previousMasks].filter(([frame]) => frame < startFrameIdx || frame > endFrameIdx)),
     );
     this.store.liveEditedObjectFrames.set(
-      new Map([...previousLiveEdits].filter(([frame]) => frame < startFrameIdx || frame > endFrameIdx)),
+      new Map(
+        [...previousLiveEdits].filter(([frame]) => frame < startFrameIdx || frame > endFrameIdx),
+      ),
     );
     const maskManifestPath = response.mask_manifest_path || response['state.mask_manifest_path'];
     this.store.hasManifestMasks.set(Boolean(maskManifestPath));
@@ -454,7 +449,7 @@ export class VideoMaskerActionsService {
         next: (response) => {
           this.updateStateEpoch(response?.state_epoch, 'reset');
           this.store.hasManifestMasks.set(false);
-          this.invalidateTracking();
+          this.store.invalidateTracking();
           this.resetInteractiveMaps();
           this.framePipeline.clearMaskDataCache();
           this.framePipeline.scheduleFrameLoad(this.store.targetFrameIdx());
@@ -467,11 +462,12 @@ export class VideoMaskerActionsService {
   }
 
   private async loadTrackingResult(resultId: string, sourceLabel: string): Promise<boolean> {
-    const revision = this.trackingRevision;
+    const revision = this.store.trackingRevision;
     const epoch = this.store.stateEpoch();
     try {
       const response = await firstValueFrom(this.backend.getTrackingResult(resultId));
-      if (revision !== this.trackingRevision || epoch !== this.store.stateEpoch()) return false;
+      if (revision !== this.store.trackingRevision || epoch !== this.store.stateEpoch())
+        return false;
       const result: TrackPromptPointsResult = response.result;
       const trackedSeries: TrackedPointSeries[] = result.points.map((point, index) => ({
         ...point,
@@ -490,114 +486,6 @@ export class VideoMaskerActionsService {
       );
       return false;
     }
-  }
-
-  // --- objects -----------------------------------------------------------
-
-  renameObject(id: number, value: string): void {
-    if (this.isBusy) return;
-    const name = value.trim().slice(0, 200);
-    if (!name) return;
-    this.store.objects.update((objects) =>
-      objects.map((object) => (object.id === id ? { ...object, name } : object)),
-    );
-    this.framePipeline.redraw();
-  }
-
-  addObject(): void {
-    if (this.isBusy) return;
-    const newId = this.reserveNextObjectId();
-    this.nextObjectId = newId + 1;
-    this.store.objects.set([
-      ...this.store.objects(),
-      { id: newId, name: `Object ${newId}`, color: randomColor() },
-    ]);
-    this.store.selectedObjectId.set(newId);
-  }
-
-  removeObject(): void {
-    if (this.isBusy) return;
-    const id = this.store.selectedObjectId();
-    if (id === null) return;
-
-    this.reserveNextObjectId();
-    this.store.isLoading.set(true);
-    this.backend
-      .removeObject(id)
-      .pipe(finalize(() => this.store.isLoading.set(false)))
-      .subscribe({
-        next: () => {
-          this.applyObjectRemoval(id);
-        },
-        error: (error) => this.showError('Remove failed', 'Failed to remove object.', error),
-      });
-  }
-
-  async removeAllObjects(): Promise<void> {
-    if (this.isBusy) return;
-    const objectIds = this.store.objects().map((entry) => entry.id);
-    if (objectIds.length === 0) return;
-
-    this.reserveNextObjectId();
-    this.store.isLoading.set(true);
-    try {
-      for (const id of objectIds) {
-        await firstValueFrom(this.backend.removeObject(id));
-        this.applyObjectRemoval(id);
-      }
-    } catch (error) {
-      this.showError('Remove all failed', 'Failed to remove all objects.', error);
-    } finally {
-      this.store.isLoading.set(false);
-    }
-  }
-
-  private reserveNextObjectId(): number {
-    this.nextObjectId = this.store
-      .objects()
-      .reduce((next, object) => Math.max(next, object.id + 1), this.nextObjectId);
-    return this.nextObjectId;
-  }
-
-  private applyObjectRemoval(id: number): void {
-    this.store.objects.set(this.store.objects().filter((entry) => entry.id !== id));
-    this.removeObjectFromFrameMaps(id);
-    if (this.store.selectedObjectId() === id) {
-      this.store.selectedObjectId.set(this.store.objects()[0]?.id ?? null);
-    }
-    this.invalidateTracking();
-    this.framePipeline.removeObject(id);
-    this.framePipeline.redraw();
-    this.framePipeline.scheduleFrameLoad(this.store.targetFrameIdx());
-  }
-
-  private removeObjectFromFrameMaps(objectId: number): void {
-    const nextMasks = new Map(this.store.masks());
-    nextMasks.forEach((frameMap, frameIdx) => {
-      const next = new Map(frameMap);
-      next.delete(objectId);
-      if (next.size) nextMasks.set(frameIdx, next);
-      else nextMasks.delete(frameIdx);
-    });
-    this.store.masks.set(nextMasks);
-
-    const nextPoints = new Map(this.store.points());
-    nextPoints.forEach((frameMap, frameIdx) => {
-      const next = new Map(frameMap);
-      next.delete(objectId);
-      if (next.size) nextPoints.set(frameIdx, next);
-      else nextPoints.delete(frameIdx);
-    });
-    this.store.points.set(nextPoints);
-
-    const nextEdited = new Map(this.store.liveEditedObjectFrames());
-    nextEdited.forEach((ids, frameIdx) => {
-      const next = new Set(ids);
-      next.delete(objectId);
-      if (next.size) nextEdited.set(frameIdx, next);
-      else nextEdited.delete(frameIdx);
-    });
-    this.store.liveEditedObjectFrames.set(nextEdited);
   }
 
   // --- point prompting -------------------------------------------------------
@@ -637,7 +525,7 @@ export class VideoMaskerActionsService {
       else masksMap.delete(frameIdx);
       this.store.masks.set(masksMap);
       this.unmarkObjectAsLiveEdited(frameIdx, objId);
-      this.invalidateTracking();
+      this.store.invalidateTracking();
       this.framePipeline.redraw();
     } catch (error) {
       this.showError('Point removal failed', 'Unable to remove point.', error);
@@ -782,7 +670,7 @@ export class VideoMaskerActionsService {
       masksMap.set(requestFrameIdx, frameMasksMap);
       this.markObjectAsLiveEdited(requestFrameIdx, objId);
       this.store.masks.set(masksMap);
-      this.invalidateTracking();
+      this.store.invalidateTracking();
       this.framePipeline.redraw();
     } catch (error) {
       if (!responseChangedEpoch && !ownsPointUpdate()) {
