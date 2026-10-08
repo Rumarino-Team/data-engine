@@ -83,8 +83,6 @@ export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
   readonly showDebugUi = isDevMode();
   apiUrlInputHasFocus = false;
 
-  private healthTimerId: ReturnType<typeof setInterval> | null = null;
-
   constructor() {
     this.connection.initApiUrlFromBackend();
 
@@ -107,14 +105,10 @@ export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
         this.onCanvasPoint(point),
       );
     }
-    void this.connection.checkApiHealth(true);
-    this.healthTimerId = setInterval(() => void this.connection.checkApiHealth(), 3000);
+    this.connection.checkApiHealth(true);
   }
 
   ngOnDestroy(): void {
-    if (this.healthTimerId !== null) {
-      clearInterval(this.healthTimerId);
-    }
     this.framePipeline.detach();
   }
 

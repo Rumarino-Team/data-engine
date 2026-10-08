@@ -1,4 +1,4 @@
-import { Injectable, inject } from '@angular/core';
+import { DestroyRef, Injectable, inject } from '@angular/core';
 import { VideoJobsService } from './video-jobs.service';
 import { VideoMaskerStateStore } from './video-masker-state.store';
 import { ToastService } from './toast.service';
@@ -6,6 +6,7 @@ import { ToastService } from './toast.service';
 /** Keeps the editor busy and displays progress for one backend job. */
 @Injectable()
 export class EditorJobService {
+  private readonly destroyRef = inject(DestroyRef);
   private readonly jobs = inject(VideoJobsService);
   private readonly store = inject(VideoMaskerStateStore);
   private readonly toast = inject(ToastService);
@@ -16,6 +17,7 @@ export class EditorJobService {
   ): Promise<{ result: T | null; completedJobId: string | null }> {
     return this.jobs.run<T>({
       title,
+      destroyRef: this.destroyRef,
       startJob,
       onStart: () => {
         this.store.isLoading.set(true);
