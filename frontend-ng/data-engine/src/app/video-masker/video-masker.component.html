@@ -33,7 +33,7 @@
         {{ getBrowseLabel() }}
       </button>
       <button
-        (click)="actions.initVideo()"
+        (click)="sessions.initVideo()"
         [disabled]="
           store.isInitialized() ||
           store.isInteractionBusy() ||
@@ -73,15 +73,15 @@
       </div>
       <div class="api-button-combo">
         <button
-          (click)="actions.applyApiUrl()"
+          (click)="connection.applyApiUrl()"
           [disabled]="
-            store.isInteractionBusy() || !store.apiUrlInput().trim() || !actions.isApiUrlDirty()
+            store.isInteractionBusy() || !store.apiUrlInput().trim() || !connection.isApiUrlDirty()
           "
         >
           Apply API
         </button>
         <button
-          (click)="actions.resetApiUrl()"
+          (click)="connection.resetApiUrl()"
           [disabled]="store.isInteractionBusy() || store.apiUrlInput() === 'http://127.0.0.1:8000'"
         >
           Reset API
@@ -208,14 +208,14 @@
         <div class="action-panel">
           <button
             class="panel-action-btn"
-            (click)="actions.runTracking()"
+            (click)="tracking.runTracking()"
             [disabled]="!store.isInitialized() || store.isInteractionBusy()"
           >
             Track Prompt Points
           </button>
           <button
             class="panel-action-btn"
-            (click)="actions.propagate()"
+            (click)="propagation.propagate()"
             [disabled]="!store.isInitialized() || store.isInteractionBusy()"
           >
             Propagate Masks
@@ -242,7 +242,7 @@
           </div>
           <button
             class="panel-action-btn panel-action-btn-danger"
-            (click)="actions.clearMasks()"
+            (click)="propagation.clearMasks()"
             [disabled]="!store.isInitialized() || store.isInteractionBusy()"
           >
             Clear All Masks
@@ -282,7 +282,7 @@
           </label>
           <button
             class="action-button action-button-primary"
-            (click)="actions.save()"
+            (click)="sessions.save()"
             [disabled]="
               !store.isInitialized() || store.isInteractionBusy() || !store.saveName().trim()
             "
@@ -351,8 +351,5 @@
     [activeJobTitle]="store.activeJobTitle()"
   ></app-job-status-panel>
 
-  <app-toast-stack
-    [toasts]="store.toasts()"
-    (dismiss)="actions.dismissToast($event)"
-  ></app-toast-stack>
+  <app-toast-stack [toasts]="store.toasts()" (dismiss)="toast.dismiss($event)"></app-toast-stack>
 </div>

@@ -1,4 +1,4 @@
-import { Injectable, computed, signal } from '@angular/core';
+import { Injectable, computed, signal, inject } from '@angular/core';
 import {
   ApiHealthStatus,
   BackendJob,
@@ -6,11 +6,13 @@ import {
   LiveMask,
 } from '../../services/backend.service';
 import {
-  AppToast,
   DebugMaskSource,
   LoadSourceMode,
   TrackingOverlayStyle,
 } from '../state/video-masker-ui.types';
+
+import { ToastService } from './toast.service';
+import { resolveStateEpoch } from '../video-masker.util';
 
 export interface MaskObject {
   id: number;
@@ -85,7 +87,7 @@ export class VideoMaskerStateStore {
   apiHealthStatus = signal<ApiHealthStatus>('checking');
   activeJob = signal<BackendJob | null>(null);
   activeJobTitle = signal<string>('');
-  toasts = signal<AppToast[]>([]);
+  readonly toasts = inject(ToastService).toasts;
   lastClickRequestFrameIdx = signal<number | null>(null);
   lastBackendResponseFrameIdx = signal<number | null>(null);
   lastBackendResponseFrameFile = signal<string>('n/a');
@@ -95,4 +97,37 @@ export class VideoMaskerStateStore {
   lastFallbackUsed = signal<boolean>(false);
   lastMaskSource = signal<DebugMaskSource>('none');
   lastDiscardReason = signal<string | null>(null);
+
+  updateStateEpoch(nextEpoch: number | undefined, source: string): void {
+    const resolution = resolveStateEpoch(this.stateEpoch(), nextEpoch);
+    if (!resolution) {
+      return;
+    }
+    if (resolution.shouldClearLiveState) {
+      this.masks.set(new Map());
+      this.liveEditedObjectFrames.set(new Map());
+      this.lastDiscardReason.set(
+        `State epoch changed (${this.stateEpoch()} -> ${resolution.normalizedEpoch}) during ${source}; cleared live masks.`,
+      );
+    }
+    this.stateEpoch.set(resolution.normalizedEpoch);
+  }
+
+  resetInteractiveMaps(): void {
+    this.masks.set(new Map());
+    this.points.set(new Map());
+    this.liveEditedObjectFrames.set(new Map());
+  }
+
+  resetDebugState(): void {
+    this.lastClickRequestFrameIdx.set(null);
+    this.lastBackendResponseFrameIdx.set(null);
+    this.lastBackendResponseFrameFile.set('n/a');
+    this.lastBackendResponseStateEpoch.set(null);
+    this.lastDebugObjectId.set(null);
+    this.lastMaskPixelCount.set(null);
+    this.lastFallbackUsed.set(false);
+    this.lastMaskSource.set('none');
+    this.lastDiscardReason.set(null);
+  }
 }

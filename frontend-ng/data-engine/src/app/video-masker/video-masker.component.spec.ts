@@ -163,7 +163,7 @@ describe('VideoMaskerComponent sync contract', () => {
         ],
       ]),
     );
-    const removePoint = vi.spyOn(component.actions, 'removePoint').mockResolvedValue();
+    const removePoint = vi.spyOn(component.prompts, 'removePoint').mockResolvedValue();
     fixture.detectChanges();
     const buttons = fixture.nativeElement.querySelectorAll('app-object-sidebar .point-remove');
     buttons[1].click();
@@ -261,15 +261,15 @@ describe('VideoMaskerComponent sync contract', () => {
   it('blocks conflicting workflows while a point update is pending', async () => {
     const response$ = new Subject<VideoAddPointsResponse>();
     backendMock.addNewPointsOrBox.mockReturnValue(response$);
-    const pending = component.actions.addPoint(10, 20, 1, 5);
-    await component.actions.addPoint(30, 40, 0, 5);
+    const pending = component.prompts.addPoint(10, 20, 1, 5);
+    await component.prompts.addPoint(30, 40, 0, 5);
     objectOperations.removeObject();
     await objectOperations.removeAllObjects();
-    component.actions.clearMasks();
+    component.propagation.clearMasks();
     objectOperations.addObject();
-    component.actions.save();
-    await component.actions.propagate();
-    await component.actions.runTracking();
+    component.sessions.save();
+    await component.propagation.propagate();
+    await component.tracking.runTracking();
     expect(backendMock.addNewPointsOrBox).toHaveBeenCalledTimes(1);
     expect(backendMock.removeObject).not.toHaveBeenCalled();
     expect(backendMock.resetVideoState).not.toHaveBeenCalled();
@@ -287,7 +287,7 @@ describe('VideoMaskerComponent sync contract', () => {
     const removal$ = new Subject<unknown>();
     backendMock.removeObject.mockReturnValue(removal$);
     objectOperations.removeObject();
-    await component.actions.addPoint(10, 20, 1, 5);
+    await component.prompts.addPoint(10, 20, 1, 5);
     expect(backendMock.addNewPointsOrBox).not.toHaveBeenCalled();
     removal$.error(new Error('Removal failed'));
     expect(component.store.isInteractionBusy()).toBe(false);
@@ -299,7 +299,7 @@ describe('VideoMaskerComponent sync contract', () => {
     async (outcome) => {
       const response$ = new Subject<VideoAddPointsResponse>();
       backendMock.addNewPointsOrBox.mockReturnValue(response$);
-      const pending = component.actions.addPoint(10, 20, 1, 5);
+      const pending = component.prompts.addPoint(10, 20, 1, 5);
       component.store.stateEpoch.set(4);
       const replacementPoints = new Map([[5, new Map([[1, [{ x: 50, y: 60, label: 0 }]]])]]);
       const replacementMasks = new Map([[5, new Map([[1, [[false]]]])]]);
@@ -321,7 +321,7 @@ describe('VideoMaskerComponent sync contract', () => {
 
   it('does not move the current epoch backwards on an older backend response', async () => {
     backendMock.addNewPointsOrBox.mockReturnValue(of(makeResponse({ state_epoch: 2 })));
-    await component.actions.addPoint(10, 20, 1, 5);
+    await component.prompts.addPoint(10, 20, 1, 5);
     expect(component.store.stateEpoch()).toBe(3);
     expect(component.store.points().size).toBe(0);
   });
@@ -329,7 +329,7 @@ describe('VideoMaskerComponent sync contract', () => {
   it('rejects a response when only the current epoch changed during the request', async () => {
     const response$ = new Subject<VideoAddPointsResponse>();
     backendMock.addNewPointsOrBox.mockReturnValue(response$);
-    const pending = component.actions.addPoint(10, 20, 1, 5);
+    const pending = component.prompts.addPoint(10, 20, 1, 5);
     component.store.stateEpoch.set(4);
     response$.next(makeResponse({}));
     response$.complete();
@@ -346,12 +346,12 @@ describe('VideoMaskerComponent sync contract', () => {
     });
     const result$ = new Subject<unknown>();
     backendMock.getTrackingResult.mockReturnValue(result$);
-    const tracking = component.actions.runTracking();
+    const tracking = component.tracking.runTracking();
     await vi.waitFor(() =>
       expect(backendMock.getTrackingResult).toHaveBeenCalledWith('old-tracks'),
     );
     backendMock.addNewPointsOrBox.mockReturnValue(of(makeResponse({})));
-    await component.actions.addPoint(10, 20, 1, 5);
+    await component.prompts.addPoint(10, 20, 1, 5);
     result$.next({
       result: {
         points: [{ point_id: 'p1', obj_id: 1, source_frame_idx: 0, source_x: 1, source_y: 2 }],
@@ -382,7 +382,7 @@ describe('VideoMaskerComponent sync contract', () => {
       backendMock.addNewPointsOrBox.mockReturnValue(
         succeeds ? of(makeResponse({})) : throwError(() => new Error('Failed')),
       );
-      await component.actions.addPoint(10, 20, 1, 5);
+      await component.prompts.addPoint(10, 20, 1, 5);
       expect(component.store.trackedPoints()).toEqual(succeeds ? [] : tracks);
     },
   );
@@ -392,7 +392,7 @@ describe('VideoMaskerComponent sync contract', () => {
     component.store.targetFrameIdx.set(6);
     component.store.interactionMode.set('negative');
     vi.spyOn(component.framePipeline, 'currentBaseImage', 'get').mockReturnValue(new Image());
-    const addPoint = vi.spyOn(component.actions, 'addPoint').mockResolvedValue();
+    const addPoint = vi.spyOn(component.prompts, 'addPoint').mockResolvedValue();
     component.onCanvasPoint({ x: 200, y: 100 });
     expect(addPoint).toHaveBeenCalledWith(200, 100, 0, 5);
     component.store.isPointRequestInFlight.set(true);
@@ -421,7 +421,7 @@ describe('VideoMaskerComponent sync contract', () => {
   it('uses displayed frame index in request and stores mask on that frame', async () => {
     backendMock.addNewPointsOrBox.mockReturnValue(of(makeResponse({})));
 
-    await component.actions.addPoint(12, 24, 1, 5);
+    await component.prompts.addPoint(12, 24, 1, 5);
 
     expect(backendMock.addNewPointsOrBox).toHaveBeenCalledWith(
       expect.objectContaining({ frame_idx: 5 }),
@@ -439,7 +439,7 @@ describe('VideoMaskerComponent sync contract', () => {
       of(makeResponse({ request_frame_idx: 5, frame_idx: 4 })),
     );
 
-    await component.actions.addPoint(10, 20, 1, 5);
+    await component.prompts.addPoint(10, 20, 1, 5);
 
     expect(component.store.masks().get(5)?.get(1)).toBeUndefined();
     expect(component.store.points().get(5)?.get(1)?.length ?? 0).toBe(0);
@@ -454,7 +454,7 @@ describe('VideoMaskerComponent sync contract', () => {
     backendMock.addNewPointsOrBox.mockReturnValue(
       of(makeResponse({ out_masks: [mask], mask_encoding: undefined })),
     );
-    await component.actions.addPoint(12, 24, 1, 5);
+    await component.prompts.addPoint(12, 24, 1, 5);
     expect(component.store.masks().get(5)?.get(1)).toBe(mask);
   });
 
@@ -467,7 +467,7 @@ describe('VideoMaskerComponent sync contract', () => {
     backendMock.addNewPointsOrBox.mockReturnValue(
       of(makeResponse({ out_masks: [mask], mask_encoding: 'mixed' })),
     );
-    await component.actions.addPoint(12, 24, 1, 5);
+    await component.prompts.addPoint(12, 24, 1, 5);
     expect(component.store.masks().get(5)?.get(1)).toBe(mask);
   });
 
@@ -494,7 +494,7 @@ describe('VideoMaskerComponent sync contract', () => {
     backendMock.addNewPointsOrBox.mockReturnValue(
       of(makeResponse(overrides as Partial<VideoAddPointsResponse>)),
     );
-    await component.actions.addPoint(12, 24, 1, 5);
+    await component.prompts.addPoint(12, 24, 1, 5);
     expect(component.store.masks().get(5)?.get(1)).toBe(previous);
     expect(component.store.points().get(5)?.get(1)?.length ?? 0).toBe(0);
   });
@@ -507,7 +507,7 @@ describe('VideoMaskerComponent sync contract', () => {
 
     backendMock.addNewPointsOrBox.mockReturnValue(of(makeResponse({ state_epoch: 4 })));
 
-    await component.actions.addPoint(14, 18, 1, 5);
+    await component.prompts.addPoint(14, 18, 1, 5);
 
     expect(component.store.stateEpoch()).toBe(4);
     expect(component.store.masks().size).toBe(0);
@@ -525,7 +525,7 @@ describe('VideoMaskerComponent sync contract', () => {
       ),
     );
 
-    await component.actions.addPoint(30, 40, 1, 5);
+    await component.prompts.addPoint(30, 40, 1, 5);
 
     expect(component.store.liveEditedObjectFrames().get(5)?.has(1)).toBe(true);
     expect(component.store.lastMaskPixelCount()).toBe(0);
@@ -535,7 +535,7 @@ describe('VideoMaskerComponent sync contract', () => {
     const response$ = new Subject<VideoAddPointsResponse>();
     backendMock.addNewPointsOrBox.mockReturnValue(response$);
 
-    const pendingRequest = component.actions.addPoint(30, 40, 1, 5);
+    const pendingRequest = component.prompts.addPoint(30, 40, 1, 5);
 
     expect(component.store.points().get(5)?.get(1)?.length).toBe(1);
     expect(component.store.liveEditedObjectFrames().get(5)?.has(1)).toBeFalsy();
@@ -552,7 +552,7 @@ describe('VideoMaskerComponent sync contract', () => {
       throwError(() => ({ error: { detail: 'Another operation is already running.' } })),
     );
 
-    await component.actions.addPoint(30, 40, 1, 5);
+    await component.prompts.addPoint(30, 40, 1, 5);
 
     expect(component.store.points().get(5)?.get(1)?.length ?? 0).toBe(0);
     expect(component.store.toasts()[0].title).toBe('Point update failed');
@@ -717,7 +717,7 @@ describe('VideoMaskerComponent sync contract', () => {
     );
     component.store.videoDir.set('C:/frames');
 
-    await component.actions.initVideo();
+    await component.sessions.initVideo();
 
     expect(backendMock.initVideoState).toHaveBeenCalledWith('C:/frames');
     expect(backendMock.getJob).toHaveBeenCalledWith('job-1');
@@ -772,7 +772,7 @@ describe('VideoMaskerComponent sync contract', () => {
     component.store.loadSourceMode.set('saved_session_dir');
     component.store.videoDir.set('C:/backend/saved/review-run');
 
-    await component.actions.initVideo();
+    await component.sessions.initVideo();
 
     expect(backendMock.initVideoState).toHaveBeenCalledWith('C:/backend/saved/review-run');
     expect(component.store.isInitialized()).toBe(true);
@@ -838,7 +838,7 @@ describe('VideoMaskerComponent sync contract', () => {
     component.store.loadSourceMode.set('saved_session_dir');
     component.store.videoDir.set('C:/backend/saved/review-run');
 
-    await component.actions.initVideo();
+    await component.sessions.initVideo();
 
     expect(component.store.hasManifestMasks()).toBe(true);
     expect(component.store.interactionMode()).toBe('negative');
@@ -936,7 +936,7 @@ describe('VideoMaskerComponent sync contract', () => {
     component.store.loadSourceMode.set('saved_session_dir');
     component.store.videoDir.set('C:/backend/saved/review-run');
 
-    await component.actions.initVideo();
+    await component.sessions.initVideo();
 
     expect(backendMock.getTrackingResult).toHaveBeenCalledWith('track-restored');
     expect(component.store.trackedPoints()[0].tracks).toEqual([
@@ -1000,7 +1000,7 @@ describe('VideoMaskerComponent sync contract', () => {
     component.store.loadSourceMode.set('saved_session_dir');
     component.store.videoDir.set('C:/backend/saved/review-run');
 
-    await component.actions.initVideo();
+    await component.sessions.initVideo();
 
     expect(component.store.isInitialized()).toBe(true);
     expect(component.store.toasts()[0].title).toBe('Tracking result unavailable');
@@ -1082,7 +1082,7 @@ describe('VideoMaskerComponent sync contract', () => {
     );
     component.store.trackingUseSupportGrid.set(true);
 
-    await component.actions.runTracking();
+    await component.tracking.runTracking();
 
     expect(backendMock.trackPromptPoints).toHaveBeenCalledWith({ add_support_grid: true });
     expect(backendMock.trackPromptPoints.mock.calls[0][0]).not.toHaveProperty('model_name');
@@ -1149,7 +1149,7 @@ describe('VideoMaskerComponent sync contract', () => {
       new Map([0, 1, 2, 4].map((frame) => [frame, new Set([1])])),
     );
 
-    await component.actions.propagate();
+    await component.propagation.propagate();
 
     expect(component.store.hasManifestMasks()).toBe(true);
     expect(component.store.stateEpoch()).toBe(3);
@@ -1205,7 +1205,7 @@ describe('VideoMaskerComponent sync contract', () => {
     );
     component.store.videoDir.set('C:/missing');
 
-    await component.actions.initVideo();
+    await component.sessions.initVideo();
 
     expect(component.store.isInitialized()).toBe(false);
     expect(component.store.toasts()[0].title).toBe('Loading video');
@@ -1225,7 +1225,7 @@ describe('VideoMaskerComponent sync contract', () => {
     component.store.saveName.set('review-run');
     objectOperations.renameObject(1, 'Left hand');
 
-    component.actions.save();
+    component.sessions.save();
     await Promise.resolve();
 
     expect(backendMock.saveVideoSession).toHaveBeenCalledWith(

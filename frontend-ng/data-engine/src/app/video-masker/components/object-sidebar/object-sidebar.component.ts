@@ -1,7 +1,7 @@
 import { Component, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ObjectOperationsService } from '../../services/object-operations.service';
-import { VideoMaskerActionsService } from '../../services/video-masker-actions.service';
+import { PointEditingService } from '../../services/point-editing.service';
 import { VideoMaskerStateStore } from '../../services/video-masker-state.store';
 import { clampFrameIndex } from '../../video-masker.util';
 
@@ -14,7 +14,7 @@ import { clampFrameIndex } from '../../video-masker.util';
 export class ObjectSidebarComponent {
   readonly store = inject(VideoMaskerStateStore);
   readonly objects = inject(ObjectOperationsService);
-  private readonly prompts = inject(VideoMaskerActionsService);
+  private readonly prompts = inject(PointEditingService);
 
   renameObject(id: number, input: HTMLInputElement): void {
     this.objects.renameObject(id, input.value);

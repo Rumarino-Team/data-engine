@@ -21,7 +21,6 @@ export class ObjectOperationsService {
   private showError(title: string, fallback: string, error: unknown): void {
     console.error(error);
     this.toast.show('error', title, getErrorMessage(error, fallback));
-    this.store.toasts.set(this.toast.toasts());
   }
 
   // --- objects -----------------------------------------------------------

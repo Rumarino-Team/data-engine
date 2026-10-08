@@ -17,7 +17,14 @@ import { FramePipelineService } from './services/frame-pipeline.service';
 import { CanvasViewportService } from './services/canvas-viewport.service';
 import { ObjectSidebarComponent } from './components/object-sidebar/object-sidebar.component';
 import { ObjectOperationsService } from './services/object-operations.service';
-import { VideoMaskerActionsService } from './services/video-masker-actions.service';
+import { BackendConnectionService } from './services/backend-connection.service';
+import { SessionService } from './services/session.service';
+import { PointEditingService } from './services/point-editing.service';
+import { MaskPropagationService } from './services/mask-propagation.service';
+import { TrackingService } from './services/tracking.service';
+import { ToastService } from './services/toast.service';
+import { EditorJobService } from './services/editor-job.service';
+import { DesktopBridgeService } from '../services/desktop-bridge.service';
 import { LoadSourceMode } from './state/video-masker-ui.types';
 import {
   browseLabel,
@@ -29,7 +36,7 @@ import {
 /**
  * Composition root for the video masker route. Owns the view refs and lifecycle, wires
  * two signal effects, and exposes the shared {@link VideoMaskerStateStore} plus the
- * {@link VideoMaskerActionsService} / {@link FramePipelineService} to the template. All
+ * operation owners and {@link FramePipelineService} to the template. All
  * non-trivial logic lives in those collaborators.
  */
 @Component({
@@ -48,7 +55,13 @@ import {
     VideoMaskerStateStore,
     FramePipelineService,
     CanvasViewportService,
-    VideoMaskerActionsService,
+    BackendConnectionService,
+    SessionService,
+    PointEditingService,
+    MaskPropagationService,
+    TrackingService,
+    ToastService,
+    EditorJobService,
     ObjectOperationsService,
   ],
 })
@@ -58,7 +71,13 @@ export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
   @ViewChild('framesDirInput') framesDirInputRef?: ElementRef<HTMLInputElement>;
 
   readonly store = inject(VideoMaskerStateStore);
-  readonly actions = inject(VideoMaskerActionsService);
+  readonly connection = inject(BackendConnectionService);
+  readonly sessions = inject(SessionService);
+  readonly prompts = inject(PointEditingService);
+  readonly propagation = inject(MaskPropagationService);
+  readonly tracking = inject(TrackingService);
+  readonly toast = inject(ToastService);
+  private readonly desktopBridge = inject(DesktopBridgeService);
   readonly framePipeline = inject(FramePipelineService);
   readonly viewport = inject(CanvasViewportService);
   readonly showDebugUi = isDevMode();
@@ -67,7 +86,7 @@ export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
   private healthTimerId: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
-    this.actions.initApiUrlFromBackend();
+    this.connection.initApiUrlFromBackend();
 
     effect(() => {
       if (this.store.isInitialized()) {
@@ -88,8 +107,8 @@ export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
         this.onCanvasPoint(point),
       );
     }
-    void this.actions.checkApiHealth(true);
-    this.healthTimerId = setInterval(() => void this.actions.checkApiHealth(), 3000);
+    void this.connection.checkApiHealth(true);
+    this.healthTimerId = setInterval(() => void this.connection.checkApiHealth(), 3000);
   }
 
   ngOnDestroy(): void {
@@ -174,7 +193,13 @@ export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
   }
 
   async browseSelectedSource(): Promise<void> {
-    const selectedPath = await this.actions.pickNativePath(this.store.loadSourceMode());
+    let selectedPath: string | null = null;
+    if (this.desktopBridge.isTauri()) {
+      selectedPath =
+        this.store.loadSourceMode() === 'video_file'
+          ? await this.desktopBridge.pickVideoFile()
+          : await this.desktopBridge.pickFramesDirectory();
+    }
     if (selectedPath) {
       this.store.videoDir.set(selectedPath);
       return;
@@ -249,7 +274,7 @@ export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
 
   private showPathUnavailableMessage(target: 'video' | 'directory'): void {
     if (target === 'video') {
-      this.actions.pushToast(
+      this.toast.show(
         'warning',
         'Path unavailable',
         'Selected video file name is available, but this browser does not expose the full local path. Paste the full video path manually.',
@@ -257,14 +282,14 @@ export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
       return;
     }
     if (this.store.loadSourceMode() === 'saved_session_dir') {
-      this.actions.pushToast(
+      this.toast.show(
         'warning',
         'Path unavailable',
         'Selected folder contents are available, but this browser does not expose the full local directory path. Paste the full saved session directory path manually.',
       );
       return;
     }
-    this.actions.pushToast(
+    this.toast.show(
       'warning',
       'Path unavailable',
       'Selected folder contents are available, but this browser does not expose the full local directory path. Paste the full frames directory path manually.',
@@ -290,7 +315,7 @@ export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
     if (frameIdx < 0) {
       return;
     }
-    void this.actions.addPoint(point.x, point.y, label, frameIdx);
+    void this.prompts.addPoint(point.x, point.y, label, frameIdx);
   }
 
   onScrubberFrameChange(value: number | string): void {
