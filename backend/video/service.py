@@ -9,10 +9,22 @@ import sam2_video_masker as svm
 from core.config import IMAGE_EXTENSIONS, SAVED_ROOT, VIDEO_EXTENSIONS
 from core.jobs import queue_long_job, require_no_active_job, update_job, utc_now_iso
 from core.state import state
-from schemas.video import VideoAddMaskRequest, VideoAddPointsOrBoxRequest, VideoInitStateRequest, VideoSaveRequest
+from schemas.video import (
+    VideoAddMaskRequest,
+    VideoAddPointsOrBoxRequest,
+    VideoInitStateRequest,
+    VideoObject,
+    VideoObjectUpdate,
+    VideoSaveRequest,
+)
 from sessions.cache import bump_video_state_epoch, prepare_video_masker_for_video_init, reset_video_session_state
-from sessions.interactive_state import prompt_events_from_interactive_state, sanitize_interactive_state, validate_interactive_state_for_restore
-from sessions.metadata import current_masks_dir, current_session_path, load_session_metadata, merge_session_metadata, sanitize_save_name, write_session_metadata
+from sessions.interactive_state import (
+    prompt_events_from_interactive_state,
+    sanitize_interactive_state,
+    validate_interactive_state_for_restore,
+    validate_objects_for_restore,
+)
+from sessions.metadata import current_masks_dir, current_session_path, load_session_metadata, merge_session_metadata, sanitize_save_name, serialized_video_objects, write_session_metadata
 from sessions.paths import path_is_relative_to, resolve_input_path, resolve_saved_session_layout, validate_video_input_path
 from utils import load_mask_manifest, write_mask_manifest
 from video.io import copy_frames_directory_to_session, create_active_session, extract_video_to_session_frames
@@ -72,8 +84,11 @@ def initialize_video_state_from_resolved_input(
             session_metadata.get("interactive_state")
         )
         state.video_prompt_events = prompt_events_from_interactive_state(interactive_state)
+        state.video_objects, object_warnings = validate_objects_for_restore(session_metadata.get("objects"))
+        restore_warnings = object_warnings + restore_warnings
         restored_session_payload = {
             "session_meta": session_metadata,
+            "objects": serialized_video_objects(),
             "interactive_state": interactive_state,
             "has_mask_manifest": bool(state.mask_manifest_path),
             "interactive_state_warnings": restore_warnings,
@@ -570,7 +585,18 @@ async def remove_object(obj_id: int):
         for event in state.video_prompt_events
         if int(event["obj_id"]) != int(obj_id)
     ]
+    if state.video_objects.pop(int(obj_id), None) is not None:
+        write_session_metadata()
     return {"message": "Object removed successfully"}
+
+async def upsert_object(obj_id: int, request: VideoObjectUpdate):
+    require_no_active_job("update object")
+    if current_session_path() is None:
+        raise HTTPException(status_code=400, detail="Video session is not initialized.")
+    obj = VideoObject(id=obj_id, **request.model_dump()).model_dump()
+    state.video_objects[obj_id] = obj
+    write_session_metadata()
+    return obj
 
 async def get_video_info():
     return {

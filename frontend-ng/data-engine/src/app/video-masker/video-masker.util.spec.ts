@@ -115,7 +115,6 @@ describe('encoded live masks', () => {
 
   it('retains encoded masks through save and restore', () => {
     const snapshot = buildInteractiveStateSnapshot({
-      objects: [],
       selectedObjectId: 2,
       interactionMode: 'positive',
       currentFrameIdx: 4,

@@ -38,13 +38,15 @@ class VideoAddMaskRequest(BaseModel):
     obj_id: int
     mask: list[list[bool]]
 
-class InteractiveObject(BaseModel):
+class VideoObjectUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    id: int = Field(ge=1)
     # Class label; objects sharing a label are instances of the same class on export.
     label: str = Field(min_length=1, max_length=200)
     color: str = Field(pattern=r"^#[0-9A-Fa-f]{6}$")
+
+class VideoObject(VideoObjectUpdate):
+    id: int = Field(ge=1)
 
 class InteractivePoint(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -102,7 +104,6 @@ class InteractiveState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     version: int = Field(default=1, ge=1)
-    objects: list[InteractiveObject] = Field(default_factory=list)
     selected_object_id: Optional[int] = Field(default=None, ge=1)
     interaction_mode: Optional[str] = None
     current_frame_idx: Optional[int] = Field(default=None, ge=0)

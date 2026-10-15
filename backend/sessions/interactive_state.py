@@ -1,7 +1,7 @@
 from typing import Any, Optional
 from pydantic import ValidationError
 from core.config import DEFAULT_MAX_INTERACTIVE_LIVE_MASKS
-from schemas.video import InteractiveMaskRLE, InteractiveObject, InteractivePoint, InteractiveState
+from schemas.video import InteractiveMaskRLE, InteractivePoint, InteractiveState, VideoObject
 
 def sanitize_interactive_state(interactive_state: Optional[InteractiveState]) -> Optional[dict[str, Any]]:
     if interactive_state is None:
@@ -24,13 +24,6 @@ def validate_interactive_state_for_restore(raw_state: Any) -> tuple[Optional[dic
         warnings: list[str] = [
             f"interactive_state had validation issues: {first_error.get('msg', 'invalid payload')}"
         ]
-
-    objects: list[dict[str, Any]] = []
-    for index, raw_obj in enumerate(raw_state.get("objects", [])):
-        try:
-            objects.append(InteractiveObject.model_validate(raw_obj).model_dump())
-        except ValidationError:
-            warnings.append(f"Dropped invalid interactive_state.objects[{index}].")
 
     points: list[dict[str, Any]] = []
     for index, raw_point in enumerate(raw_state.get("points", [])):
@@ -76,7 +69,6 @@ def validate_interactive_state_for_restore(raw_state: Any) -> tuple[Optional[dic
 
     sanitized = {
         "version": 1,
-        "objects": objects,
         "selected_object_id": selected_object_id,
         "interaction_mode": interaction_mode,
         "current_frame_idx": current_frame_idx,
@@ -89,6 +81,22 @@ def validate_interactive_state_for_restore(raw_state: Any) -> tuple[Optional[dic
     except ValidationError:
         warnings.append("interactive_state could not be restored and was ignored.")
         return None, warnings
+
+def validate_objects_for_restore(raw_objects: Any) -> tuple[dict[int, dict[str, Any]], list[str]]:
+    if raw_objects is None:
+        return {}, []
+    if not isinstance(raw_objects, list):
+        return {}, ["objects was not a JSON list and was ignored."]
+    objects: dict[int, dict[str, Any]] = {}
+    warnings: list[str] = []
+    for index, raw_obj in enumerate(raw_objects):
+        try:
+            obj = VideoObject.model_validate(raw_obj).model_dump()
+        except ValidationError:
+            warnings.append(f"Dropped invalid objects[{index}].")
+            continue
+        objects[obj["id"]] = obj
+    return objects, warnings
 
 def prompt_events_from_interactive_state(interactive_state: Optional[dict[str, Any]]) -> list[dict[str, Any]]:
     if not interactive_state:

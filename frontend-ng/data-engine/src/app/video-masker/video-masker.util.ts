@@ -1,11 +1,11 @@
 import {
   InteractiveMaskRle,
-  InteractiveObject,
   InteractivePoint,
   VideoSaveInteractiveState,
   LiveMask,
   PackedBitMask,
   VideoMaskObjectData,
+  VideoObject,
 } from '../services/backend.service';
 import { LoadSourceMode } from './state/video-masker-ui.types';
 import { MaskObject, Point } from './services/video-masker-state.store';
@@ -438,7 +438,7 @@ function normalizeObjectColor(color: string | undefined): string {
   return randomColor();
 }
 
-export function normalizeInteractiveObjects(objects: InteractiveObject[]): MaskObject[] {
+export function normalizeVideoObjects(objects: VideoObject[]): MaskObject[] {
   const normalized: MaskObject[] = [];
   const seen = new Set<number>();
   for (const candidate of objects) {
@@ -515,18 +515,12 @@ export function deserializeLiveMasks(liveMasks: InteractiveMaskRle[]): {
 }
 
 export function buildInteractiveStateSnapshot(args: {
-  objects: MaskObject[];
   selectedObjectId: number | null;
   interactionMode: 'positive' | 'negative';
   currentFrameIdx: number;
   pointsByFrame: Map<number, Map<number, Point[]>>;
   masksByFrame: Map<number, Map<number, LiveMask>>;
 }): VideoSaveInteractiveState {
-  const objects = args.objects.map((entry) => ({
-    id: entry.id,
-    label: entry.label,
-    color: entry.color,
-  }));
   const points: InteractivePoint[] = [];
   args.pointsByFrame.forEach((framePoints, frameIdx) => {
     framePoints.forEach((objPoints, objId) => {
@@ -559,7 +553,6 @@ export function buildInteractiveStateSnapshot(args: {
 
   return {
     version: 1,
-    objects,
     selected_object_id: args.selectedObjectId,
     interaction_mode: args.interactionMode,
     current_frame_idx: args.currentFrameIdx,

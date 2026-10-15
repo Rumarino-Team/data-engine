@@ -18,5 +18,6 @@ class BackendState:
     active_session_dir: Optional[Path] = None
     active_session_id: Optional[str] = None
     active_session_saved_name: Optional[str] = None
+    video_objects: dict[int, dict[str, Any]] = field(default_factory=dict)
 
 state = BackendState()

@@ -20,6 +20,7 @@ import type {
   VideoAddPointsResponse,
   VideoInitStateRequest,
   VideoMaskDataResponse,
+  VideoObject,
   VideoPropagateRequest,
   VideoSaveInteractiveState,
   VideoSaveRequest,
@@ -118,6 +119,13 @@ export class BackendService {
   clearAllPromptsInFrame(frameIdx: number, objId: number): Observable<any> {
     return this.http.post(this.endpoint('/video/clear_all_prompts_in_frame'), null, {
       params: { frame_idx: frameIdx.toString(), obj_id: objId.toString() },
+    });
+  }
+
+  upsertObject(object: VideoObject): Observable<VideoObject> {
+    return this.http.put<VideoObject>(this.endpoint(`/video/objects/${object.id}`), {
+      label: object.label,
+      color: object.color,
     });
   }
 

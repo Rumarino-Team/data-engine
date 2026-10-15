@@ -63,6 +63,10 @@ describe('session workflows', () => {
     expect(editor.store.isInitialized()).toBe(true);
     expect(editor.store.numFrames()).toBe(12);
     expect(editor.store.stateEpoch()).toBe(7);
+    const [created] = editor.store.objects();
+    expect(created).toEqual(expect.objectContaining({ id: 1, label: 'Object 1' }));
+    expect(editor.store.selectedObjectId()).toBe(1);
+    expect(backendMock.upsertObject).toHaveBeenCalledWith(created);
   });
 
   it('uses the same init endpoint path flow for saved-session mode', async () => {
@@ -159,10 +163,10 @@ describe('session workflows', () => {
             source_type: 'saved_session',
             restored_session: {
               session_meta: { schema_version: 2 },
+              objects: [{ id: 1, label: 'buoy', color: '#ff6600' }],
               has_mask_manifest: true,
               interactive_state: {
                 version: 1,
-                objects: [{ id: 1, label: 'Object 1', color: '#ff6600' }],
                 selected_object_id: 1,
                 interaction_mode: 'negative',
                 current_frame_idx: 4,
@@ -188,6 +192,9 @@ describe('session workflows', () => {
       rle: [[0, 1]],
       bbox: [0, 0, 1, 1],
     });
+    expect(editor.store.objects()).toEqual([{ id: 1, label: 'buoy', color: '#ff6600' }]);
+    expect(editor.store.selectedObjectId()).toBe(1);
+    expect(backendMock.upsertObject).not.toHaveBeenCalled();
   });
 
   it('restores persisted tracking result from saved-session init result', async () => {
@@ -400,18 +407,24 @@ describe('session workflows', () => {
     editor.store.saveName.set('review-run');
     objectOperations.renameObject(1, 'Left hand');
 
+    expect(backendMock.upsertObject).toHaveBeenCalledWith({
+      id: 1,
+      label: 'Left hand',
+      color: '#ff0000',
+    });
+
     editor.sessions.save();
     await Promise.resolve();
 
-    expect(backendMock.saveVideoSession).toHaveBeenCalledWith(
-      'review-run',
+    const [, interactiveState] = backendMock.saveVideoSession.mock.calls[0];
+    expect(interactiveState).toEqual(
       expect.objectContaining({
         version: 1,
-        objects: [{ id: 1, label: 'Left hand', color: '#ff0000' }],
         points: expect.any(Array),
         live_masks: expect.any(Array),
       }),
     );
+    expect(interactiveState).not.toHaveProperty('objects');
     expect(editor.store.toasts()[0].title).toBe('Session saved');
   });
 });

@@ -76,7 +76,8 @@ export interface VideoInitStateResponse {
   restored_session?: RestoredSessionPayload;
 }
 
-export interface InteractiveObject {
+/** Backend-owned object metadata; objects sharing a label are one class on export. */
+export interface VideoObject {
   id: number;
   label: string;
   color: string;
@@ -100,7 +101,6 @@ export interface InteractiveMaskRle {
 
 export interface VideoSaveInteractiveState {
   version: number;
-  objects: InteractiveObject[];
   selected_object_id?: number | null;
   interaction_mode?: 'positive' | 'negative' | null;
   current_frame_idx?: number | null;
@@ -110,6 +110,7 @@ export interface VideoSaveInteractiveState {
 
 export interface RestoredSessionPayload {
   session_meta: Record<string, unknown>;
+  objects: VideoObject[];
   interactive_state?: VideoSaveInteractiveState | null;
   has_mask_manifest: boolean;
   interactive_state_warnings?: string[];

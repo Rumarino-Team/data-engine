@@ -45,6 +45,7 @@ export function createBackendMocks() {
     resetApiUrl: vi.fn(() => 'http://127.0.0.1:8000'),
     saveVideoSession: vi.fn(),
     removeObject: vi.fn<(id: number) => Observable<unknown>>(() => of({})),
+    upsertObject: vi.fn<(object: unknown) => Observable<unknown>>(() => of({})),
     resetVideoState: vi.fn(() => of({ state_epoch: 4 })),
   };
   const desktopBridgeMock = {

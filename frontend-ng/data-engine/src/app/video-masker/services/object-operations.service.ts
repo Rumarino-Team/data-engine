@@ -4,7 +4,7 @@ import { BackendService } from '../../services/backend.service';
 import { getErrorMessage, randomColor } from '../video-masker.util';
 import { FramePipelineService } from './frame-pipeline.service';
 import { ToastService } from './toast.service';
-import { VideoMaskerStateStore } from './video-masker-state.store';
+import { MaskObject, VideoMaskerStateStore } from './video-masker-state.store';
 
 /** Owns object labels, ID allocation, and removal from the backend and local state. */
 @Injectable()
@@ -28,22 +28,31 @@ export class ObjectOperationsService {
   renameObject(id: number, value: string): void {
     if (this.isBusy) return;
     const label = value.trim().slice(0, 200);
-    if (!label) return;
-    this.store.objects.update((objects) =>
-      objects.map((object) => (object.id === id ? { ...object, label } : object)),
-    );
-    this.framePipeline.redraw();
+    const previous = this.store.objects().find((object) => object.id === id);
+    if (!label || !previous || previous.label === label) return;
+    const next = { ...previous, label };
+    this.replaceObject(next);
+    this.syncObject(next, previous);
   }
 
   addObject(): void {
     if (this.isBusy) return;
     const newId = this.reserveNextObjectId();
     this.store.nextObjectId = newId + 1;
-    this.store.objects.set([
-      ...this.store.objects(),
-      { id: newId, label: `Object ${newId}`, color: randomColor() },
-    ]);
+    const object = { id: newId, label: `Object ${newId}`, color: randomColor() };
+    this.store.objects.set([...this.store.objects(), object]);
     this.store.selectedObjectId.set(newId);
+    this.syncObject(object);
+  }
+
+  /** Persists object metadata to the backend; a failed relabel reverts to `previous`. */
+  syncObject(object: MaskObject, previous?: MaskObject): void {
+    this.backend.upsertObject(object).subscribe({
+      error: (error) => {
+        if (previous) this.replaceObject(previous);
+        this.showError('Object update failed', 'Failed to save object label.', error);
+      },
+    });
   }
 
   removeObject(): void {
@@ -81,6 +90,13 @@ export class ObjectOperationsService {
     } finally {
       this.store.isLoading.set(false);
     }
+  }
+
+  private replaceObject(next: MaskObject): void {
+    this.store.objects.update((objects) =>
+      objects.map((object) => (object.id === next.id ? next : object)),
+    );
+    this.framePipeline.redraw();
   }
 
   private reserveNextObjectId(): number {

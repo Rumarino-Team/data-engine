@@ -7,17 +7,18 @@ import {
   VideoSaveInteractiveState,
   VideoSaveResponse,
 } from '../../services/backend.service';
-import { VideoMaskerStateStore } from './video-masker-state.store';
+import { MaskObject, VideoMaskerStateStore } from './video-masker-state.store';
 import { FramePipelineService } from './frame-pipeline.service';
 import { ToastService } from './toast.service';
 import { EditorJobService } from './editor-job.service';
 import { TrackingService } from './tracking.service';
+import { ObjectOperationsService } from './object-operations.service';
 import {
   buildInteractiveStateSnapshot,
   deserializeLiveMasks,
   deserializePoints,
   getErrorMessage,
-  normalizeInteractiveObjects,
+  normalizeVideoObjects,
   randomColor,
 } from '../video-masker.util';
 
@@ -30,6 +31,7 @@ export class SessionService {
   private readonly toast = inject(ToastService);
   private readonly jobs = inject(EditorJobService);
   private readonly tracking = inject(TrackingService);
+  private readonly objectOperations = inject(ObjectOperationsService);
   private get isBusy(): boolean {
     return this.store.isInteractionBusy();
   }
@@ -83,11 +85,12 @@ export class SessionService {
     this.store.nextObjectId = 1;
     this.store.resetInteractiveMaps();
     this.framePipeline.clearFrameCaches();
-    this.store.objects.set([{ id: 1, label: 'Object 1', color: randomColor() }]);
-    this.store.selectedObjectId.set(1);
+    this.store.objects.set(normalizeVideoObjects(res.restored_session?.objects || []));
+    this.store.selectedObjectId.set(null);
     this.store.hasManifestMasks.set(Boolean(res.restored_session?.has_mask_manifest));
     this.store.updateStateEpoch(res.state_epoch, 'video init');
     this.restoreInteractiveSessionState(res.restored_session);
+    this.ensureObjects();
 
     const restoredTrackingResultId = res.restored_session?.tracking_result?.result_id;
     if (restoredTrackingResultId) {
@@ -115,11 +118,6 @@ export class SessionService {
       return;
     }
     const interactive = restored.interactive_state;
-    const restoredObjects = normalizeInteractiveObjects(interactive.objects || []);
-    if (restoredObjects.length > 0) {
-      this.store.objects.set(restoredObjects);
-    }
-
     const restoredPoints = deserializePoints(interactive.points || []);
     if (restoredPoints.size > 0) {
       this.store.points.set(restoredPoints);
@@ -130,15 +128,7 @@ export class SessionService {
       this.store.masks.set(masks);
       this.store.liveEditedObjectFrames.set(liveEditedFrames);
     }
-    this.ensureObjectsForRestoredState();
-
-    const availableObjectIds = new Set(this.store.objects().map((objectEntry) => objectEntry.id));
-    const requestedObjectId = interactive.selected_object_id ?? null;
-    if (requestedObjectId !== null && availableObjectIds.has(requestedObjectId)) {
-      this.store.selectedObjectId.set(requestedObjectId);
-    } else if (this.store.objects().length > 0) {
-      this.store.selectedObjectId.set(this.store.objects()[0].id);
-    }
+    this.store.selectedObjectId.set(interactive.selected_object_id ?? null);
 
     if (
       interactive.interaction_mode === 'positive' ||
@@ -156,7 +146,8 @@ export class SessionService {
     }
   }
 
-  private ensureObjectsForRestoredState(): void {
+  /** Creates and persists objects for orphaned point/mask IDs, or a first object for a new session. */
+  private ensureObjects(): void {
     const existing = new Map(this.store.objects().map((entry) => [entry.id, entry]));
     const requiredObjectIds = new Set<number>();
     this.store.points().forEach((framePoints) => {
@@ -165,22 +156,31 @@ export class SessionService {
     this.store.masks().forEach((frameMasks) => {
       frameMasks.forEach((_mask, objId) => requiredObjectIds.add(objId));
     });
-    let changed = false;
+    if (existing.size === 0 && requiredObjectIds.size === 0) {
+      requiredObjectIds.add(1);
+    }
+    const created: MaskObject[] = [];
     for (const objId of requiredObjectIds) {
       if (existing.has(objId)) {
         continue;
       }
-      existing.set(objId, { id: objId, label: `Object ${objId}`, color: randomColor() });
-      changed = true;
+      const object = { id: objId, label: `Object ${objId}`, color: randomColor() };
+      existing.set(objId, object);
+      created.push(object);
     }
-    if (changed) {
+    if (created.length > 0) {
       this.store.objects.set(Array.from(existing.values()).sort((a, b) => a.id - b.id));
+      created.forEach((object) => this.objectOperations.syncObject(object));
+    }
+
+    const selectedId = this.store.selectedObjectId();
+    if (selectedId === null || !existing.has(selectedId)) {
+      this.store.selectedObjectId.set(this.store.objects()[0]?.id ?? null);
     }
   }
 
   private buildSnapshot(): VideoSaveInteractiveState {
     return buildInteractiveStateSnapshot({
-      objects: this.store.objects(),
       selectedObjectId: this.store.selectedObjectId(),
       interactionMode: this.store.interactionMode(),
       currentFrameIdx: this.store.targetFrameIdx(),

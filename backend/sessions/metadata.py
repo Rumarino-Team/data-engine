@@ -19,6 +19,9 @@ def current_masks_dir() -> Optional[Path]:
     session_path = current_session_path()
     return session_path / "masks" if session_path is not None else None
 
+def serialized_video_objects() -> list[dict[str, Any]]:
+    return [state.video_objects[obj_id] for obj_id in sorted(state.video_objects)]
+
 def write_session_metadata(extra: Optional[dict[str, Any]] = None) -> None:
     session_path = current_session_path()
     if session_path is None:
@@ -40,6 +43,7 @@ def write_session_metadata(extra: Optional[dict[str, Any]] = None) -> None:
         "state.mask_manifest_path": state.mask_manifest_path,
         "num_frames": len(state.video_frame_files),
         "state_epoch": int(state.video_state_epoch),
+        "objects": serialized_video_objects(),
         "updated_at": utc_now_iso(),
     }
     if state.video_masker is not None:

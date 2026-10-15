@@ -24,6 +24,31 @@ describe('object-operations workflows', () => {
     expect(editor.store.objects().map((object) => object.id)).toEqual([1, 3, 5]);
   });
 
+  it('persists relabels and reverts the label when the backend rejects it', () => {
+    objectOperations.renameObject(1, '  buoy ');
+    expect(backendMock.upsertObject).toHaveBeenLastCalledWith({
+      id: 1,
+      label: 'buoy',
+      color: '#ff0000',
+    });
+    expect(editor.store.objects()[0].label).toBe('buoy');
+
+    backendMock.upsertObject.mockReturnValueOnce(throwError(() => new Error('nope')));
+    objectOperations.renameObject(1, 'gate');
+    expect(editor.store.objects()[0].label).toBe('buoy');
+    expect(editor.store.toasts()[0].title).toBe('Object update failed');
+
+    backendMock.upsertObject.mockClear();
+    objectOperations.renameObject(1, 'buoy');
+    expect(backendMock.upsertObject).not.toHaveBeenCalled();
+  });
+
+  it('persists newly added objects', () => {
+    objectOperations.addObject();
+    const added = editor.store.objects().at(-1);
+    expect(backendMock.upsertObject).toHaveBeenCalledWith(added);
+  });
+
   it('cleans removed objects from all frame maps without mutating previous snapshots', () => {
     vi.spyOn(editor.framePipeline, 'scheduleFrameLoad').mockImplementation(() => {});
     const removeFromCanvas = vi.spyOn(editor.framePipeline, 'removeObject');
