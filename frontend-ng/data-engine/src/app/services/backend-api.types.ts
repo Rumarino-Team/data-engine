@@ -78,7 +78,7 @@ export interface VideoInitStateResponse {
 
 export interface InteractiveObject {
   id: number;
-  name: string;
+  label: string;
   color: string;
 }
 

@@ -18,7 +18,7 @@ export class ObjectSidebarComponent {
 
   renameObject(id: number, input: HTMLInputElement): void {
     this.objects.renameObject(id, input.value);
-    input.value = this.store.objects().find((object) => object.id === id)?.name ?? '';
+    input.value = this.store.objects().find((object) => object.id === id)?.label ?? '';
   }
 
   showObjectPoint(objectId: number, frameIdx: number): void {

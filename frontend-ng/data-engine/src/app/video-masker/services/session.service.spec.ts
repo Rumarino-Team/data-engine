@@ -162,7 +162,7 @@ describe('session workflows', () => {
               has_mask_manifest: true,
               interactive_state: {
                 version: 1,
-                objects: [{ id: 1, name: 'Object 1', color: '#ff6600' }],
+                objects: [{ id: 1, label: 'Object 1', color: '#ff6600' }],
                 selected_object_id: 1,
                 interaction_mode: 'negative',
                 current_frame_idx: 4,
@@ -407,7 +407,7 @@ describe('session workflows', () => {
       'review-run',
       expect.objectContaining({
         version: 1,
-        objects: [{ id: 1, name: 'Left hand', color: '#ff0000' }],
+        objects: [{ id: 1, label: 'Left hand', color: '#ff0000' }],
         points: expect.any(Array),
         live_masks: expect.any(Array),
       }),

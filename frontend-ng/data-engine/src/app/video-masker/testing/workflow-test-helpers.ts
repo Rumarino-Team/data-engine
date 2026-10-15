@@ -65,7 +65,7 @@ export function mockProviders(mocks: ReturnType<typeof createBackendMocks>) {
 
 export function initializeEditorStore(store: VideoMaskerStateStore): void {
   store.selectedObjectId.set(1);
-  store.objects.set([{ id: 1, name: 'Object 1', color: '#ff0000' }]);
+  store.objects.set([{ id: 1, label: 'Object 1', color: '#ff0000' }]);
   store.stateEpoch.set(3);
   store.displayedFrameIdx.set(5);
 }

@@ -83,7 +83,7 @@ export class SessionService {
     this.store.nextObjectId = 1;
     this.store.resetInteractiveMaps();
     this.framePipeline.clearFrameCaches();
-    this.store.objects.set([{ id: 1, name: 'Object 1', color: randomColor() }]);
+    this.store.objects.set([{ id: 1, label: 'Object 1', color: randomColor() }]);
     this.store.selectedObjectId.set(1);
     this.store.hasManifestMasks.set(Boolean(res.restored_session?.has_mask_manifest));
     this.store.updateStateEpoch(res.state_epoch, 'video init');
@@ -170,7 +170,7 @@ export class SessionService {
       if (existing.has(objId)) {
         continue;
       }
-      existing.set(objId, { id: objId, name: `Object ${objId}`, color: randomColor() });
+      existing.set(objId, { id: objId, label: `Object ${objId}`, color: randomColor() });
       changed = true;
     }
     if (changed) {

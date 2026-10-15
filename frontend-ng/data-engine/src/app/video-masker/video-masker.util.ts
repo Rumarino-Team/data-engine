@@ -448,7 +448,7 @@ export function normalizeInteractiveObjects(objects: InteractiveObject[]): MaskO
     seen.add(candidate.id);
     normalized.push({
       id: candidate.id,
-      name: (candidate.name || '').trim() || `Object ${candidate.id}`,
+      label: (candidate.label || '').trim() || `Object ${candidate.id}`,
       color: normalizeObjectColor(candidate.color),
     });
   }
@@ -524,7 +524,7 @@ export function buildInteractiveStateSnapshot(args: {
 }): VideoSaveInteractiveState {
   const objects = args.objects.map((entry) => ({
     id: entry.id,
-    name: entry.name,
+    label: entry.label,
     color: entry.color,
   }));
   const points: InteractivePoint[] = [];

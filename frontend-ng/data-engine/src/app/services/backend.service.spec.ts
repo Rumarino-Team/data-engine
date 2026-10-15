@@ -181,7 +181,7 @@ describe('BackendService', () => {
     service
       .saveVideoSession('review-run', {
         version: 1,
-        objects: [{ id: 1, name: 'Object 1', color: '#ff6600' }],
+        objects: [{ id: 1, label: 'Object 1', color: '#ff6600' }],
         selected_object_id: 1,
         interaction_mode: 'positive',
         current_frame_idx: 3,
@@ -195,7 +195,7 @@ describe('BackendService', () => {
       name: 'review-run',
       interactive_state: {
         version: 1,
-        objects: [{ id: 1, name: 'Object 1', color: '#ff6600' }],
+        objects: [{ id: 1, label: 'Object 1', color: '#ff6600' }],
         selected_object_id: 1,
         interaction_mode: 'positive',
         current_frame_idx: 3,

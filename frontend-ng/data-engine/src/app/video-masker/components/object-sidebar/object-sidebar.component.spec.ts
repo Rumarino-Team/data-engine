@@ -39,11 +39,11 @@ describe('ObjectSidebarComponent', () => {
     ) as HTMLInputElement;
     input.value = '  Car  ';
     input.dispatchEvent(new Event('change'));
-    expect(component.store.objects()[0].name).toBe('Car');
+    expect(component.store.objects()[0].label).toBe('Car');
     expect(input.value).toBe('Car');
     input.value = '   ';
     input.dispatchEvent(new Event('change'));
-    expect(component.store.objects()[0].name).toBe('Car');
+    expect(component.store.objects()[0].label).toBe('Car');
     expect(input.value).toBe('Car');
   });
 
@@ -79,8 +79,8 @@ describe('ObjectSidebarComponent', () => {
 
   it('shows separately placed points under their owning object and navigates to their frame', () => {
     component.store.objects.set([
-      { id: 1, name: 'Car', color: '#ff0000' },
-      { id: 2, name: 'Person', color: '#00ff00' },
+      { id: 1, label: 'Car', color: '#ff0000' },
+      { id: 2, label: 'Person', color: '#00ff00' },
     ]);
     component.store.numFrames.set(20);
     component.store.points.set(
@@ -111,7 +111,7 @@ describe('ObjectSidebarComponent', () => {
     const input = document.createElement('input');
     input.value = '  Left hand  ';
     sidebar().renameObject(1, input);
-    expect(component.store.objects()[0]).toEqual({ id: 1, name: 'Left hand', color: '#ff0000' });
+    expect(component.store.objects()[0]).toEqual({ id: 1, label: 'Left hand', color: '#ff0000' });
     input.value = '   ';
     sidebar().renameObject(1, input);
     expect(input.value).toBe('Left hand');

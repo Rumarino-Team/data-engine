@@ -60,7 +60,7 @@ describe('FramePipelineService', () => {
     service = TestBed.inject(FramePipelineService);
     store = TestBed.inject(VideoMaskerStateStore);
     service.attach(document.createElement('div'), () => {});
-    store.objects.set([{ id: 1, name: 'Object 1', color: '#ff0000' }]);
+    store.objects.set([{ id: 1, label: 'Object 1', color: '#ff0000' }]);
     store.hasManifestMasks.set(true);
   });
 

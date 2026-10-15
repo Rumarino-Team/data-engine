@@ -12,7 +12,7 @@
           type="text"
           class="object-name-input"
           aria-label="Object label"
-          [value]="obj.name"
+          [value]="obj.label"
           maxlength="200"
           [disabled]="store.isInteractionBusy()"
           (change)="renameObject(obj.id, objectLabel)"
@@ -29,7 +29,7 @@
           aria-pressed="false"
         >
           <span class="color-indicator" [style.background-color]="obj.color"></span>
-          <span>{{ obj.name }}</span>
+          <span>{{ obj.label }}</span>
           <small>{{ obj.children.length }} points</small>
         </button>
       </ng-template>

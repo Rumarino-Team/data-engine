@@ -16,7 +16,7 @@ import { resolveStateEpoch } from '../video-masker.util';
 
 export interface MaskObject {
   id: number;
-  name: string;
+  label: string;
   color: string;
 }
 

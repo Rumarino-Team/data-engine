@@ -27,10 +27,10 @@ export class ObjectOperationsService {
 
   renameObject(id: number, value: string): void {
     if (this.isBusy) return;
-    const name = value.trim().slice(0, 200);
-    if (!name) return;
+    const label = value.trim().slice(0, 200);
+    if (!label) return;
     this.store.objects.update((objects) =>
-      objects.map((object) => (object.id === id ? { ...object, name } : object)),
+      objects.map((object) => (object.id === id ? { ...object, label } : object)),
     );
     this.framePipeline.redraw();
   }
@@ -41,7 +41,7 @@ export class ObjectOperationsService {
     this.store.nextObjectId = newId + 1;
     this.store.objects.set([
       ...this.store.objects(),
-      { id: newId, name: `Object ${newId}`, color: randomColor() },
+      { id: newId, label: `Object ${newId}`, color: randomColor() },
     ]);
     this.store.selectedObjectId.set(newId);
   }

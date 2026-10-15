@@ -13,8 +13,8 @@ describe('object-operations workflows', () => {
 
   it('allocates unique IDs across sparse objects and removal of the highest ID', () => {
     editor.store.objects.set([
-      { id: 1, name: 'One', color: '#ff0000' },
-      { id: 3, name: 'Three', color: '#00ff00' },
+      { id: 1, label: 'One', color: '#ff0000' },
+      { id: 3, label: 'Three', color: '#00ff00' },
     ]);
     objectOperations.addObject();
     expect(editor.store.selectedObjectId()).toBe(4);
