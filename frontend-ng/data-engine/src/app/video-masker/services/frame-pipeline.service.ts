@@ -348,8 +348,7 @@ export class FramePipelineService {
         const response = await firstValueFrom(
           this.backend.getVideoMaskData(frameIdx).pipe(takeUntil(abort)),
         );
-        if (cancelled || generation !== this.maskGeneration || (response as any)?.error)
-          return null;
+        if (cancelled || generation !== this.maskGeneration) return null;
         const masks = response.objects || {};
         this.state.maskDataCache.set(frameIdx, masks);
         evictWithLimit(this.state.maskDataCache, this.state.maxFrameCacheSize);

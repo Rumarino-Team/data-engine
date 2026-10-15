@@ -355,7 +355,7 @@ def run_video_init_job(request: VideoInitStateRequest) -> dict[str, Any]:
 async def reset_video_state():
     require_no_active_job("video reset")
     if state.video_masker is None:
-        return {"error": "Video masker not active."}
+        raise HTTPException(status_code=400, detail="Video masker not active.")
     state.video_masker.reset_state()
     reset_video_session_state()
     masks_dir = current_masks_dir()
@@ -373,7 +373,7 @@ async def reset_video_state():
 async def add_new_points_or_box(request: VideoAddPointsOrBoxRequest):
     require_no_active_job("add points")
     if state.video_masker is None:
-        return {"error": "Video masker not active."}
+        raise HTTPException(status_code=400, detail="Video masker not active.")
 
     if not state.video_frame_files:
         raise HTTPException(status_code=400, detail="No video frames available. Call /video/init_state first.")
@@ -482,7 +482,7 @@ async def add_new_points_or_box(request: VideoAddPointsOrBoxRequest):
 async def add_new_mask(request: VideoAddMaskRequest):
     require_no_active_job("add mask")
     if state.video_masker is None:
-        return {"error": "Video masker not active."}
+        raise HTTPException(status_code=400, detail="Video masker not active.")
     
     # Convert mask from list to numpy array
     mask = np.array(request.mask, dtype=bool)
@@ -566,7 +566,7 @@ async def save_video_session(request: VideoSaveRequest):
 async def clear_all_prompts_in_frame(frame_idx: int, obj_id: int):
     require_no_active_job("clear prompts")
     if state.video_masker is None:
-        return {"error": "Video masker not active."}
+        raise HTTPException(status_code=400, detail="Video masker not active.")
     state.video_masker.clear_all_prompts_in_frame(frame_idx, obj_id)
     state.video_prompt_events = [
         event
@@ -578,7 +578,7 @@ async def clear_all_prompts_in_frame(frame_idx: int, obj_id: int):
 async def remove_object(obj_id: int):
     require_no_active_job("remove object")
     if state.video_masker is None:
-        return {"error": "Video masker not active."}
+        raise HTTPException(status_code=400, detail="Video masker not active.")
     state.video_masker.remove_object(obj_id)
     state.video_prompt_events = [
         event
@@ -606,12 +606,12 @@ async def get_video_info():
 
 async def get_mask_manifest():
     if state.video_dir is None:
-        return {"error": "Video not initialized"}
+        raise HTTPException(status_code=400, detail="Video not initialized")
 
     masks_dir = current_masks_dir()
     manifest_path = Path(state.mask_manifest_path) if state.mask_manifest_path else (masks_dir / "manifest.json" if masks_dir is not None else Path(state.video_dir) / "masks" / "manifest.json")
     if not manifest_path.exists():
-        return {"error": "Mask manifest not found. Run /video/propagate_in_video first."}
+        raise HTTPException(status_code=404, detail="Mask manifest not found. Run /video/propagate_in_video first.")
 
     manifest = load_cached_mask_manifest(manifest_path)
     return {
@@ -626,9 +626,9 @@ async def get_mask_manifest():
 
 async def get_mask_data(frame_idx: int):
     if state.video_dir is None:
-        return {"error": "Video not initialized"}
+        raise HTTPException(status_code=400, detail="Video not initialized")
     if frame_idx < 0:
-        return {"error": "Frame index out of bounds"}
+        raise HTTPException(status_code=404, detail="Frame index out of bounds")
 
     masks_dir = current_masks_dir()
     manifest_path = Path(state.mask_manifest_path) if state.mask_manifest_path else (masks_dir / "manifest.json" if masks_dir is not None else Path(state.video_dir) / "masks" / "manifest.json")
@@ -638,7 +638,7 @@ async def get_mask_data(frame_idx: int):
     manifest = load_cached_mask_manifest(manifest_path)
     num_frames = int(manifest.get("num_frames", 0))
     if frame_idx >= num_frames:
-        return {"error": "Frame index out of bounds"}
+        raise HTTPException(status_code=404, detail="Frame index out of bounds")
 
     frame_payload = manifest.get("frames", {}).get(str(frame_idx), {"objects": {}})
     objects_payload = frame_payload.get("objects", {})
@@ -649,10 +649,10 @@ async def get_mask_data(frame_idx: int):
 
 async def get_video_frame(frame_idx: int):
     if state.video_dir is None or not state.video_frame_files:
-        return {"error": "Video not initialized"}
+        raise HTTPException(status_code=400, detail="Video not initialized")
     
     if frame_idx < 0 or frame_idx >= len(state.video_frame_files):
-        return {"error": "Frame index out of bounds"}
+        raise HTTPException(status_code=404, detail="Frame index out of bounds")
         
     file_path = Path(state.video_dir) / state.video_frame_files[frame_idx]
     if not file_path.exists():
@@ -661,10 +661,10 @@ async def get_video_frame(frame_idx: int):
 
 async def get_video_mask_frame(frame_idx: int):
     if state.video_dir is None:
-        return {"error": "Video not initialized"}
+        raise HTTPException(status_code=400, detail="Video not initialized")
 
     if frame_idx < 0:
-        return {"error": "Frame index out of bounds"}
+        raise HTTPException(status_code=404, detail="Frame index out of bounds")
 
     masks_dir = current_masks_dir() or Path(state.video_dir) / "masks"
     file_path = masks_dir / f"frame_{frame_idx:05d}_masks.png"

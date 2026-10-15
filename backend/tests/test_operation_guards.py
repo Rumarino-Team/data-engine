@@ -71,8 +71,8 @@ class OperationGuardTests(unittest.TestCase):
 
     def test_without_active_job_endpoint_uses_normal_validation(self):
         response = self.client.post("/video/reset_state")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["error"], "Video masker not active.")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"], "Video masker not active.")
 
 
 if __name__ == "__main__":

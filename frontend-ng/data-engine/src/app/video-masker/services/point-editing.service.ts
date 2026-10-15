@@ -73,8 +73,7 @@ export class PointEditingService {
 
     this.store.isPointRequestInFlight.set(true);
     try {
-      const response = await firstValueFrom(this.backend.clearAllPromptsInFrame(frameIdx, objId));
-      if (response?.error) throw new Error(response.error);
+      await firstValueFrom(this.backend.clearAllPromptsInFrame(frameIdx, objId));
       this.setObjectPoints(frameIdx, objId, []);
       const masksMap = new Map(this.store.masks());
       const frameMasksMap = new Map(masksMap.get(frameIdx) || new Map<number, LiveMask>());
@@ -147,7 +146,6 @@ export class PointEditingService {
         return;
       }
       if (
-        (response as any)?.error ||
         typeof (response as any)?.request_frame_idx !== 'number' ||
         typeof (response as any)?.frame_idx !== 'number' ||
         typeof (response as any)?.frame_file !== 'string' ||
@@ -156,7 +154,7 @@ export class PointEditingService {
         !Array.isArray((response as any)?.out_masks) ||
         typeof (response as any)?.mask_pixel_counts !== 'object'
       ) {
-        throw new Error((response as any)?.error || 'Invalid mask response');
+        throw new Error('Invalid mask response');
       }
 
       const responseStateEpoch = Math.trunc(response.state_epoch);

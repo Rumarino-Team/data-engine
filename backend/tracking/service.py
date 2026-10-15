@@ -71,10 +71,10 @@ async def track_grid(request: TrackingGridRequest):
     
     require_no_active_job("track grid")
     if state.tracker is None:
-        return {"error": "Tracker not active. Call /tracking/load_video first."}
+        raise HTTPException(status_code=400, detail="Tracker not active. Call /tracking/load_video first.")
     
     if state.tracking_video is None:
-        return {"error": "No video loaded. Call /tracking/load_video first."}
+        raise HTTPException(status_code=400, detail="No video loaded. Call /tracking/load_video first.")
     
     # Run tracking
     try:
@@ -129,10 +129,10 @@ async def track_points(request: TrackingPointsRequest):
     
     require_no_active_job("track points")
     if state.tracker is None:
-        return {"error": "Tracker not active. Call /tracking/load_video first."}
+        raise HTTPException(status_code=400, detail="Tracker not active. Call /tracking/load_video first.")
     
     if state.tracking_video is None:
-        return {"error": "No video loaded. Call /tracking/load_video first."}
+        raise HTTPException(status_code=400, detail="No video loaded. Call /tracking/load_video first.")
     
     # Convert queries to numpy array
     queries = np.array(request.queries)

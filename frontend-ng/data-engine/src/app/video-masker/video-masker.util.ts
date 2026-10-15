@@ -195,7 +195,7 @@ export function getMaskPixelCount(
 }
 
 export function getErrorMessage(error: any, fallback: string): string {
-  return error?.error?.detail || error?.error?.error || error?.message || fallback;
+  return error?.error?.detail || error?.message || fallback;
 }
 
 export function encodeMaskToCounts(
