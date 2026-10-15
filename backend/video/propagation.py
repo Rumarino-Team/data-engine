@@ -409,20 +409,21 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
                         for obj_id, mask in frame_masks.items()
                     }
 
-                try:
-                    saved_path = save_single_video_mask_frame(
-                        frame_files,
-                        masks_dir,
-                        global_frame_idx,
-                        frame_masks,
-                    )
-                    if saved_path is not None:
-                        saved_mask_frame_count += 1
-                        if request.include_saved_mask_paths:
-                            saved_mask_paths_serializable.setdefault(global_frame_idx, []).append(saved_path)
-                except Exception:
-                    save_failures += 1
-                    logger.exception("Failed to save propagated mask frame %s", global_frame_idx)
+                if request.export_overlay_frames:
+                    try:
+                        saved_path = save_single_video_mask_frame(
+                            frame_files,
+                            masks_dir,
+                            global_frame_idx,
+                            frame_masks,
+                        )
+                        if saved_path is not None:
+                            saved_mask_frame_count += 1
+                            if request.include_saved_mask_paths:
+                                saved_mask_paths_serializable.setdefault(global_frame_idx, []).append(saved_path)
+                    except Exception:
+                        save_failures += 1
+                        logger.exception("Failed to save propagated mask frame %s", global_frame_idx)
 
                 if global_frame_idx == window_end:
                     boundary_masks = {

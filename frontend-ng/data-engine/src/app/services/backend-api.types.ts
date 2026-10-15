@@ -26,6 +26,7 @@ export interface VideoPropagateRequest {
   tracked_point_keyframe_interval?: number;
   max_tracked_points_per_object_per_frame?: number;
   include_masks_in_response?: boolean;
+  export_overlay_frames?: boolean;
   include_saved_mask_paths?: boolean;
   max_frames_in_response?: number;
   max_mask_values_in_response?: number;

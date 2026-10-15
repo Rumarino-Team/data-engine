@@ -7,8 +7,6 @@ from functools import wraps
 from pathlib import Path
 from typing import Callable, Optional
 from sam2.sam2_video_predictor import SAM2VideoPredictor
-from utils import extract_video_to_frames
-from core.config import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, PROJECT_ROOT, GENERATED_FRAMES_ROOT
 
 
 def _with_inference_context(method):
@@ -113,27 +111,9 @@ class SAM2VideoMasker:
         else:
             resolved_input_path = resolved_input_path.resolve()
 
-        if not resolved_input_path.exists():
-            raise ValueError(f"Path not found: {resolved_input_path}")
-
-        if resolved_input_path.is_file():
-            suffix = resolved_input_path.suffix.lower()
-            if suffix in VIDEO_EXTENSIONS:
-                resolved_video_dir = extract_video_to_frames(
-                    resolved_input_path,
-                    output_root=GENERATED_FRAMES_ROOT,
-                    image_extensions=IMAGE_EXTENSIONS,
-                )
-            elif suffix in IMAGE_EXTENSIONS:
-                raise ValueError(
-                    f"Expected a frames directory or video file, got image file: {resolved_input_path}."
-                )
-            else:
-                raise ValueError(
-                    f"Unsupported input file type: {resolved_input_path.suffix or '<none>'}."
-                )
-        else:
-            resolved_video_dir = resolved_input_path
+        if not resolved_input_path.is_dir():
+            raise ValueError(f"Expected a frames directory: {resolved_input_path}")
+        resolved_video_dir = resolved_input_path
 
         if progress_callback is not None:
             progress_callback(

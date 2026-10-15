@@ -366,6 +366,8 @@ def propagate_in_video(start_frame_idx=None, max_frame_num_to_track=None, revers
         "online_mode": ONLINE_MODE,
         "batch_size": ONLINE_BATCH_SIZE,
         "include_masks_in_response": False,
+        # Overlay PNGs are the visual output copied to tests/bedroom/masks.
+        "export_overlay_frames": True,
     }
     response = requests.post(url, json=payload)
     if response.status_code == 200:
@@ -383,7 +385,7 @@ def propagate_in_video(start_frame_idx=None, max_frame_num_to_track=None, revers
         returned_frames = response_data.get("video_segments_returned_frames", len(response_data.get("video_segments", {})))
         if returned_frames:
             print(f"Returned {returned_frames} frame masks in API response.")
-        print(f"Saved masks for {len(saved_paths)} frames.")
+        print(f"Saved mask overlays for {response_data.get('saved_mask_frame_count', 0)} frames.")
         for frame_idx, paths in saved_paths.items():
             print(f"  Frame {frame_idx}: {paths}")
         return True, response_data

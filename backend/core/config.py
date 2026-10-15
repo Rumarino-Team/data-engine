@@ -6,7 +6,6 @@ BACKEND_ROOT = PROJECT_ROOT / "backend"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
 CACHE_ROOT = BACKEND_ROOT / "cache"
-GENERATED_FRAMES_ROOT = CACHE_ROOT / "frames"
 WINDOW_FRAMES_ROOT = CACHE_ROOT / "windows"
 SESSION_CACHE_ROOT = CACHE_ROOT / "sessions"
 SAVED_ROOT = BACKEND_ROOT / "saved"
