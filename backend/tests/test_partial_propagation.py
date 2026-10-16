@@ -10,6 +10,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core.state import BackendState
+from core.annotations import SessionAnnotations
 from schemas.video import VideoPropagateRequest
 from utils import build_empty_mask_manifest, load_mask_manifest, write_mask_manifest
 from video import propagation
@@ -45,7 +46,8 @@ class PartialPropagationTests(unittest.TestCase):
                     state = BackendState(
                         video_masker=masker, video_dir=str(frames),
                         video_frame_files=[f"{i:05d}.jpg" for i in range(5)],
-                        video_prompt_events=[{"frame_idx": 1, "obj_id": 1, "points": [[1, 1]], "labels": [1]}],
+                        annotations=SessionAnnotations(objects={1: {"id": 1, "label": "Object 1", "color": "#ff0000"}},
+                                                    prompts=[{"frame_idx": 1, "obj_id": 1, "points": [[1, 1]], "labels": [1]}]),
                         mask_manifest_path=str(masks / "manifest.json"),
                     )
                     for name, value in {

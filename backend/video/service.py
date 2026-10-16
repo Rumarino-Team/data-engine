@@ -1,4 +1,4 @@
-import logging, shutil, uuid
+import logging, shutil
 from pathlib import Path
 from typing import Any, Optional
 import cv2
@@ -9,6 +9,8 @@ import sam2_video_masker as svm
 from core.config import IMAGE_EXTENSIONS, SAVED_ROOT, VIDEO_EXTENSIONS
 from core.jobs import queue_long_job, require_no_active_job, update_job, utc_now_iso
 from core.state import state
+from core.annotations import SessionAnnotations
+from pydantic import ValidationError
 from schemas.video import (
     VideoAddMaskRequest,
     VideoAddPointsOrBoxRequest,
@@ -18,20 +20,15 @@ from schemas.video import (
     VideoSaveRequest,
 )
 from sessions.cache import bump_video_state_epoch, prepare_video_masker_for_video_init, reset_video_session_state
-from sessions.interactive_state import (
-    prompt_events_from_interactive_state,
-    sanitize_interactive_state,
-    validate_interactive_state_for_restore,
-    validate_objects_for_restore,
-)
-from sessions.metadata import current_masks_dir, current_session_path, load_session_metadata, merge_session_metadata, sanitize_save_name, serialized_video_objects, write_session_metadata
+from schemas.video import InteractiveState
+from sessions.metadata import current_masks_dir, current_session_path, interactive_state_projection, load_session_metadata, sanitize_save_name, write_session_metadata
 from sessions.paths import path_is_relative_to, resolve_input_path, resolve_saved_session_layout, validate_video_input_path
-from utils import load_mask_manifest, write_mask_manifest
+from utils import load_mask_manifest
 from video.io import copy_frames_directory_to_session, create_active_session, extract_video_to_session_frames
 from video.masks import mask_logits_to_2d_bool
 from video.manifest_cache import load_cached_mask_manifest
 from video.mask_encoding import encode_live_mask_payload
-from video.prompts import record_prompt_event
+from video.prompts import record_prompt_event, replay_annotation_prompts
 from tracking.results import restored_tracking_result_payload
 
 logger = logging.getLogger(__name__)
@@ -56,7 +53,6 @@ def initialize_video_state_from_resolved_input(
         session_metadata = load_session_metadata(session_dir)
         source_type = "saved_session"
         state.active_session_dir = session_dir
-        state.active_session_id = str(session_metadata.get("session_id") or uuid.uuid4().hex)
         state.active_session_saved_name = (
             str(session_metadata.get("saved_name")).strip()
             if session_metadata.get("saved_name")
@@ -80,18 +76,24 @@ def initialize_video_state_from_resolved_input(
             frame_idx=len(indexed_frame_files) - 1 if indexed_frame_files else None,
             message=f"Found {len(indexed_frame_files)} saved session frames",
         )
-        interactive_state, restore_warnings = validate_interactive_state_for_restore(
-            session_metadata.get("interactive_state")
-        )
-        state.video_prompt_events = prompt_events_from_interactive_state(interactive_state)
-        state.video_objects, object_warnings = validate_objects_for_restore(session_metadata.get("objects"))
-        restore_warnings = object_warnings + restore_warnings
+        try:
+            session_id = session_metadata["session_id"]
+            if not isinstance(session_id, str) or not session_id.strip():
+                raise ValueError("Session identity must be a nonempty string.")
+            annotations = SessionAnnotations.model_validate(session_metadata["annotations"])
+            if any(event.frame_idx >= len(indexed_frame_files) for event in annotations.prompts):
+                raise ValueError("Prompt frame is outside the video.")
+            interactive_state = InteractiveState.model_validate(
+                session_metadata.get("interactive_state") or {}
+            ).model_dump()
+        except (KeyError, ValidationError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=f"Invalid session annotations or editor state: {error}") from error
+        state.active_session_id = session_id
+        state.annotations = annotations
         restored_session_payload = {
-            "session_meta": session_metadata,
-            "objects": serialized_video_objects(),
-            "interactive_state": interactive_state,
+            "annotations": state.annotations.snapshot(),
+            "interactive_state": interactive_state_projection(interactive_state),
             "has_mask_manifest": bool(state.mask_manifest_path),
-            "interactive_state_warnings": restore_warnings,
         }
         tracking_result = restored_tracking_result_payload(session_dir, session_metadata)
         if tracking_result is not None:
@@ -228,6 +230,7 @@ def initialize_video_state_from_resolved_input(
             async_loading_frames=async_loading_frames,
             progress_callback=_on_sam2_progress,
         )
+        replay_annotation_prompts()
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -268,10 +271,11 @@ def initialize_video_state_from_resolved_input(
     state_epoch = bump_video_state_epoch()
     metadata_updates = {
         "source_input_path": str(resolved_input_path),
-        "schema_version": 2,
     }
     if source_type != "saved_session":
         metadata_updates["created_at"] = utc_now_iso()
+    else:
+        metadata_updates["interactive_state"] = restored_session_payload["interactive_state"]
     write_session_metadata(metadata_updates)
 
     response_payload: dict[str, Any] = {
@@ -382,6 +386,9 @@ async def add_new_points_or_box(request: VideoAddPointsOrBoxRequest):
             status_code=400,
             detail=f"Frame index out of bounds: {request.frame_idx}. Expected 0..{len(state.video_frame_files) - 1}.",
         )
+
+    if request.obj_id not in state.annotations.objects:
+        raise HTTPException(status_code=404, detail="Prompt object does not exist.")
 
     out_frame_idx, out_obj_ids, out_mask_logits = state.video_masker.add_new_points_or_box(
         frame_idx=request.frame_idx,
@@ -517,26 +524,12 @@ async def save_video_session(request: VideoSaveRequest):
     if path_is_relative_to(session_path, SAVED_ROOT):
         raise HTTPException(status_code=409, detail="Current session is already saved.")
 
-    interactive_state_payload = sanitize_interactive_state(request.interactive_state)
-    existing_metadata: dict[str, Any] = {}
-    session_metadata_path = session_path / "session.json"
-    if session_metadata_path.exists():
-        try:
-            loaded_metadata = load_mask_manifest(session_metadata_path)
-            if isinstance(loaded_metadata, dict):
-                existing_metadata = loaded_metadata
-        except Exception:
-            logger.warning("Failed to parse existing session metadata before save: %s", session_metadata_path)
-
+    interactive_state_payload = request.interactive_state.model_dump() if request.interactive_state else None
     saved_at = utc_now_iso()
-    merged_metadata = merge_session_metadata(
-        existing_meta=existing_metadata,
-        interactive_state=interactive_state_payload,
-        save_name=save_name,
-        saved_path=saved_path,
-        saved_at=saved_at,
-    )
-    write_mask_manifest(session_metadata_path, merged_metadata)
+    metadata_extra = {"saved_name": save_name, "saved_path": str(saved_path), "saved_at": saved_at}
+    if interactive_state_payload is not None:
+        metadata_extra["interactive_state"] = interactive_state_payload
+    write_session_metadata(metadata_extra)
 
     session_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(session_path), str(saved_path))
@@ -546,14 +539,6 @@ async def save_video_session(request: VideoSaveRequest):
     state.video_dir = str(saved_path / "frames")
     manifest_path = saved_path / "masks" / "manifest.json"
     state.mask_manifest_path = str(manifest_path) if manifest_path.exists() else None
-    metadata_extra = {
-        "schema_version": 2,
-        "saved_name": save_name,
-        "saved_path": str(saved_path),
-        "saved_at": saved_at,
-    }
-    if interactive_state_payload is not None:
-        metadata_extra["interactive_state"] = interactive_state_payload
     write_session_metadata(metadata_extra)
 
     return {
@@ -568,11 +553,8 @@ async def clear_all_prompts_in_frame(frame_idx: int, obj_id: int):
     if state.video_masker is None:
         raise HTTPException(status_code=400, detail="Video masker not active.")
     state.video_masker.clear_all_prompts_in_frame(frame_idx, obj_id)
-    state.video_prompt_events = [
-        event
-        for event in state.video_prompt_events
-        if not (int(event["frame_idx"]) == int(frame_idx) and int(event["obj_id"]) == int(obj_id))
-    ]
+    state.annotations.clear_prompts(frame_idx, obj_id)
+    write_session_metadata()
     return {"message": "Cleared all prompts in frame successfully"}
 
 async def remove_object(obj_id: int):
@@ -580,13 +562,8 @@ async def remove_object(obj_id: int):
     if state.video_masker is None:
         raise HTTPException(status_code=400, detail="Video masker not active.")
     state.video_masker.remove_object(obj_id)
-    state.video_prompt_events = [
-        event
-        for event in state.video_prompt_events
-        if int(event["obj_id"]) != int(obj_id)
-    ]
-    if state.video_objects.pop(int(obj_id), None) is not None:
-        write_session_metadata()
+    state.annotations.remove_object(obj_id)
+    write_session_metadata()
     return {"message": "Object removed successfully"}
 
 async def upsert_object(obj_id: int, request: VideoObjectUpdate):
@@ -594,14 +571,18 @@ async def upsert_object(obj_id: int, request: VideoObjectUpdate):
     if current_session_path() is None:
         raise HTTPException(status_code=400, detail="Video session is not initialized.")
     obj = VideoObject(id=obj_id, **request.model_dump()).model_dump()
-    state.video_objects[obj_id] = obj
+    state.annotations.upsert_object(obj)
     write_session_metadata()
     return obj
 
+
 async def get_video_info():
     return {
+        "session_id": state.active_session_id,
+        "state_epoch": int(state.video_state_epoch),
         "num_frames": len(state.video_frame_files),
-        "frame_files": state.video_frame_files
+        "frame_files": list(state.video_frame_files),
+        "annotations": state.annotations.snapshot() if current_session_path() is not None else None,
     }
 
 async def get_mask_manifest():
@@ -641,7 +622,9 @@ async def get_mask_data(frame_idx: int):
         raise HTTPException(status_code=404, detail="Frame index out of bounds")
 
     frame_payload = manifest.get("frames", {}).get(str(frame_idx), {"objects": {}})
-    objects_payload = frame_payload.get("objects", {})
+    active_object_ids = {str(key) for key in state.annotations.objects}
+    objects_payload = {obj_id: mask for obj_id, mask in frame_payload.get("objects", {}).items()
+                       if str(obj_id) in active_object_ids}
     return {
         "frame_idx": int(frame_idx),
         "objects": objects_payload,

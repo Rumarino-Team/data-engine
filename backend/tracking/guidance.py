@@ -179,7 +179,7 @@ def load_latest_tracking_guidance(*, num_frames: int) -> TrackingGuidance:
     if len(result_points) != len(result_tracks) or len(result_points) != len(result_visibility):
         return TrackingGuidance(points=[], skipped_reason="Latest CoTracker result has inconsistent tracked point data.", should_warn=True)
 
-    current_keys = positive_prompt_keys(state.video_prompt_events)
+    current_keys = positive_prompt_keys(state.annotations.prompt_events())
     matched_points: list[TrackedGuidancePoint] = []
 
     for index, point in enumerate(result_points):

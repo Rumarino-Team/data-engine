@@ -19,6 +19,7 @@ import type {
   VideoAddPointsOrBoxRequest,
   VideoAddPointsResponse,
   VideoInitStateRequest,
+  VideoInfoResponse,
   VideoMaskDataResponse,
   VideoObject,
   VideoPropagateRequest,
@@ -135,10 +136,8 @@ export class BackendService {
     });
   }
 
-  getVideoInfo(): Observable<{ num_frames: number; frame_files: string[] }> {
-    return this.http.get<{ num_frames: number; frame_files: string[] }>(
-      this.endpoint('/video/info'),
-    );
+  getVideoInfo(): Observable<VideoInfoResponse> {
+    return this.http.get<VideoInfoResponse>(this.endpoint('/video/info'));
   }
 
   getVideoFrameUrl(frameIdx: number): string {

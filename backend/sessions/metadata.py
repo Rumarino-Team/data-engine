@@ -1,10 +1,10 @@
-import logging, re
+import json, logging, os, re, tempfile
 from pathlib import Path
 from typing import Any, Optional
 from fastapi import HTTPException
 from core.jobs import utc_now_iso
 from core.state import state
-from utils import load_mask_manifest, write_mask_manifest
+from utils import load_mask_manifest
 
 logger = logging.getLogger(__name__)
 
@@ -19,8 +19,21 @@ def current_masks_dir() -> Optional[Path]:
     session_path = current_session_path()
     return session_path / "masks" if session_path is not None else None
 
-def serialized_video_objects() -> list[dict[str, Any]]:
-    return [state.video_objects[obj_id] for obj_id in sorted(state.video_objects)]
+def interactive_state_projection(raw_state: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """Project the accepted annotations into editor points and validate generated-mask caches."""
+    interactive = dict(raw_state or {})
+    accepted_points = state.annotations.interactive_points()
+    def point_keys(points):
+        return sorted((point["frame_idx"], point["obj_id"], point["x"], point["y"], point["label"])
+                      for point in points)
+    masks_match_prompts = point_keys(interactive.get("points", [])) == point_keys(accepted_points)
+    interactive["version"] = 1
+    interactive["points"] = accepted_points
+    interactive["live_masks"] = [mask for mask in interactive.get("live_masks", [])
+                                 if masks_match_prompts and mask.get("obj_id") in state.annotations.objects]
+    if interactive.get("selected_object_id") not in state.annotations.objects:
+        interactive["selected_object_id"] = None
+    return interactive
 
 def write_session_metadata(extra: Optional[dict[str, Any]] = None) -> None:
     session_path = current_session_path()
@@ -43,7 +56,6 @@ def write_session_metadata(extra: Optional[dict[str, Any]] = None) -> None:
         "state.mask_manifest_path": state.mask_manifest_path,
         "num_frames": len(state.video_frame_files),
         "state_epoch": int(state.video_state_epoch),
-        "objects": serialized_video_objects(),
         "updated_at": utc_now_iso(),
     }
     if state.video_masker is not None:
@@ -56,7 +68,6 @@ def write_session_metadata(extra: Optional[dict[str, Any]] = None) -> None:
             }
         )
     for key in (
-        "schema_version",
         "interactive_state",
         "created_at",
         "saved_at",
@@ -71,7 +82,26 @@ def write_session_metadata(extra: Optional[dict[str, Any]] = None) -> None:
             metadata[key] = existing_metadata[key]
     if extra:
         metadata.update(extra)
-    write_mask_manifest(session_metadata_path, metadata)
+    # Editor caches cannot replace accepted annotation inputs.
+    metadata["annotations"] = state.annotations.snapshot()
+    metadata["interactive_state"] = interactive_state_projection(metadata.get("interactive_state"))
+    previous_annotations = existing_metadata.get("annotations")
+    if isinstance(previous_annotations, dict) and previous_annotations.get("prompts") != metadata["annotations"]["prompts"]:
+        metadata["interactive_state"]["live_masks"] = []
+    metadata["schema_version"] = 3
+    # A failed write must leave the last complete annotations readable.
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=session_path,
+                                         prefix=".session-", suffix=".json", delete=False) as handle:
+            temporary_path = Path(handle.name)
+            json.dump(metadata, handle, ensure_ascii=True, separators=(",", ":"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, session_metadata_path)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 def load_session_metadata(session_root: Path) -> dict[str, Any]:
     session_json_path = session_root / "session.json"
@@ -100,20 +130,3 @@ def sanitize_save_name(name: str) -> str:
     if not sanitized or sanitized in {".", ".."}:
         raise HTTPException(status_code=400, detail="Save name cannot be empty.")
     return sanitized
-
-def merge_session_metadata(
-    *,
-    existing_meta: dict[str, Any],
-    interactive_state: Optional[dict[str, Any]],
-    save_name: str,
-    saved_path: Path,
-    saved_at: str,
-) -> dict[str, Any]:
-    merged = dict(existing_meta)
-    merged["schema_version"] = 2
-    merged["saved_name"] = save_name
-    merged["saved_path"] = str(saved_path)
-    merged["saved_at"] = saved_at
-    if interactive_state is not None:
-        merged["interactive_state"] = interactive_state
-    return merged

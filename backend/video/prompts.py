@@ -4,25 +4,28 @@ from core.jobs import update_job
 from core.state import state
 from sessions.cache import bump_video_state_epoch
 from sessions.metadata import write_session_metadata
+from schemas.video import VideoPrompt
 
 def record_prompt_event(request: "VideoAddPointsOrBoxRequest"):
-
-    if request.clear_old_points:
-        state.video_prompt_events = [
-            event
-            for event in state.video_prompt_events
-            if not (event["frame_idx"] == request.frame_idx and event["obj_id"] == request.obj_id)
-        ]
-
-    event = {
+    event = VideoPrompt.model_validate({
         "frame_idx": int(request.frame_idx),
         "obj_id": int(request.obj_id),
         "points": [list(map(float, point)) for point in (request.points or [])],
         "labels": [int(label) for label in (request.labels or [])],
         "box": [float(v) for v in request.box] if request.box is not None else None,
         "clear_old_points": bool(request.clear_old_points),
-    }
-    state.video_prompt_events.append(event)
+    })
+    state.annotations.set_prompt(event)
+    write_session_metadata()
+
+
+def replay_annotation_prompts() -> None:
+    for event in state.annotations.prompt_events():
+        state.video_masker.add_new_points_or_box(
+            frame_idx=event["frame_idx"], obj_id=event["obj_id"],
+            points=event["points"] or None, labels=event["labels"] or None,
+            clear_old_points=event["clear_old_points"], box=event["box"],
+        )
 
 def restore_video_masker_from_prompt_events(
     *,
@@ -60,17 +63,7 @@ def restore_video_masker_from_prompt_events(
         progress_callback=_on_progress,
     )
 
-    for event in state.video_prompt_events:
-        points = event["points"] if event["points"] else None
-        labels = event["labels"] if event["labels"] else None
-        state.video_masker.add_new_points_or_box(
-            frame_idx=int(event["frame_idx"]),
-            obj_id=int(event["obj_id"]),
-            points=points,
-            labels=labels,
-            clear_old_points=bool(event.get("clear_old_points", True)),
-            box=event.get("box"),
-        )
+    replay_annotation_prompts()
 
     if increment_epoch:
         bump_video_state_epoch()

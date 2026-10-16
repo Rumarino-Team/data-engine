@@ -8,6 +8,7 @@ from fastapi import HTTPException
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.state import state
+from core.annotations import SessionAnnotations
 from sessions.metadata import write_session_metadata
 from tracking.results import (
     load_prompt_tracking_result,
@@ -33,7 +34,7 @@ class TrackingResultTests(unittest.TestCase):
         state.active_session_id = None
         state.active_session_saved_name = None
         state.video_frame_files = []
-        state.video_prompt_events = []
+        state.annotations = SessionAnnotations(objects={1: {"id": 1, "label": "Object 1", "color": "#ff0000"}}, prompts=[])
         self.tmp.cleanup()
 
     def test_save_and_read_tracking_result(self):
@@ -59,7 +60,7 @@ class TrackingResultTests(unittest.TestCase):
         self.assertEqual(loaded["visibility"], [[True, True]])
 
     def test_latest_guidance_uses_matching_tracks_with_post_tracking_prompts(self):
-        state.video_prompt_events = [
+        state.annotations = SessionAnnotations(objects={1: {"id": 1, "label": "Object 1", "color": "#ff0000"}}, prompts=[
             {
                 "frame_idx": 0,
                 "obj_id": 1,
@@ -76,7 +77,7 @@ class TrackingResultTests(unittest.TestCase):
                 "box": None,
                 "clear_old_points": False,
             },
-        ]
+        ])
         save_prompt_tracking_result(
             model_name="cotracker3_online",
             num_points=1,
@@ -93,10 +94,10 @@ class TrackingResultTests(unittest.TestCase):
 
         self.assertIsNone(guidance.skipped_reason)
         self.assertEqual(len(guidance.points), 1)
-        self.assertEqual(len(state.video_prompt_events), 2)
+        self.assertEqual(len(state.annotations.prompts), 2)
 
     def test_latest_guidance_ignores_tracks_when_source_prompt_was_removed(self):
-        state.video_prompt_events = [
+        state.annotations = SessionAnnotations(objects={1: {"id": 1, "label": "Object 1", "color": "#ff0000"}}, prompts=[
             {
                 "frame_idx": 1,
                 "obj_id": 1,
@@ -105,7 +106,7 @@ class TrackingResultTests(unittest.TestCase):
                 "box": None,
                 "clear_old_points": True,
             }
-        ]
+        ])
         save_prompt_tracking_result(
             model_name="cotracker3_online",
             num_points=1,
@@ -124,7 +125,7 @@ class TrackingResultTests(unittest.TestCase):
         self.assertIn("No CoTracker points match", guidance.skipped_reason)
 
     def test_latest_guidance_skips_frame_count_mismatch(self):
-        state.video_prompt_events = [
+        state.annotations = SessionAnnotations(objects={1: {"id": 1, "label": "Object 1", "color": "#ff0000"}}, prompts=[
             {
                 "frame_idx": 0,
                 "obj_id": 1,
@@ -133,7 +134,7 @@ class TrackingResultTests(unittest.TestCase):
                 "box": None,
                 "clear_old_points": True,
             }
-        ]
+        ])
         save_prompt_tracking_result(
             model_name="cotracker3_online",
             num_points=1,

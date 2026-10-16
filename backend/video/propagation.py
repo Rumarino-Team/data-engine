@@ -79,7 +79,7 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
     if not state.video_frame_files:
         raise HTTPException(status_code=400, detail="No video frames available. Call /video/init_state first.")
 
-    if not state.video_prompt_events:
+    if not state.annotations.prompt_events():
         raise HTTPException(status_code=400, detail="No prompts available for propagation.")
 
     effective_online_mode = state.video_masker.online_mode if request.online_mode is None else bool(request.online_mode)
@@ -93,7 +93,7 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
     if request.start_frame_idx is not None:
         start_frame_idx = int(request.start_frame_idx)
     else:
-        start_frame_idx = min(int(event["frame_idx"]) for event in state.video_prompt_events)
+        start_frame_idx = min(int(event["frame_idx"]) for event in state.annotations.prompt_events())
     start_frame_idx = min(max(start_frame_idx, 0), num_frames - 1)
 
     if request.max_frame_num_to_track is None:
@@ -303,7 +303,7 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
                         mask=np.asarray(obj_mask).astype(bool),
                     )
 
-            for event in state.video_prompt_events:
+            for event in state.annotations.prompt_events():
                 event_frame_idx = int(event["frame_idx"])
                 if event_frame_idx < window_start or event_frame_idx > window_end:
                     continue

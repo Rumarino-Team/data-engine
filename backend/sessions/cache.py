@@ -1,6 +1,7 @@
 import shutil
 from core.config import SESSION_CACHE_ROOT, WINDOW_FRAMES_ROOT
 from core.state import state
+from core.annotations import SessionAnnotations
 from sessions.metadata import current_session_path
 from sessions.paths import path_is_relative_to
 
@@ -34,9 +35,9 @@ def release_active_session(*, clear_video_masker: bool = True, clear_tracker: bo
         state.active_session_dir = None
         state.active_session_id = None
         state.active_session_saved_name = None
-        state.video_objects = {}
+        state.annotations = SessionAnnotations()
     if clear_prompts:
-        state.video_prompt_events = []
+        state.annotations.clear_prompts()
     cleanup_cuda_memory()
 
 def bump_video_state_epoch() -> int:
@@ -44,7 +45,7 @@ def bump_video_state_epoch() -> int:
     return state.video_state_epoch
 
 def reset_video_session_state():
-    state.video_prompt_events = []
+    state.annotations.clear_prompts()
     state.mask_manifest_path = None
 
 def prepare_video_masker_for_video_init():

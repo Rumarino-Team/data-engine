@@ -9,6 +9,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.state import state
+from core.annotations import SessionAnnotations
 from tracking.prompt_tracking import run_prompt_tracking_job
 from video.prompts import restore_video_masker_from_prompt_events
 
@@ -48,7 +49,7 @@ class PromptTrackingStatusTests(unittest.TestCase):
         state.active_session_id = "session-1"
         state.video_dir = str(Path(self.tmp.name))
         state.video_frame_files = ["00000.jpg", "00001.jpg"]
-        state.video_prompt_events = [
+        state.annotations = SessionAnnotations(objects={1: {"id": 1, "label": "Object 1", "color": "#ff0000"}}, prompts=[
             {
                 "frame_idx": 0,
                 "obj_id": 1,
@@ -57,7 +58,7 @@ class PromptTrackingStatusTests(unittest.TestCase):
                 "box": None,
                 "clear_old_points": True,
             }
-        ]
+        ])
         state.video_masker = _FakeInteractiveMasker()
         state.tracker = _FakeTracker()
         state.video_state_epoch = 1
@@ -67,7 +68,7 @@ class PromptTrackingStatusTests(unittest.TestCase):
         state.active_session_id = None
         state.video_dir = None
         state.video_frame_files = []
-        state.video_prompt_events = []
+        state.annotations = SessionAnnotations(objects={1: {"id": 1, "label": "Object 1", "color": "#ff0000"}}, prompts=[])
         state.video_masker = None
         state.tracker = None
         self.tmp.cleanup()

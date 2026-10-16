@@ -11,13 +11,40 @@ class VideoInitStateRequest(BaseModel):
     offload_state_to_cpu: Optional[bool] = None
     async_loading_frames: bool = False
 
-class VideoAddPointsOrBoxRequest(BaseModel):
-    frame_idx: int
-    obj_id: int
-    points: Optional[list[list[float]]] = None
-    labels: Optional[list[int]] = None
+class VideoPrompt(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    frame_idx: int = Field(ge=0)
+    obj_id: int = Field(ge=1)
+    points: list[list[float]] = Field(default_factory=list)
+    labels: list[int] = Field(default_factory=list)
     clear_old_points: bool = True
     box: Optional[list[float]] = None
+
+    @model_validator(mode="after")
+    def validate_prompt(self):
+        if len(self.points) != len(self.labels):
+            raise ValueError("Each point must have a label.")
+        if any(len(point) != 2 for point in self.points):
+            raise ValueError("Points must contain x and y coordinates.")
+        if any(label not in (0, 1) for label in self.labels):
+            raise ValueError("Point labels must be 0 or 1.")
+        if self.box is not None and (len(self.box) != 4 or self.box[0] >= self.box[2] or self.box[1] >= self.box[3]):
+            raise ValueError("Boxes must contain x1, y1, x2, y2 with positive area.")
+        if not self.points and self.box is None:
+            raise ValueError("A prompt must contain points or a box.")
+        return self
+
+
+class VideoAddPointsOrBoxRequest(VideoPrompt):
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_optional_points(cls, value):
+        if isinstance(value, dict):
+            value = dict(value)
+            value["points"] = value.get("points") or []
+            value["labels"] = value.get("labels") or []
+        return value
 
 class VideoPropagateRequest(BaseModel):
     start_frame_idx: Optional[int] = None

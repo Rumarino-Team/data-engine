@@ -7,7 +7,7 @@ import {
   VideoSaveInteractiveState,
   VideoSaveResponse,
 } from '../../services/backend.service';
-import { MaskObject, VideoMaskerStateStore } from './video-masker-state.store';
+import { VideoMaskerStateStore } from './video-masker-state.store';
 import { FramePipelineService } from './frame-pipeline.service';
 import { ToastService } from './toast.service';
 import { EditorJobService } from './editor-job.service';
@@ -18,8 +18,6 @@ import {
   deserializeLiveMasks,
   deserializePoints,
   getErrorMessage,
-  normalizeVideoObjects,
-  randomColor,
 } from '../video-masker.util';
 
 /** Loads, restores, and saves annotation sessions. */
@@ -82,28 +80,28 @@ export class SessionService {
     this.store.propagationEndFrameIdx.set(Math.max(0, res.num_frames - 1));
     this.store.saveName.set('');
     this.store.invalidateTracking();
-    this.store.nextObjectId = 1;
+    this.store.nextObjectId = res.restored_session?.annotations.next_object_id ?? 1;
     this.store.resetInteractiveMaps();
     this.framePipeline.clearFrameCaches();
-    this.store.objects.set(normalizeVideoObjects(res.restored_session?.objects || []));
+    this.store.objects.set(
+      Object.values(res.restored_session?.annotations.objects ?? {}).sort((a, b) => a.id - b.id),
+    );
     this.store.selectedObjectId.set(null);
     this.store.hasManifestMasks.set(Boolean(res.restored_session?.has_mask_manifest));
     this.store.updateStateEpoch(res.state_epoch, 'video init');
     this.restoreInteractiveSessionState(res.restored_session);
-    this.ensureObjects();
+    if (res.restored_session) {
+      // Canonical sessions may intentionally have no objects after deletion.
+      if (this.store.selectedObjectId() === null) {
+        this.store.selectedObjectId.set(this.store.objects()[0]?.id ?? null);
+      }
+    } else {
+      this.objectOperations.addObject();
+    }
 
     const restoredTrackingResultId = res.restored_session?.tracking_result?.result_id;
     if (restoredTrackingResultId) {
       await this.tracking.loadTrackingResult(restoredTrackingResultId, 'Restored tracking');
-    }
-
-    const restoredWarnings = res.restored_session?.interactive_state_warnings || [];
-    if (restoredWarnings.length > 0) {
-      this.toast.show(
-        'warning',
-        'Session partially restored',
-        restoredWarnings.slice(0, 2).join(' '),
-      );
     }
 
     this.store.resetDebugState();
@@ -143,39 +141,6 @@ export class SessionService {
       interactive.current_frame_idx < this.store.numFrames()
     ) {
       this.store.targetFrameIdx.set(Math.trunc(interactive.current_frame_idx));
-    }
-  }
-
-  /** Creates and persists objects for orphaned point/mask IDs, or a first object for a new session. */
-  private ensureObjects(): void {
-    const existing = new Map(this.store.objects().map((entry) => [entry.id, entry]));
-    const requiredObjectIds = new Set<number>();
-    this.store.points().forEach((framePoints) => {
-      framePoints.forEach((_objPoints, objId) => requiredObjectIds.add(objId));
-    });
-    this.store.masks().forEach((frameMasks) => {
-      frameMasks.forEach((_mask, objId) => requiredObjectIds.add(objId));
-    });
-    if (existing.size === 0 && requiredObjectIds.size === 0) {
-      requiredObjectIds.add(1);
-    }
-    const created: MaskObject[] = [];
-    for (const objId of requiredObjectIds) {
-      if (existing.has(objId)) {
-        continue;
-      }
-      const object = { id: objId, label: `Object ${objId}`, color: randomColor() };
-      existing.set(objId, object);
-      created.push(object);
-    }
-    if (created.length > 0) {
-      this.store.objects.set(Array.from(existing.values()).sort((a, b) => a.id - b.id));
-      created.forEach((object) => this.objectOperations.syncObject(object));
-    }
-
-    const selectedId = this.store.selectedObjectId();
-    if (selectedId === null || !existing.has(selectedId)) {
-      this.store.selectedObjectId.set(this.store.objects()[0]?.id ?? null);
     }
   }
 

@@ -76,7 +76,8 @@ class LiveMaskResponseTests(unittest.TestCase):
             propagate_in_video=Mock(return_value={}),
         )
         self.state = SimpleNamespace(video_masker=self.masker,
-                                     video_frame_files=["00000.jpg"], video_state_epoch=3)
+                                     video_frame_files=["00000.jpg"], video_state_epoch=3,
+                                     annotations=SimpleNamespace(objects={1: {}}))
         self.record = Mock()
 
     def call(self, name, request):

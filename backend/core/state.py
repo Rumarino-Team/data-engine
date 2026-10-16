@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 import numpy as np
+from core.annotations import SessionAnnotations
 
 @dataclass
 class BackendState:
@@ -12,12 +13,11 @@ class BackendState:
     tracking_video: Optional[np.ndarray] = None
     tracking_video_path: Optional[str] = None
     video_source_path: Optional[str] = None
-    video_prompt_events: list[dict[str, Any]] = field(default_factory=list)
+    annotations: SessionAnnotations = field(default_factory=SessionAnnotations)
     mask_manifest_path: Optional[str] = None
     video_state_epoch: int = 0
     active_session_dir: Optional[Path] = None
     active_session_id: Optional[str] = None
     active_session_saved_name: Optional[str] = None
-    video_objects: dict[int, dict[str, Any]] = field(default_factory=dict)
 
 state = BackendState()

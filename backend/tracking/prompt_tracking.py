@@ -35,13 +35,13 @@ def run_prompt_tracking_job(request: TrackingPromptPointsRequest) -> dict[str, A
         message="Collecting positive prompt points",
     )
 
-    if not state.video_prompt_events:
+    if not state.annotations.prompt_events():
         raise HTTPException(status_code=400, detail="No annotation prompts available for tracking.")
 
     positive_queries: list[list[float]] = []
     point_metadata: list[dict[str, Any]] = []
 
-    for event_idx, event in enumerate(state.video_prompt_events):
+    for event_idx, event in enumerate(state.annotations.prompt_events()):
         points = event.get("points", []) or []
         labels = event.get("labels", []) or [1] * len(points)
         frame_idx = int(event.get("frame_idx", 0))

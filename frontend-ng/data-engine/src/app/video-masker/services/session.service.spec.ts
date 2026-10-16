@@ -1,4 +1,4 @@
-import { describe, beforeEach, expect, it, vi } from 'vitest';
+import { describe, beforeEach, expect, it } from 'vitest';
 import { of, throwError } from 'rxjs';
 import { createWorkflowFixture } from '../testing/workflow-test-helpers';
 
@@ -121,6 +121,33 @@ describe('session workflows', () => {
     expect(editor.store.isInitialized()).toBe(true);
   });
 
+  it('preserves an intentionally empty canonical session and its reserved object IDs', async () => {
+    backendMock.initVideoState.mockReturnValue(of({ job_id: 'canonical' }));
+    backendMock.getJob.mockReturnValue(
+      of({
+        job: {
+          status: 'completed',
+          result: {
+            num_frames: 1,
+            state_epoch: 4,
+            restored_session: {
+              annotations: { version: 1, revision: 8, next_object_id: 7, objects: {}, prompts: [] },
+              interactive_state: { points: [], live_masks: [] },
+            },
+          },
+        },
+      }),
+    );
+    editor.store.videoDir.set('C:/saved/session');
+
+    await editor.sessions.initVideo();
+
+    expect(editor.store.objects()).toEqual([]);
+    expect(editor.store.selectedObjectId()).toBeNull();
+    expect(editor.store.nextObjectId).toBe(7);
+    expect(backendMock.upsertObject).not.toHaveBeenCalled();
+  });
+
   it('restores interactive state from saved-session init result', async () => {
     backendMock.initVideoState.mockReturnValue(
       of({
@@ -162,8 +189,13 @@ describe('session workflows', () => {
             state_epoch: 12,
             source_type: 'saved_session',
             restored_session: {
-              session_meta: { schema_version: 2 },
-              objects: [{ id: 1, label: 'buoy', color: '#ff6600' }],
+              annotations: {
+                version: 1,
+                revision: 1,
+                next_object_id: 2,
+                objects: { '1': { id: 1, label: 'buoy', color: '#ff6600' } },
+                prompts: [],
+              },
               has_mask_manifest: true,
               interactive_state: {
                 version: 1,
@@ -238,7 +270,7 @@ describe('session workflows', () => {
             state_epoch: 12,
             source_type: 'saved_session',
             restored_session: {
-              session_meta: { schema_version: 2 },
+              annotations: { version: 1, revision: 0, next_object_id: 1, objects: {}, prompts: [] },
               has_mask_manifest: true,
               tracking_result: {
                 result_id: 'track-restored',
@@ -332,7 +364,7 @@ describe('session workflows', () => {
             state_epoch: 12,
             source_type: 'saved_session',
             restored_session: {
-              session_meta: { schema_version: 2 },
+              annotations: { version: 1, revision: 0, next_object_id: 1, objects: {}, prompts: [] },
               has_mask_manifest: true,
               tracking_result: { result_id: 'missing-track' },
             },
