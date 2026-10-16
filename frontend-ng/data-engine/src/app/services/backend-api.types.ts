@@ -109,20 +109,32 @@ export interface VideoSaveInteractiveState {
   live_masks: InteractiveMaskRle[];
 }
 
+export interface VideoPrompt {
+  frame_idx: number;
+  obj_id: number;
+  points: number[][];
+  labels: number[];
+  clear_old_points: boolean;
+  box: number[] | null;
+}
+
 export interface VideoAnnotations {
   version: 1;
   revision: number;
   next_object_id: number;
   objects: Record<string, VideoObject>;
-  prompts: VideoAddPointsOrBoxRequest[];
+  prompts: VideoPrompt[];
 }
 
-export interface VideoInfoResponse {
+export interface AnnotationSnapshot {
   session_id: string | null;
   state_epoch: number;
+  annotations: VideoAnnotations | null;
+}
+
+export interface VideoInfoResponse extends AnnotationSnapshot {
   num_frames: number;
   frame_files: string[];
-  annotations: VideoAnnotations | null;
 }
 
 export interface RestoredSessionPayload {

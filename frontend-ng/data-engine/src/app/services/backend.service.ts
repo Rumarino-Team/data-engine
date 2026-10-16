@@ -10,6 +10,7 @@ import {
 } from './backend-api-url';
 import { normalizeBackendPath } from './backend-path';
 import type {
+  AnnotationSnapshot,
   CurrentJobResponse,
   HealthResponse,
   JobResponse,
@@ -123,15 +124,15 @@ export class BackendService {
     });
   }
 
-  upsertObject(object: VideoObject): Observable<VideoObject> {
-    return this.http.put<VideoObject>(this.endpoint(`/video/objects/${object.id}`), {
+  upsertObject(object: VideoObject): Observable<AnnotationSnapshot> {
+    return this.http.put<AnnotationSnapshot>(this.endpoint(`/video/objects/${object.id}`), {
       label: object.label,
       color: object.color,
     });
   }
 
-  removeObject(objId: number): Observable<any> {
-    return this.http.post(this.endpoint('/video/remove_object'), null, {
+  removeObject(objId: number): Observable<AnnotationSnapshot> {
+    return this.http.post<AnnotationSnapshot>(this.endpoint('/video/remove_object'), null, {
       params: { obj_id: objId.toString() },
     });
   }

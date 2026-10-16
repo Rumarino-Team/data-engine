@@ -564,7 +564,7 @@ async def remove_object(obj_id: int):
     state.video_masker.remove_object(obj_id)
     state.annotations.remove_object(obj_id)
     write_session_metadata()
-    return {"message": "Object removed successfully"}
+    return annotation_snapshot()
 
 async def upsert_object(obj_id: int, request: VideoObjectUpdate):
     require_no_active_job("update object")
@@ -573,16 +573,22 @@ async def upsert_object(obj_id: int, request: VideoObjectUpdate):
     obj = VideoObject(id=obj_id, **request.model_dump()).model_dump()
     state.annotations.upsert_object(obj)
     write_session_metadata()
-    return obj
+    return annotation_snapshot()
+
+
+def annotation_snapshot():
+    return {
+        "session_id": state.active_session_id,
+        "state_epoch": int(state.video_state_epoch),
+        "annotations": state.annotations.snapshot() if current_session_path() is not None else None,
+    }
 
 
 async def get_video_info():
     return {
-        "session_id": state.active_session_id,
-        "state_epoch": int(state.video_state_epoch),
+        **annotation_snapshot(),
         "num_frames": len(state.video_frame_files),
         "frame_files": list(state.video_frame_files),
-        "annotations": state.annotations.snapshot() if current_session_path() is not None else None,
     }
 
 async def get_mask_manifest():

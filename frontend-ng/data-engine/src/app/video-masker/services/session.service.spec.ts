@@ -194,7 +194,16 @@ describe('session workflows', () => {
                 revision: 1,
                 next_object_id: 2,
                 objects: { '1': { id: 1, label: 'buoy', color: '#ff6600' } },
-                prompts: [],
+                prompts: [
+                  {
+                    frame_idx: 4,
+                    obj_id: 1,
+                    points: [[10, 20]],
+                    labels: [1],
+                    clear_old_points: true,
+                    box: null,
+                  },
+                ],
               },
               has_mask_manifest: true,
               interactive_state: {

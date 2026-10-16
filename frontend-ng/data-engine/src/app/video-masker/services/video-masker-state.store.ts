@@ -4,6 +4,8 @@ import {
   BackendJob,
   TrackPromptPointMetadata,
   LiveMask,
+  VideoAnnotations,
+  AnnotationSnapshot,
 } from '../../services/backend.service';
 import {
   DebugMaskSource,
@@ -44,6 +46,70 @@ export class VideoMaskerStateStore {
   propagationEndFrameIdx = signal<number>(0);
   stateEpoch = signal<number>(0);
 
+  sessionId = signal<string | null>(null);
+  annotationsBackendUrl = signal<string | null>(null);
+  annotations = signal<VideoAnnotations | null>(null);
+  annotationRevision = computed(() => this.annotations()?.revision ?? null);
+  acceptedObjects = computed(() =>
+    Object.values(this.annotations()?.objects ?? {}).sort((a, b) => a.id - b.id),
+  );
+  acceptedPoints = computed(() => {
+    const frames = new Map<number, Map<number, Point[]>>();
+    for (const prompt of this.annotations()?.prompts ?? []) {
+      let objects = frames.get(prompt.frame_idx);
+      if (!objects) frames.set(prompt.frame_idx, (objects = new Map()));
+      const points = prompt.clear_old_points === false ? (objects.get(prompt.obj_id) ?? []) : [];
+      objects.set(prompt.obj_id, [
+        ...points,
+        ...(prompt.points ?? []).map(([x, y], index) => ({
+          x,
+          y,
+          label: prompt.labels[index],
+        })),
+      ]);
+    }
+    for (const [frameIdx, objects] of frames) {
+      for (const [objId, points] of objects) if (!points.length) objects.delete(objId);
+      if (!objects.size) frames.delete(frameIdx);
+    }
+    return frames;
+  });
+  pendingObjectUpdates = signal(0);
+
+  /** Replaces accepted inputs without changing navigation or other presentation state. */
+  applyAnnotationSnapshot(
+    info: AnnotationSnapshot,
+    backendUrl: string,
+    replaceSession = false,
+  ): boolean {
+    if (!info.session_id || !info.annotations) return false;
+    if (
+      !replaceSession &&
+      (this.sessionId() !== info.session_id || this.annotationsBackendUrl() !== backendUrl)
+    )
+      return false;
+    if (
+      !replaceSession &&
+      (info.annotations.revision < (this.annotationRevision() ?? 0) ||
+        info.state_epoch < this.stateEpoch())
+    )
+      return false;
+
+    this.sessionId.set(info.session_id);
+    this.annotationsBackendUrl.set(backendUrl);
+    this.annotations.set(structuredClone(info.annotations));
+    this.objects.set(this.acceptedObjects());
+    this.points.set(this.acceptedPoints());
+    this.nextObjectId = replaceSession
+      ? info.annotations.next_object_id
+      : Math.max(this.nextObjectId, info.annotations.next_object_id);
+    this.updateStateEpoch(info.state_epoch, 'annotation snapshot');
+    if (!this.objects().some((object) => object.id === this.selectedObjectId())) {
+      this.selectedObjectId.set(this.objects()[0]?.id ?? null);
+    }
+    return true;
+  }
+
   // Session-scoped bookkeeping shared by object and tracking workflows.
   nextObjectId = 1;
   trackingRevision = 0;
@@ -83,7 +149,9 @@ export class VideoMaskerStateStore {
   isLoading = signal<boolean>(false);
   isFrameLoading = signal<boolean>(false);
   isPointRequestInFlight = signal<boolean>(false);
-  isInteractionBusy = computed(() => this.isLoading() || this.isPointRequestInFlight());
+  isInteractionBusy = computed(
+    () => this.isLoading() || this.isPointRequestInFlight() || this.pendingObjectUpdates() > 0,
+  );
   apiHealthStatus = signal<ApiHealthStatus>('checking');
   activeJob = signal<BackendJob | null>(null);
   activeJobTitle = signal<string>('');

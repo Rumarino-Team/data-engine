@@ -1,149 +1,162 @@
-import { Injectable, inject } from '@angular/core';
-import { finalize, firstValueFrom } from 'rxjs';
-import { BackendService } from '../../services/backend.service';
+import { DestroyRef, Injectable, inject } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { Observable, defer, finalize, take } from 'rxjs';
+import { AnnotationSnapshot, BackendService } from '../../services/backend.service';
 import { getErrorMessage, randomColor } from '../video-masker.util';
 import { FramePipelineService } from './frame-pipeline.service';
 import { ToastService } from './toast.service';
-import { MaskObject, VideoMaskerStateStore } from './video-masker-state.store';
+import { VideoMaskerStateStore } from './video-masker-state.store';
 
-/** Owns object labels, ID allocation, and removal from the backend and local state. */
+type SessionContext = { backendUrl: string; sessionId: string };
+
+/** Sends object edits and applies accepted backend annotations. ID allocation moves next. */
 @Injectable()
 export class ObjectOperationsService {
   private readonly store = inject(VideoMaskerStateStore);
   private readonly backend = inject(BackendService);
   private readonly framePipeline = inject(FramePipelineService);
   private readonly toast = inject(ToastService);
-
-  private get isBusy(): boolean {
-    return this.store.isInteractionBusy();
-  }
-
-  private showError(title: string, fallback: string, error: unknown): void {
-    console.error(error);
-    this.toast.show('error', title, getErrorMessage(error, fallback));
-  }
-
-  // --- objects -----------------------------------------------------------
+  private readonly destroyRef = inject(DestroyRef);
 
   renameObject(id: number, value: string): void {
-    if (this.isBusy) return;
+    if (this.store.isInteractionBusy()) return;
     const label = value.trim().slice(0, 200);
-    const previous = this.store.objects().find((object) => object.id === id);
-    if (!label || !previous || previous.label === label) return;
-    const next = { ...previous, label };
-    this.replaceObject(next);
-    this.syncObject(next, previous);
+    const object = this.store.objects().find((entry) => entry.id === id);
+    if (!label || !object || object.label === label) return;
+    void this.mutate(() => this.backend.upsertObject({ ...object, label }), 'Object update failed');
   }
 
   addObject(): void {
-    if (this.isBusy) return;
-    const newId = this.reserveNextObjectId();
-    this.store.nextObjectId = newId + 1;
-    const object = { id: newId, label: `Object ${newId}`, color: randomColor() };
-    this.store.objects.set([...this.store.objects(), object]);
-    this.store.selectedObjectId.set(newId);
-    this.syncObject(object);
-  }
-
-  /** Persists object metadata to the backend; a failed relabel reverts to `previous`. */
-  syncObject(object: MaskObject, previous?: MaskObject): void {
-    this.backend.upsertObject(object).subscribe({
-      error: (error) => {
-        if (previous) this.replaceObject(previous);
-        this.showError('Object update failed', 'Failed to save object label.', error);
-      },
-    });
+    if (this.store.isInteractionBusy()) return;
+    const id = this.reserveNextObjectId();
+    this.store.nextObjectId = id + 1;
+    const object = { id, label: `Object ${id}`, color: randomColor() };
+    void this.mutate(() => this.backend.upsertObject(object), 'Object creation failed', id);
   }
 
   removeObject(): void {
-    if (this.isBusy) return;
+    if (this.store.isInteractionBusy()) return;
     const id = this.store.selectedObjectId();
-    if (id === null) return;
-
-    this.reserveNextObjectId();
-    this.store.isLoading.set(true);
-    this.backend
-      .removeObject(id)
-      .pipe(finalize(() => this.store.isLoading.set(false)))
-      .subscribe({
-        next: () => {
-          this.applyObjectRemoval(id);
-        },
-        error: (error) => this.showError('Remove failed', 'Failed to remove object.', error),
-      });
+    if (id !== null) void this.mutate(() => this.backend.removeObject(id), 'Remove failed');
   }
 
   async removeAllObjects(): Promise<void> {
-    if (this.isBusy) return;
-    const objectIds = this.store.objects().map((entry) => entry.id);
-    if (objectIds.length === 0) return;
-
-    this.reserveNextObjectId();
-    this.store.isLoading.set(true);
+    if (this.store.isInteractionBusy()) return;
+    const context = this.sessionContext();
+    if (!context) return;
+    const ids = this.store.objects().map((object) => object.id);
+    this.store.pendingObjectUpdates.update((count) => count + 1);
     try {
-      for (const id of objectIds) {
-        await firstValueFrom(this.backend.removeObject(id));
-        this.applyObjectRemoval(id);
+      for (const id of ids) {
+        if (
+          !(await this.mutate(
+            () => this.backend.removeObject(id),
+            'Remove all failed',
+            undefined,
+            context,
+          ))
+        )
+          break;
       }
-    } catch (error) {
-      this.showError('Remove all failed', 'Failed to remove all objects.', error);
     } finally {
-      this.store.isLoading.set(false);
+      this.store.pendingObjectUpdates.update((count) => count - 1);
     }
   }
 
-  private replaceObject(next: MaskObject): void {
-    this.store.objects.update((objects) =>
-      objects.map((object) => (object.id === next.id ? next : object)),
+  private sessionContext(): SessionContext | null {
+    const sessionId = this.store.sessionId();
+    const backendUrl = this.backend.getApiUrl();
+    return sessionId && backendUrl === this.store.annotationsBackendUrl()
+      ? { sessionId, backendUrl }
+      : null;
+  }
+
+  private ownsSession(context: SessionContext): boolean {
+    return (
+      !this.destroyRef.destroyed &&
+      context.sessionId === this.store.sessionId() &&
+      context.backendUrl === this.backend.getApiUrl() &&
+      context.backendUrl === this.store.annotationsBackendUrl()
     );
-    this.framePipeline.redraw();
+  }
+
+  private mutate(
+    send: () => Observable<AnnotationSnapshot>,
+    errorTitle: string,
+    selectId?: number,
+    context = this.sessionContext(),
+  ): Promise<boolean> {
+    if (!context || !this.ownsSession(context)) return Promise.resolve(false);
+    this.store.pendingObjectUpdates.update((count) => count + 1);
+    return new Promise((resolve) => {
+      defer(send)
+        .pipe(
+          take(1),
+          takeUntilDestroyed(this.destroyRef),
+          finalize(() => this.store.pendingObjectUpdates.update((count) => count - 1)),
+        )
+        .subscribe({
+          next: (snapshot) => {
+            if (!this.ownsSession(context)) {
+              resolve(false);
+              return;
+            }
+            const previousIds = this.store.objects().map((object) => object.id);
+            if (!this.store.applyAnnotationSnapshot(snapshot, context.backendUrl)) {
+              resolve(false);
+              return;
+            }
+            const removed = previousIds.filter(
+              (id) => !this.store.objects().some((object) => object.id === id),
+            );
+            if (removed.length) this.clearRemovedRenderCaches(removed);
+            if (
+              selectId !== undefined &&
+              this.store.objects().some((object) => object.id === selectId)
+            ) {
+              this.store.selectedObjectId.set(selectId);
+            }
+            this.framePipeline.redraw();
+            resolve(true);
+          },
+          error: (error) => {
+            if (this.ownsSession(context))
+              this.toast.show(
+                'error',
+                errorTitle,
+                getErrorMessage(error, 'Unable to update objects.'),
+              );
+            resolve(false);
+          },
+          complete: () => resolve(false),
+        });
+    });
   }
 
   private reserveNextObjectId(): number {
-    this.store.nextObjectId = this.store
+    return this.store
       .objects()
       .reduce((next, object) => Math.max(next, object.id + 1), this.store.nextObjectId);
-    return this.store.nextObjectId;
   }
 
-  private applyObjectRemoval(id: number): void {
-    this.store.objects.set(this.store.objects().filter((entry) => entry.id !== id));
-    this.removeObjectFromFrameMaps(id);
-    if (this.store.selectedObjectId() === id) {
-      this.store.selectedObjectId.set(this.store.objects()[0]?.id ?? null);
+  /** Generated masks and textures are view caches; accepted prompts came from the snapshot. */
+  private clearRemovedRenderCaches(ids: number[]): void {
+    const masks = new Map(this.store.masks());
+    for (const [frame, objects] of masks) {
+      const retained = new Map([...objects].filter(([id]) => !ids.includes(id)));
+      if (retained.size) masks.set(frame, retained);
+      else masks.delete(frame);
     }
+    this.store.masks.set(masks);
+    const edited = new Map(this.store.liveEditedObjectFrames());
+    for (const [frame, objects] of edited) {
+      const retained = new Set([...objects].filter((id) => !ids.includes(id)));
+      if (retained.size) edited.set(frame, retained);
+      else edited.delete(frame);
+    }
+    this.store.liveEditedObjectFrames.set(edited);
     this.store.invalidateTracking();
-    this.framePipeline.removeObject(id);
-    this.framePipeline.redraw();
+    ids.forEach((id) => this.framePipeline.removeObject(id));
     this.framePipeline.scheduleFrameLoad(this.store.targetFrameIdx());
-  }
-
-  private removeObjectFromFrameMaps(objectId: number): void {
-    const nextMasks = new Map(this.store.masks());
-    nextMasks.forEach((frameMap, frameIdx) => {
-      const next = new Map(frameMap);
-      next.delete(objectId);
-      if (next.size) nextMasks.set(frameIdx, next);
-      else nextMasks.delete(frameIdx);
-    });
-    this.store.masks.set(nextMasks);
-
-    const nextPoints = new Map(this.store.points());
-    nextPoints.forEach((frameMap, frameIdx) => {
-      const next = new Map(frameMap);
-      next.delete(objectId);
-      if (next.size) nextPoints.set(frameIdx, next);
-      else nextPoints.delete(frameIdx);
-    });
-    this.store.points.set(nextPoints);
-
-    const nextEdited = new Map(this.store.liveEditedObjectFrames());
-    nextEdited.forEach((ids, frameIdx) => {
-      const next = new Set(ids);
-      next.delete(objectId);
-      if (next.size) nextEdited.set(frameIdx, next);
-      else nextEdited.delete(frameIdx);
-    });
-    this.store.liveEditedObjectFrames.set(nextEdited);
   }
 }

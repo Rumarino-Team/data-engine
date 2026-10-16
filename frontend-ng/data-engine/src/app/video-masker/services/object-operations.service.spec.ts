@@ -1,6 +1,7 @@
 import { describe, beforeEach, expect, it, vi } from 'vitest';
 import { Subject, of, throwError } from 'rxjs';
-import { createWorkflowFixture } from '../testing/workflow-test-helpers';
+import { createWorkflowFixture, objectSnapshot } from '../testing/workflow-test-helpers';
+import { AnnotationSnapshot } from '../../services/backend.service';
 
 describe('object-operations workflows', () => {
   let editor: ReturnType<typeof createWorkflowFixture>['editor'];
@@ -24,7 +25,7 @@ describe('object-operations workflows', () => {
     expect(editor.store.objects().map((object) => object.id)).toEqual([1, 3, 5]);
   });
 
-  it('persists relabels and reverts the label when the backend rejects it', () => {
+  it('applies accepted relabels and leaves accepted state unchanged on rejection', () => {
     objectOperations.renameObject(1, '  buoy ');
     expect(backendMock.upsertObject).toHaveBeenLastCalledWith({
       id: 1,
@@ -72,7 +73,14 @@ describe('object-operations workflows', () => {
     vi.spyOn(editor.framePipeline, 'scheduleFrameLoad').mockImplementation(() => {});
     objectOperations.addObject();
     backendMock.removeObject
-      .mockReturnValueOnce(of({}))
+      .mockReturnValueOnce(
+        of(
+          objectSnapshot(
+            editor.store,
+            editor.store.objects().filter((object) => object.id !== 1),
+          ),
+        ),
+      )
       .mockReturnValueOnce(throwError(() => new Error('Failed')));
     await objectOperations.removeAllObjects();
     expect(editor.store.objects().map((object) => object.id)).toEqual([2]);
@@ -80,7 +88,7 @@ describe('object-operations workflows', () => {
   });
 
   it('blocks point requests during object removal and unlocks after failure', async () => {
-    const removal$ = new Subject<unknown>();
+    const removal$ = new Subject<AnnotationSnapshot>();
     backendMock.removeObject.mockReturnValue(removal$);
     objectOperations.removeObject();
     await editor.prompts.addPoint(10, 20, 1, 5);
@@ -88,5 +96,111 @@ describe('object-operations workflows', () => {
     removal$.error(new Error('Removal failed'));
     expect(editor.store.isInteractionBusy()).toBe(false);
     expect(editor.store.objects()).toHaveLength(1);
+  });
+
+  it('waits for accepted creation and uses the returned state without another GET', async () => {
+    const pending = new Subject<AnnotationSnapshot>();
+    backendMock.upsertObject.mockReturnValue(pending);
+    objectOperations.addObject();
+    expect(editor.store.objects()).toHaveLength(1);
+    expect(editor.store.selectedObjectId()).toBe(1);
+    expect(editor.store.isInteractionBusy()).toBe(true);
+    await editor.prompts.addPoint(10, 20, 1, 5);
+    expect(backendMock.addNewPointsOrBox).not.toHaveBeenCalled();
+    const sent = backendMock.upsertObject.mock.calls[0][0];
+    const accepted = { ...sent, label: 'Accepted object' };
+    pending.next(objectSnapshot(editor.store, [...editor.store.objects(), accepted]));
+    expect(editor.store.objects().find((object) => object.id === sent.id)?.label).toBe(
+      'Accepted object',
+    );
+    expect(editor.store.selectedObjectId()).toBe(sent.id);
+    expect(editor.store.annotationRevision()).toBe(1);
+    expect(editor.store.isInteractionBusy()).toBe(false);
+    expect(backendMock.getVideoInfo).not.toHaveBeenCalled();
+  });
+
+  it('does not leave a phantom object when creation fails', () => {
+    const previous = editor.store.objects();
+    const accepted = editor.store.annotations();
+    backendMock.upsertObject.mockReturnValue(throwError(() => new Error('rejected')));
+    objectOperations.addObject();
+    expect(editor.store.objects()).toBe(previous);
+    expect(editor.store.annotations()).toBe(accepted);
+    expect(editor.store.selectedObjectId()).toBe(1);
+    expect(editor.store.pendingObjectUpdates()).toBe(0);
+  });
+
+  it('keeps the accepted label while a rename is pending and blocks overlapping object edits', () => {
+    const pending = new Subject<AnnotationSnapshot>();
+    backendMock.upsertObject.mockReturnValue(pending);
+    const previous = editor.store.objects();
+    objectOperations.renameObject(1, 'Draft');
+    expect(editor.store.objects()).toBe(previous);
+    objectOperations.renameObject(1, 'Later');
+    expect(backendMock.upsertObject).toHaveBeenCalledTimes(1);
+    pending.error(new Error('rejected'));
+    expect(editor.store.objects()).toBe(previous);
+  });
+
+  it('ignores an older accepted response without rolling back a newer snapshot', () => {
+    const pending = new Subject<AnnotationSnapshot>();
+    backendMock.upsertObject.mockReturnValue(pending);
+    const older = objectSnapshot(editor.store, [{ id: 1, label: 'Older', color: '#ff0000' }]);
+    objectOperations.renameObject(1, 'Older');
+    const newer = objectSnapshot(editor.store, [{ id: 1, label: 'Newer', color: '#ff0000' }]);
+    newer.annotations!.revision = 10;
+    editor.store.applyAnnotationSnapshot(newer, backendMock.getApiUrl());
+    pending.next(older);
+    expect(editor.store.objects()[0].label).toBe('Newer');
+    expect(editor.store.annotationRevision()).toBe(10);
+    expect(editor.store.isInteractionBusy()).toBe(false);
+  });
+
+  it('does not apply a response after the backend URL changes', () => {
+    const pending = new Subject<AnnotationSnapshot>();
+    backendMock.upsertObject.mockReturnValue(pending);
+    const response = objectSnapshot(editor.store, [
+      { id: 1, label: 'Old backend', color: '#ff0000' },
+    ]);
+    objectOperations.renameObject(1, 'Old backend');
+    backendMock.getApiUrl.mockReturnValue('http://other-backend');
+    pending.next(response);
+    expect(editor.store.objects()[0].label).toBe('Object 1');
+    expect(editor.store.annotationRevision()).toBe(0);
+  });
+
+  it('does not apply a response to a replacement session', () => {
+    const pending = new Subject<AnnotationSnapshot>();
+    backendMock.upsertObject.mockReturnValue(pending);
+    const response = objectSnapshot(editor.store, [
+      { id: 1, label: 'Old session', color: '#ff0000' },
+    ]);
+    objectOperations.renameObject(1, 'Old session');
+    const replacement = objectSnapshot(editor.store, [
+      { id: 1, label: 'Replacement', color: '#00ff00' },
+    ]);
+    replacement.session_id = 'replacement-session';
+    editor.store.applyAnnotationSnapshot(replacement, backendMock.getApiUrl(), true);
+    pending.next(response);
+    expect(editor.store.sessionId()).toBe('replacement-session');
+    expect(editor.store.objects()[0].label).toBe('Replacement');
+  });
+
+  it('takes remaining prompts from the deletion response instead of cleaning local point maps', () => {
+    objectOperations.addObject();
+    editor.store.selectedObjectId.set(1);
+    const accepted = objectSnapshot(
+      editor.store,
+      editor.store.objects().filter((object) => object.id !== 1),
+    );
+    accepted.annotations!.prompts = [
+      { frame_idx: 9, obj_id: 2, points: [[3, 4]], labels: [1], clear_old_points: true, box: null },
+    ];
+    backendMock.removeObject.mockReturnValue(of(accepted));
+    objectOperations.removeObject();
+    expect(editor.store.points().get(9)?.get(2)).toEqual([{ x: 3, y: 4, label: 1 }]);
+    expect(editor.store.selectedObjectId()).toBe(2);
+    expect(editor.store.annotations()).toEqual(accepted.annotations);
+    expect(backendMock.getVideoInfo).not.toHaveBeenCalled();
   });
 });

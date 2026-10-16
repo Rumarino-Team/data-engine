@@ -1,7 +1,13 @@
 import { TestBed } from '@angular/core/testing';
-import { Observable, of } from 'rxjs';
+import { Observable, map, of } from 'rxjs';
 import { vi } from 'vitest';
-import { BackendService, VideoAddPointsResponse } from '../../services/backend.service';
+import {
+  BackendService,
+  VideoAddPointsResponse,
+  VideoInitStateResponse,
+  AnnotationSnapshot,
+  VideoObject,
+} from '../../services/backend.service';
 import { DesktopBridgeService } from '../../services/desktop-bridge.service';
 import { BackendConnectionService } from '../services/backend-connection.service';
 import { CanvasViewportService } from '../services/canvas-viewport.service';
@@ -36,6 +42,7 @@ export function createBackendMocks() {
     health: vi.fn(() => of({ status: 'ok' })),
     initVideoState: vi.fn(),
     getJob: vi.fn(),
+    getVideoInfo: vi.fn(),
     trackPromptPoints: vi.fn(),
     propagateInVideo: vi.fn(),
     getTrackingResult: vi.fn(),
@@ -44,10 +51,30 @@ export function createBackendMocks() {
     setApiUrl: vi.fn((value: string) => value),
     resetApiUrl: vi.fn(() => 'http://127.0.0.1:8000'),
     saveVideoSession: vi.fn(),
-    removeObject: vi.fn<(id: number) => Observable<unknown>>(() => of({})),
-    upsertObject: vi.fn<(object: unknown) => Observable<unknown>>(() => of({})),
+    removeObject: vi.fn<(id: number) => Observable<AnnotationSnapshot>>(),
+    upsertObject: vi.fn<(object: VideoObject) => Observable<AnnotationSnapshot>>(),
     resetVideoState: vi.fn(() => of({ state_epoch: 4 })),
   };
+  backendMock.getVideoInfo.mockImplementation(() => {
+    const job = backendMock.getJob.mock.results.at(-1)?.value as Observable<{
+      job: { result: VideoInitStateResponse };
+    }>;
+    return job.pipe(
+      map(({ job: { result } }) => ({
+        session_id: 'session-1',
+        state_epoch: result.state_epoch,
+        num_frames: result.num_frames,
+        frame_files: Array.from({ length: result.num_frames }, (_, frame) => `${frame}.jpg`),
+        annotations: result.restored_session?.annotations ?? {
+          version: 1,
+          revision: 0,
+          next_object_id: 1,
+          objects: {},
+          prompts: [],
+        },
+      })),
+    );
+  });
   const desktopBridgeMock = {
     isTauri: vi.fn(() => false),
     pickVideoFile: vi.fn(),
@@ -65,10 +92,63 @@ export function mockProviders(mocks: ReturnType<typeof createBackendMocks>) {
 }
 
 export function initializeEditorStore(store: VideoMaskerStateStore): void {
-  store.selectedObjectId.set(1);
-  store.objects.set([{ id: 1, label: 'Object 1', color: '#ff0000' }]);
-  store.stateEpoch.set(3);
+  store.applyAnnotationSnapshot(
+    {
+      session_id: 'session-1',
+      state_epoch: 3,
+      annotations: {
+        version: 1,
+        revision: 0,
+        next_object_id: 2,
+        objects: { '1': { id: 1, label: 'Object 1', color: '#ff0000' } },
+        prompts: [],
+      },
+    },
+    'http://127.0.0.1:8000',
+    true,
+  );
   store.displayedFrameIdx.set(5);
+}
+
+export function objectSnapshot(
+  store: VideoMaskerStateStore,
+  objects: VideoObject[],
+): AnnotationSnapshot {
+  const ids = new Set(objects.map((object) => object.id));
+  return {
+    session_id: store.sessionId(),
+    state_epoch: store.stateEpoch(),
+    annotations: {
+      version: 1,
+      revision: (store.annotationRevision() ?? 0) + 1,
+      next_object_id: Math.max(
+        store.nextObjectId,
+        store.annotations()?.next_object_id ?? 1,
+        ...objects.map((object) => object.id + 1),
+      ),
+      objects: Object.fromEntries(objects.map((object) => [object.id, object])),
+      prompts: (store.annotations()?.prompts ?? []).filter((prompt) => ids.has(prompt.obj_id)),
+    },
+  };
+}
+
+export function configureObjectMutationMocks(
+  backend: ReturnType<typeof createBackendMocks>['backendMock'],
+  store: VideoMaskerStateStore,
+): void {
+  backend.upsertObject.mockImplementation((object) =>
+    of(
+      objectSnapshot(store, [...store.objects().filter((entry) => entry.id !== object.id), object]),
+    ),
+  );
+  backend.removeObject.mockImplementation((id) =>
+    of(
+      objectSnapshot(
+        store,
+        store.objects().filter((object) => object.id !== id),
+      ),
+    ),
+  );
 }
 
 /** Real workflow services share one store; no page component or view is created. */
@@ -99,5 +179,6 @@ export function createWorkflowFixture() {
     framePipeline: TestBed.inject(FramePipelineService),
   };
   initializeEditorStore(editor.store);
+  configureObjectMutationMocks(mocks.backendMock, editor.store);
   return { ...mocks, editor, objectOperations: TestBed.inject(ObjectOperationsService) };
 }
