@@ -1,5 +1,7 @@
+import { setAcceptedPoints } from '../testing/workflow-test-helpers';
 import { VideoAddPointsResponse } from '../../services/backend.service';
-import { describe, beforeEach, expect, it, vi } from 'vitest';
+import { TestBed } from '@angular/core/testing';
+import { describe, beforeEach, expect, it } from 'vitest';
 import { Subject, of, throwError } from 'rxjs';
 import { createWorkflowFixture, makeResponse } from '../testing/workflow-test-helpers';
 
@@ -10,6 +12,144 @@ describe('point-editing workflows', () => {
 
   beforeEach(() => {
     ({ editor, backendMock, objectOperations } = createWorkflowFixture());
+  });
+
+  it('keeps accepted points unchanged while previewing an edit and on rejection', async () => {
+    const response = new Subject<VideoAddPointsResponse>();
+    backendMock.addNewPointsOrBox.mockReturnValue(response);
+    const accepted = editor.store.points();
+    const pending = editor.prompts.addPoint(10, 20, 1, 5);
+    expect(editor.store.points()).toBe(accepted);
+    expect(editor.store.previewPoints().get(5)?.get(1)).toEqual([{ x: 10, y: 20, label: 1 }]);
+    response.error({ status: 422 });
+    await pending;
+    expect(editor.store.points()).toBe(accepted);
+    expect(editor.store.pendingPointEdit()).toBeNull();
+    expect(editor.store.annotationRecoveryRequested()).toBe(false);
+  });
+
+  it.each([0, 409, 500])(
+    'recovers uncertain point status %s without replaying the request',
+    async (status) => {
+      editor.store.isInitialized.set(true);
+      const accepted = makeResponse({});
+      backendMock.getVideoInfo.mockReturnValue(
+        of({ ...accepted, predictor_ready: true, num_frames: 10, frame_files: [] }),
+      );
+      backendMock.addNewPointsOrBox.mockReturnValue(throwError(() => ({ status })));
+      await editor.prompts.addPoint(10, 20, 1, 5);
+      TestBed.tick();
+      await Promise.resolve();
+      expect(backendMock.addNewPointsOrBox).toHaveBeenCalledTimes(1);
+      expect(backendMock.getVideoInfo).toHaveBeenCalledTimes(1);
+      expect(editor.store.points().get(5)?.get(1)).toEqual([{ x: 10, y: 20, label: 1 }]);
+      expect(editor.store.annotationRevision()).toBe(1);
+    },
+  );
+
+  it('accepts the requested frame after navigation instead of rolling its points back', async () => {
+    const response = new Subject<VideoAddPointsResponse>();
+    backendMock.addNewPointsOrBox.mockReturnValue(response);
+    const pending = editor.prompts.addPoint(10, 20, 1, 5);
+    editor.store.displayedFrameIdx.set(8);
+    response.next(makeResponse({}));
+    await pending;
+    expect(editor.store.displayedFrameIdx()).toBe(8);
+    expect(editor.store.points().get(5)?.get(1)).toHaveLength(1);
+    expect(editor.store.masks().has(5)).toBe(true);
+    expect(editor.store.masks().has(8)).toBe(false);
+  });
+
+  it('recovers a rejected last-point removal using accepted state', async () => {
+    setAcceptedPoints(editor.store, new Map([[5, new Map([[1, [{ x: 10, y: 20, label: 1 }]]])]]));
+    editor.store.isInitialized.set(true);
+    const pending = new Subject<VideoAddPointsResponse>();
+    backendMock.clearAllPromptsInFrame.mockReturnValue(pending);
+    const removal = editor.prompts.removePoint(1, 5, 0);
+    expect(editor.store.points().get(5)?.get(1)).toHaveLength(1);
+    expect(editor.store.previewPoints().size).toBe(0);
+    expect(backendMock.clearAllPromptsInFrame).toHaveBeenCalledWith(5, 1, {
+      session_id: 'session-1',
+      expected_revision: 0,
+    });
+    backendMock.getVideoInfo.mockReturnValue(
+      of({ ...makeResponse({}), predictor_ready: true, num_frames: 10, frame_files: [] }),
+    );
+    pending.error({ status: 409 });
+    await removal;
+    TestBed.tick();
+    await Promise.resolve();
+    expect(editor.store.points().get(5)?.get(1)).toHaveLength(1);
+    expect(backendMock.clearAllPromptsInFrame).toHaveBeenCalledTimes(1);
+    expect(editor.store.pendingPointEdit()).toBeNull();
+  });
+
+  it('requires reload when recovery reports an unusable predictor', async () => {
+    editor.store.isInitialized.set(true);
+    backendMock.addNewPointsOrBox.mockReturnValue(throwError(() => ({ status: 503 })));
+    backendMock.getVideoInfo.mockReturnValue(
+      of({ ...makeResponse({}), predictor_ready: false, num_frames: 10, frame_files: [] }),
+    );
+    await editor.prompts.addPoint(10, 20, 1, 5);
+    TestBed.tick();
+    await Promise.resolve();
+    expect(editor.store.isInitialized()).toBe(false);
+    expect(editor.store.sessionId()).toBe('session-1');
+    expect(editor.store.isInteractionBusy()).toBe(false);
+  });
+
+  it.each([0, 409])(
+    'recovers reset status %s without locally clearing accepted prompts',
+    async (status) => {
+      setAcceptedPoints(editor.store, new Map([[5, new Map([[1, [{ x: 10, y: 20, label: 1 }]]])]]));
+      const accepted = editor.store.points();
+      editor.store.isInitialized.set(true);
+      backendMock.resetVideoState.mockReturnValue(throwError(() => ({ status })));
+      backendMock.getVideoInfo.mockReturnValue(
+        of({ ...makeResponse({}), predictor_ready: true, num_frames: 10, frame_files: [] }),
+      );
+      editor.propagation.clearMasks();
+      expect(editor.store.points()).toBe(accepted);
+      expect(backendMock.resetVideoState).toHaveBeenCalledWith({
+        session_id: 'session-1',
+        expected_revision: 0,
+      });
+      TestBed.tick();
+      await Promise.resolve();
+      expect(backendMock.resetVideoState).toHaveBeenCalledTimes(1);
+      expect(backendMock.getVideoInfo).toHaveBeenCalledTimes(1);
+      expect(editor.store.points().get(5)?.get(1)).toHaveLength(1);
+    },
+  );
+
+  it('cancels a pending preview when the editor is destroyed', async () => {
+    const response = new Subject<VideoAddPointsResponse>();
+    backendMock.addNewPointsOrBox.mockReturnValue(response);
+    const accepted = editor.store.points();
+    const pending = editor.prompts.addPoint(10, 20, 1, 5);
+    TestBed.resetTestingModule();
+    await pending;
+    expect(editor.store.points()).toBe(accepted);
+    expect(editor.store.pendingPointEdit()).toBeNull();
+    expect(editor.store.isPointRequestInFlight()).toBe(false);
+    expect(editor.store.annotationRecoveryRequested()).toBe(false);
+  });
+
+  it('discards a late response from a replaced session even at the same epoch', async () => {
+    const response = new Subject<VideoAddPointsResponse>();
+    backendMock.addNewPointsOrBox.mockReturnValue(response);
+    const pending = editor.prompts.addPoint(10, 20, 1, 5);
+    editor.store.applyAnnotationSnapshot(
+      { ...makeResponse({}), session_id: 'replacement' },
+      backendMock.getApiUrl(),
+      true,
+    );
+    const accepted = editor.store.annotations();
+    response.next(makeResponse({}));
+    await pending;
+    expect(editor.store.annotations()).toBe(accepted);
+    expect(editor.store.sessionId()).toBe('replacement');
+    expect(editor.store.annotationRecoveryRequested()).toBe(false);
   });
 
   it('blocks conflicting workflows while a point update is pending', async () => {
@@ -46,7 +186,7 @@ describe('point-editing workflows', () => {
       editor.store.stateEpoch.set(4);
       const replacementPoints = new Map([[5, new Map([[1, [{ x: 50, y: 60, label: 0 }]]])]]);
       const replacementMasks = new Map([[5, new Map([[1, [[false]]]])]]);
-      editor.store.points.set(replacementPoints);
+      setAcceptedPoints(editor.store, replacementPoints);
       editor.store.masks.set(replacementMasks);
       if (outcome === 'success') {
         response$.next(makeResponse({}));
@@ -56,7 +196,7 @@ describe('point-editing workflows', () => {
       }
       await pending;
       expect(editor.store.stateEpoch()).toBe(4);
-      expect(editor.store.points()).toBe(replacementPoints);
+      expect(editor.store.points()).toEqual(replacementPoints);
       expect(editor.store.masks()).toBe(replacementMasks);
       expect(editor.store.isPointRequestInFlight()).toBe(false);
     },
@@ -112,6 +252,7 @@ describe('point-editing workflows', () => {
 
     expect(backendMock.addNewPointsOrBox).toHaveBeenCalledWith(
       expect.objectContaining({ frame_idx: 5 }),
+      { session_id: 'session-1', expected_revision: 0 },
     );
     expect(editor.store.masks().get(5)?.get(1)).toEqual({
       size: [2, 2],
@@ -121,7 +262,7 @@ describe('point-editing workflows', () => {
     expect(editor.store.lastDiscardReason()).toBeNull();
   });
 
-  it('discards mismatched response frame and rolls back optimistic point', async () => {
+  it('discards mismatched response frames without changing accepted points', async () => {
     backendMock.addNewPointsOrBox.mockReturnValue(
       of(makeResponse({ request_frame_idx: 5, frame_idx: 4 })),
     );
@@ -224,7 +365,8 @@ describe('point-editing workflows', () => {
 
     const pendingRequest = editor.prompts.addPoint(30, 40, 1, 5);
 
-    expect(editor.store.points().get(5)?.get(1)?.length).toBe(1);
+    expect(editor.store.points().get(5)?.get(1)).toBeUndefined();
+    expect(editor.store.previewPoints().get(5)?.get(1)?.length).toBe(1);
     expect(editor.store.liveEditedObjectFrames().get(5)?.has(1)).toBeFalsy();
 
     response$.next(makeResponse({}));
@@ -234,7 +376,7 @@ describe('point-editing workflows', () => {
     expect(editor.store.liveEditedObjectFrames().get(5)?.has(1)).toBe(true);
   });
 
-  it('rolls back optimistic point and shows a toast when point update conflicts', async () => {
+  it('discards the preview and requests recovery when point update conflicts', async () => {
     backendMock.addNewPointsOrBox.mockReturnValue(
       throwError(() => ({ error: { detail: 'Another operation is already running.' } })),
     );

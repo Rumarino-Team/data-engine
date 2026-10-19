@@ -321,10 +321,18 @@ def init_video_state(video_dir):
     return False
 
 
+def annotation_headers():
+    response = requests.get(f"{BASE_URL}/video/info")
+    response.raise_for_status()
+    snapshot = response.json()
+    return {"X-Session-ID": snapshot["session_id"],
+            "X-Annotation-Revision": str(snapshot["annotations"]["revision"])}
+
+
 def reset_video_state():
     """Calls the /video/reset_state endpoint."""
     url = f"{BASE_URL}/video/reset_state"
-    response = requests.post(url)
+    response = requests.post(url, headers=annotation_headers())
     if response.status_code == 200:
         print("Video state reset successfully.")
     else:
@@ -346,7 +354,7 @@ def add_new_points_or_box(frame_idx, obj_id, points=None, labels=None, clear_old
     if box is not None:
         payload["box"] = box.tolist() if isinstance(box, np.ndarray) else box
     
-    response = requests.post(url, json=payload)
+    response = requests.post(url, json=payload, headers=annotation_headers())
     if response.status_code == 200:
         response_data = response.json()
         print(f"Added points/box for frame {frame_idx}, object {obj_id}.")

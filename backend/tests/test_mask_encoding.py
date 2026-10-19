@@ -89,10 +89,11 @@ class LiveMaskResponseTests(unittest.TestCase):
         namespace = {"np": np, "state": self.state, "logger": logging.getLogger(__name__),
                      "encode_live_mask_payload": encode_live_mask_payload,
                      "mask_logits_to_2d_bool": lambda mask: np.asarray(mask, dtype=bool),
-                     "foreground_operation": nullcontext, "annotation_snapshot": lambda: {}, "record_prompt_event": self.record,
+                     "foreground_operation": nullcontext, "prompt_runtime_edit": nullcontext,
+                     "AnnotationPrecondition": object, "validate_annotation_precondition": Mock(), "annotation_snapshot": lambda: {}, "record_prompt_event": self.record,
                      "VideoAddPointsOrBoxRequest": object, "VideoAddMaskRequest": object}
         exec(compile(ast.Module(body=[function], type_ignores=[]), str(source), "exec"), namespace)
-        return asyncio.run(namespace[name](request))
+        return asyncio.run(namespace[name](request, object()) if name == "add_new_points_or_box" else namespace[name](request))
 
     def request(self):
         return SimpleNamespace(frame_idx=0, obj_id=1, points=[[0, 0]], labels=[1],

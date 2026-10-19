@@ -92,6 +92,10 @@ export class SessionService {
       }
       if (!this.store.applyAnnotationSnapshot(info, backendUrl)) return false;
       this.store.numFrames.set(info.num_frames);
+      if (info.predictor_ready === false) {
+        this.store.isInitialized.set(false);
+        throw new Error('The predictor is unavailable. Reload the video to continue.');
+      }
       if (
         objects.map((object) => object.id).join() !==
           this.store

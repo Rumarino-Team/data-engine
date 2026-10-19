@@ -29,7 +29,7 @@ from video.io import copy_frames_directory_to_session, create_active_session, ex
 from video.masks import mask_logits_to_2d_bool
 from video.manifest_cache import load_cached_mask_manifest
 from video.mask_encoding import encode_live_mask_payload
-from video.prompts import record_prompt_event, replay_annotation_prompts
+from video.prompts import record_prompt_event, replay_annotation_prompts, prompt_runtime_edit
 from tracking.results import restored_tracking_result_payload
 
 logger = logging.getLogger(__name__)
@@ -358,27 +358,30 @@ def run_video_init_job(request: VideoInitStateRequest) -> dict[str, Any]:
     )
     return result
 
-async def reset_video_state():
+async def reset_video_state(precondition: AnnotationPrecondition):
     with foreground_operation():
+        validate_annotation_precondition(precondition)
         if state.video_masker is None:
             raise HTTPException(status_code=400, detail="Video masker not active.")
-        state.video_masker.reset_state()
-        reset_video_session_state()
-        masks_dir = current_masks_dir()
-        if masks_dir is not None:
-            shutil.rmtree(masks_dir, ignore_errors=True)
-            masks_dir.mkdir(parents=True, exist_ok=True)
-        state.mask_manifest_path = None
-        state_epoch = bump_video_state_epoch()
-        write_session_metadata()
-        return {
-            **annotation_snapshot(),
-            "message": "Video state reset successfully",
-            "state_epoch": state_epoch,
-        }
+        with prompt_runtime_edit():
+            state.video_masker.reset_state()
+            reset_video_session_state()
+            masks_dir = current_masks_dir()
+            if masks_dir is not None:
+                shutil.rmtree(masks_dir, ignore_errors=True)
+                masks_dir.mkdir(parents=True, exist_ok=True)
+            state.mask_manifest_path = None
+            state_epoch = bump_video_state_epoch()
+            write_session_metadata()
+            return {
+                **annotation_snapshot(),
+                "message": "Video state reset successfully",
+                "state_epoch": state_epoch,
+            }
 
-async def add_new_points_or_box(request: VideoAddPointsOrBoxRequest):
+async def add_new_points_or_box(request: VideoAddPointsOrBoxRequest, precondition: AnnotationPrecondition):
     with foreground_operation():
+        validate_annotation_precondition(precondition)
         if state.video_masker is None:
             raise HTTPException(status_code=400, detail="Video masker not active.")
 
@@ -393,102 +396,105 @@ async def add_new_points_or_box(request: VideoAddPointsOrBoxRequest):
         if request.obj_id not in state.annotations.objects:
             raise HTTPException(status_code=404, detail="Prompt object does not exist.")
 
-        out_frame_idx, out_obj_ids, out_mask_logits = state.video_masker.add_new_points_or_box(
-            frame_idx=request.frame_idx,
-            obj_id=request.obj_id,
-            points=request.points,
-            labels=request.labels,
-            clear_old_points=request.clear_old_points,
-            box=request.box
-        )
-        returned_frame_idx = int(out_frame_idx)
-        if returned_frame_idx != int(request.frame_idx):
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "Frame mismatch in SAM2 response: "
-                    f"request_frame_idx={int(request.frame_idx)} response_frame_idx={returned_frame_idx}"
-                ),
+        with prompt_runtime_edit():
+            out_frame_idx, out_obj_ids, out_mask_logits = state.video_masker.add_new_points_or_box(
+                frame_idx=request.frame_idx,
+                obj_id=request.obj_id,
+                points=request.points,
+                labels=request.labels,
+                clear_old_points=request.clear_old_points,
+                box=request.box
             )
-
-        normalized_obj_ids = [int(obj_id) for obj_id in out_obj_ids]
-        if len(normalized_obj_ids) != len(out_mask_logits):
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    "Invalid SAM2 response: "
-                    f"{len(normalized_obj_ids)} object IDs but {len(out_mask_logits)} mask tensors."
-                ),
-            )
-
-        masks_list: list[np.ndarray] = []
-        mask_pixel_counts: dict[int, int] = {}
-        mask_shapes: dict[int, list[int]] = {}
-        for index, obj_id in enumerate(normalized_obj_ids):
-            mask_2d = mask_logits_to_2d_bool(out_mask_logits[index])
-            masks_list.append(mask_2d)
-            mask_pixel_counts[int(obj_id)] = int(np.count_nonzero(mask_2d))
-            mask_shapes[int(obj_id)] = [int(mask_2d.shape[0]), int(mask_2d.shape[1])]
-
-        selected_obj_id = int(request.obj_id)
-        selected_obj_index = normalized_obj_ids.index(selected_obj_id) if selected_obj_id in normalized_obj_ids else None
-        selected_obj_pixels = int(mask_pixel_counts.get(selected_obj_id, 0))
-        has_positive_prompt = any(int(label) == 1 for label in (request.labels or []))
-        used_single_frame_fallback = False
-
-        # Some interactive clicks return an empty mask before memory preflight/consolidation.
-        # If the selected object mask is empty, run a 1-frame propagate pass as a bounded fallback.
-        if selected_obj_index is not None and selected_obj_pixels == 0 and has_positive_prompt:
-            try:
-                fallback_segments = state.video_masker.propagate_in_video(
-                    start_frame_idx=int(request.frame_idx),
-                    max_frame_num_to_track=1,
-                    reverse=False,
-                    batch_size=1,
-                    online_mode=state.video_masker.online_mode,
-                    collect_segments=True,
-                )
-                fallback_frame_masks = fallback_segments.get(int(request.frame_idx), {})
-                fallback_mask = fallback_frame_masks.get(selected_obj_id)
-                if fallback_mask is not None:
-                    fallback_mask_2d = np.asarray(fallback_mask).astype(bool)
-                    fallback_mask_2d = np.squeeze(fallback_mask_2d)
-                    if fallback_mask_2d.ndim == 2:
-                        fallback_pixels = int(np.count_nonzero(fallback_mask_2d))
-                        if fallback_pixels > 0:
-                            masks_list[selected_obj_index] = fallback_mask_2d
-                            mask_pixel_counts[selected_obj_id] = fallback_pixels
-                            mask_shapes[selected_obj_id] = [int(fallback_mask_2d.shape[0]), int(fallback_mask_2d.shape[1])]
-                            used_single_frame_fallback = True
-            except Exception:
-                logger.exception(
-                    "Single-frame interactive fallback failed for frame=%s obj=%s",
-                    int(request.frame_idx),
-                    selected_obj_id,
+            returned_frame_idx = int(out_frame_idx)
+            if returned_frame_idx != int(request.frame_idx):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Frame mismatch in SAM2 response: "
+                        f"request_frame_idx={int(request.frame_idx)} response_frame_idx={returned_frame_idx}"
+                    ),
                 )
 
-        record_prompt_event(request)
-        logger.info(
-            "Interactive mask response frame=%s obj=%s pixels=%s fallback=%s",
-            int(request.frame_idx),
-            selected_obj_id,
-            int(mask_pixel_counts.get(selected_obj_id, 0)),
-            used_single_frame_fallback,
-        )
+            normalized_obj_ids = [int(obj_id) for obj_id in out_obj_ids]
+            if len(normalized_obj_ids) != len(out_mask_logits):
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        "Invalid SAM2 response: "
+                        f"{len(normalized_obj_ids)} object IDs but {len(out_mask_logits)} mask tensors."
+                    ),
+                )
 
-        return {
-            **annotation_snapshot(),
-            "request_frame_idx": int(request.frame_idx),
-            "frame_idx": returned_frame_idx,
-            "frame_file": state.video_frame_files[returned_frame_idx],
-            "out_obj_ids": normalized_obj_ids,
-            "out_masks": [encode_live_mask_payload(mask) for mask in masks_list],
-            "mask_encoding": "mixed",
-            "mask_pixel_counts": mask_pixel_counts,
-            "mask_shapes": mask_shapes,
-            "single_frame_fallback_used": used_single_frame_fallback,
-            "state_epoch": int(state.video_state_epoch),
-        }
+            masks_list: list[np.ndarray] = []
+            mask_pixel_counts: dict[int, int] = {}
+            mask_shapes: dict[int, list[int]] = {}
+            for index, obj_id in enumerate(normalized_obj_ids):
+                mask_2d = mask_logits_to_2d_bool(out_mask_logits[index])
+                masks_list.append(mask_2d)
+                mask_pixel_counts[int(obj_id)] = int(np.count_nonzero(mask_2d))
+                mask_shapes[int(obj_id)] = [int(mask_2d.shape[0]), int(mask_2d.shape[1])]
+
+            selected_obj_id = int(request.obj_id)
+            selected_obj_index = normalized_obj_ids.index(selected_obj_id) if selected_obj_id in normalized_obj_ids else None
+            selected_obj_pixels = int(mask_pixel_counts.get(selected_obj_id, 0))
+            has_positive_prompt = any(int(label) == 1 for label in (request.labels or []))
+            used_single_frame_fallback = False
+
+            # Some interactive clicks return an empty mask before memory preflight/consolidation.
+            # If the selected object mask is empty, run a 1-frame propagate pass as a bounded fallback.
+            if selected_obj_index is not None and selected_obj_pixels == 0 and has_positive_prompt:
+                try:
+                    fallback_segments = state.video_masker.propagate_in_video(
+                        start_frame_idx=int(request.frame_idx),
+                        max_frame_num_to_track=1,
+                        reverse=False,
+                        batch_size=1,
+                        online_mode=state.video_masker.online_mode,
+                        collect_segments=True,
+                    )
+                    fallback_frame_masks = fallback_segments.get(int(request.frame_idx), {})
+                    fallback_mask = fallback_frame_masks.get(selected_obj_id)
+                    if fallback_mask is not None:
+                        fallback_mask_2d = np.asarray(fallback_mask).astype(bool)
+                        fallback_mask_2d = np.squeeze(fallback_mask_2d)
+                        if fallback_mask_2d.ndim == 2:
+                            fallback_pixels = int(np.count_nonzero(fallback_mask_2d))
+                            if fallback_pixels > 0:
+                                masks_list[selected_obj_index] = fallback_mask_2d
+                                mask_pixel_counts[selected_obj_id] = fallback_pixels
+                                mask_shapes[selected_obj_id] = [int(fallback_mask_2d.shape[0]), int(fallback_mask_2d.shape[1])]
+                                used_single_frame_fallback = True
+                except Exception:
+                    logger.exception(
+                        "Single-frame interactive fallback failed for frame=%s obj=%s",
+                        int(request.frame_idx),
+                        selected_obj_id,
+                    )
+                    raise
+
+            encoded_masks = [encode_live_mask_payload(mask) for mask in masks_list]
+            record_prompt_event(request)
+            logger.info(
+                "Interactive mask response frame=%s obj=%s pixels=%s fallback=%s",
+                int(request.frame_idx),
+                selected_obj_id,
+                int(mask_pixel_counts.get(selected_obj_id, 0)),
+                used_single_frame_fallback,
+            )
+
+            return {
+                **annotation_snapshot(),
+                "request_frame_idx": int(request.frame_idx),
+                "frame_idx": returned_frame_idx,
+                "frame_file": state.video_frame_files[returned_frame_idx],
+                "out_obj_ids": normalized_obj_ids,
+                "out_masks": encoded_masks,
+                "mask_encoding": "mixed",
+                "mask_pixel_counts": mask_pixel_counts,
+                "mask_shapes": mask_shapes,
+                "single_frame_fallback_used": used_single_frame_fallback,
+                "state_epoch": int(state.video_state_epoch),
+            }
 
 async def add_new_mask(request: VideoAddMaskRequest):
     with foreground_operation():
@@ -552,14 +558,18 @@ async def save_video_session(request: VideoSaveRequest):
             "state_epoch": int(state.video_state_epoch),
         }
 
-async def clear_all_prompts_in_frame(frame_idx: int, obj_id: int):
+async def clear_all_prompts_in_frame(frame_idx: int, obj_id: int, precondition: AnnotationPrecondition):
     with foreground_operation():
+        validate_annotation_precondition(precondition)
         if state.video_masker is None:
             raise HTTPException(status_code=400, detail="Video masker not active.")
-        state.video_masker.clear_all_prompts_in_frame(frame_idx, obj_id)
-        state.annotations.clear_prompts(frame_idx, obj_id)
-        write_session_metadata()
-        return {**annotation_snapshot(), "message": "Cleared all prompts in frame successfully"}
+        if obj_id not in state.annotations.objects or not 0 <= frame_idx < len(state.video_frame_files):
+            raise HTTPException(status_code=404, detail="Prompt object or frame does not exist.")
+        with prompt_runtime_edit():
+            state.video_masker.clear_all_prompts_in_frame(frame_idx, obj_id)
+            state.annotations.clear_prompts(frame_idx, obj_id)
+            write_session_metadata()
+            return {**annotation_snapshot(), "message": "Cleared all prompts in frame successfully"}
 
 async def remove_object(obj_id: int, precondition: AnnotationPrecondition):
     with foreground_operation():
@@ -609,6 +619,7 @@ async def get_video_info():
     with foreground_lock:
         return {
             **annotation_snapshot(),
+            "predictor_ready": state.video_masker is not None,
             "num_frames": len(state.video_frame_files),
             "frame_files": list(state.video_frame_files),
         }

@@ -1,4 +1,7 @@
 from typing import Optional
+from contextlib import contextmanager
+import logging
+from fastapi import HTTPException
 import sam2_video_masker as svm
 from core.jobs import update_job
 from core.state import state
@@ -68,3 +71,29 @@ def restore_video_masker_from_prompt_events(
     if increment_epoch:
         bump_video_state_epoch()
         write_session_metadata()
+
+
+@contextmanager
+def prompt_runtime_edit():
+    """Reject failed prompt edits and restore runtime from accepted inputs.
+
+    Caller holds foreground_operation. Encode results before persisting acceptance.
+    This does not make mask artifact deletion a filesystem transaction.
+    """
+    previous = state.annotations
+    state.annotations = previous.model_copy(deep=True)
+    try:
+        yield
+    except Exception:
+        state.annotations = previous
+        try:
+            state.video_masker.reset_state()
+            replay_annotation_prompts()
+        except Exception as recovery_error:
+            state.video_masker = None
+            bump_video_state_epoch()
+            logging.getLogger(__name__).exception("Prompt runtime recovery failed")
+            raise HTTPException(status_code=503, detail=
+                "The edit was rejected and the predictor could not be restored. Reload the video.") from recovery_error
+        bump_video_state_epoch()
+        raise

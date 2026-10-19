@@ -21,7 +21,7 @@ import { PointEditingService } from '../services/point-editing.service';
 import { SessionService } from '../services/session.service';
 import { ToastService } from '../services/toast.service';
 import { TrackingService } from '../services/tracking.service';
-import { VideoMaskerStateStore } from '../services/video-masker-state.store';
+import { Point, VideoMaskerStateStore } from '../services/video-masker-state.store';
 
 export const makeResponse = (
   overrides: Partial<VideoAddPointsResponse>,
@@ -90,6 +90,7 @@ export function createBackendMocks() {
     }>;
     return job.pipe(
       map(({ job: { result } }) => ({
+        predictor_ready: true,
         session_id: 'session-1',
         state_epoch: result.state_epoch,
         num_frames: result.num_frames,
@@ -228,4 +229,31 @@ export function createWorkflowFixture() {
   initializeEditorStore(editor.store);
   configureObjectMutationMocks(mocks.backendMock, editor.store);
   return { ...mocks, editor, objectOperations: TestBed.inject(ObjectOperationsService) };
+}
+
+/** Seed accepted prompt inputs for workflow/rendering tests. */
+export function setAcceptedPoints(
+  store: VideoMaskerStateStore,
+  frames: Map<number, Map<number, Point[]>>,
+): void {
+  const annotations = store.annotations() ?? {
+    version: 1 as const,
+    revision: 0,
+    next_object_id: 1,
+    objects: {},
+    prompts: [],
+  };
+  store.annotations.set({
+    ...annotations,
+    prompts: [...frames].flatMap(([frame_idx, objects]) =>
+      [...objects].map(([obj_id, points]) => ({
+        frame_idx,
+        obj_id,
+        points: points.map(({ x, y }) => [x, y]),
+        labels: points.map(({ label }) => label),
+        clear_old_points: true,
+        box: null,
+      })),
+    ),
+  });
 }

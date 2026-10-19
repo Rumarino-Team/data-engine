@@ -217,7 +217,7 @@ export class FramePipelineService {
     }
     this.store.lastMaskSource.set(maskSource);
 
-    const points = Array.from(this.store.points().get(frameIdx)?.values() ?? []).flat();
+    const points = Array.from(this.store.previewPoints().get(frameIdx)?.values() ?? []).flat();
     const tracks = this.store.trackedPoints();
     const objects = this.store.objects();
     const style = this.store.trackingOverlayStyle();

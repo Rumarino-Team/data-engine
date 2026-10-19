@@ -137,6 +137,7 @@ export interface ObjectCreationResponse extends AnnotationSnapshot {
 }
 
 export interface VideoInfoResponse extends AnnotationSnapshot {
+  predictor_ready: boolean;
   num_frames: number;
   frame_files: string[];
 }

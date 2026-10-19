@@ -1,3 +1,4 @@
+import { setAcceptedPoints } from '../testing/workflow-test-helpers';
 import { describe, beforeEach, expect, it, vi } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { Subject, of, throwError } from 'rxjs';
@@ -158,7 +159,7 @@ describe('object-operations workflows', () => {
     const points = new Map([[5, new Map([[1, [{ x: 1, y: 2, label: 1 }]]])]]);
     const masks = new Map([[5, new Map([[1, [[true]]]])]]);
     const edited = new Map([[5, new Set([1])]]);
-    editor.store.points.set(points);
+    setAcceptedPoints(editor.store, points);
     editor.store.masks.set(masks);
     editor.store.liveEditedObjectFrames.set(edited);
     objectOperations.removeObject();

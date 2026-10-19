@@ -94,14 +94,22 @@ export class BackendService {
     return this.http.post<JobStartResponse>(this.endpoint('/video/init_state'), payload);
   }
 
-  resetVideoState(): Observable<AnnotationSnapshot> {
-    return this.http.post<AnnotationSnapshot>(this.endpoint('/video/reset_state'), {});
+  resetVideoState(precondition: AnnotationPrecondition): Observable<AnnotationSnapshot> {
+    return this.http.post<AnnotationSnapshot>(
+      this.endpoint('/video/reset_state'),
+      {},
+      { headers: this.annotationHeaders(precondition) },
+    );
   }
 
-  addNewPointsOrBox(request: VideoAddPointsOrBoxRequest): Observable<VideoAddPointsResponse> {
+  addNewPointsOrBox(
+    request: VideoAddPointsOrBoxRequest,
+    precondition: AnnotationPrecondition,
+  ): Observable<VideoAddPointsResponse> {
     return this.http.post<VideoAddPointsResponse>(
       this.endpoint('/video/add_new_points_or_box'),
       request,
+      { headers: this.annotationHeaders(precondition) },
     );
   }
 
@@ -120,11 +128,16 @@ export class BackendService {
     return this.http.post<VideoSaveResponse>(this.endpoint('/video/save'), payload);
   }
 
-  clearAllPromptsInFrame(frameIdx: number, objId: number): Observable<AnnotationSnapshot> {
+  clearAllPromptsInFrame(
+    frameIdx: number,
+    objId: number,
+    precondition: AnnotationPrecondition,
+  ): Observable<AnnotationSnapshot> {
     return this.http.post<AnnotationSnapshot>(
       this.endpoint('/video/clear_all_prompts_in_frame'),
       null,
       {
+        headers: this.annotationHeaders(precondition),
         params: { frame_idx: frameIdx.toString(), obj_id: objId.toString() },
       },
     );

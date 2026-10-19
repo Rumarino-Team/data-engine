@@ -1,3 +1,4 @@
+import { setAcceptedPoints } from '../testing/workflow-test-helpers';
 import { TestBed } from '@angular/core/testing';
 import { Subject, of } from 'rxjs';
 import { vi } from 'vitest';
@@ -76,7 +77,8 @@ describe('FramePipelineService', () => {
   }
 
   it('passes frame, mask data, and prompt coordinates to the Konva viewport', async () => {
-    store.points.set(
+    setAcceptedPoints(
+      store,
       new Map([
         [
           0,

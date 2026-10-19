@@ -101,7 +101,7 @@ export class VideoMaskerStateStore {
     this.annotationsBackendUrl.set(backendUrl);
     this.annotations.set(structuredClone(info.annotations));
     this.objects.set(this.acceptedObjects());
-    this.points.set(this.acceptedPoints());
+    this.pendingPointEdit.set(null);
     this.updateStateEpoch(info.state_epoch, 'annotation snapshot');
     if (!this.objects().some((object) => object.id === this.selectedObjectId())) {
       this.selectedObjectId.set(this.objects()[0]?.id ?? null);
@@ -122,9 +122,21 @@ export class VideoMaskerStateStore {
   interactionMode = signal<'positive' | 'negative'>('positive');
 
   masks = signal<Map<number, Map<number, LiveMask>>>(new Map());
-  points = signal<Map<number, Map<number, Point[]>>>(new Map());
+  readonly points = this.acceptedPoints;
+  pendingPointEdit = signal<{ frameIdx: number; objId: number; points: Point[] } | null>(null);
+  previewPoints = computed(() => {
+    const pending = this.pendingPointEdit();
+    if (!pending) return this.points();
+    const frames = new Map(this.points());
+    const objects = new Map(frames.get(pending.frameIdx));
+    if (pending.points.length) objects.set(pending.objId, pending.points);
+    else objects.delete(pending.objId);
+    if (objects.size) frames.set(pending.frameIdx, objects);
+    else frames.delete(pending.frameIdx);
+    return frames;
+  });
   objectPointGroups = computed(() => {
-    const frames = Array.from(this.points().entries()).sort(([a], [b]) => a - b);
+    const frames = Array.from(this.previewPoints().entries()).sort(([a], [b]) => a - b);
     return this.objects().map((object) => ({
       ...object,
       children: frames.flatMap(([frameIdx, objects]) =>
@@ -185,7 +197,7 @@ export class VideoMaskerStateStore {
 
   resetInteractiveMaps(): void {
     this.masks.set(new Map());
-    this.points.set(new Map());
+    this.pendingPointEdit.set(null);
     this.liveEditedObjectFrames.set(new Map());
   }
 

@@ -44,13 +44,14 @@ async def init_video_state(request: VideoInitStateRequest):
 
 
 @router.post("/video/reset_state")
-async def reset_video_state_route():
-    return await reset_video_state()
+async def reset_video_state_route(precondition: AnnotationPrecondition = Depends(annotation_precondition)):
+    return await reset_video_state(precondition)
 
 
 @router.post("/video/add_new_points_or_box")
-async def add_new_points_or_box_route(request: VideoAddPointsOrBoxRequest):
-    return await add_new_points_or_box(request)
+async def add_new_points_or_box_route(request: VideoAddPointsOrBoxRequest,
+                                      precondition: AnnotationPrecondition = Depends(annotation_precondition)):
+    return await add_new_points_or_box(request, precondition)
 
 
 @router.post("/video/add_new_mask")
@@ -69,8 +70,9 @@ async def propagate_in_video(request: VideoPropagateRequest):
 
 
 @router.post("/video/clear_all_prompts_in_frame")
-async def clear_all_prompts_in_frame_route(frame_idx: int, obj_id: int):
-    return await clear_all_prompts_in_frame(frame_idx, obj_id)
+async def clear_all_prompts_in_frame_route(frame_idx: int, obj_id: int,
+                                         precondition: AnnotationPrecondition = Depends(annotation_precondition)):
+    return await clear_all_prompts_in_frame(frame_idx, obj_id, precondition)
 
 
 @router.post("/video/objects")

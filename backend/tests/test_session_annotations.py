@@ -123,6 +123,67 @@ class SessionAnnotationsTests(unittest.TestCase):
         self.assertEqual(state.annotations.prompts, [])
         self.assertEqual(state.annotations.revision, 0)
 
+    def test_failed_inference_rebuilds_previous_accepted_prompts_and_advances_epoch(self):
+        state.annotations.set_prompt(VideoPrompt(**PROMPT))
+        write_session_metadata()
+        before = state.annotations.snapshot()
+        epoch = state.video_state_epoch
+        self.masker.add_new_points_or_box.side_effect = [RuntimeError("partial inference"), (0, [1], [np.ones((3, 3))])]
+        with self.assertRaisesRegex(RuntimeError, "partial inference"):
+            self.client.post("/video/add_new_points_or_box", json={**PROMPT, "points": [[8, 9]]})
+        self.assertEqual(state.annotations.snapshot(), before)
+        self.assertEqual(self.metadata()["annotations"], before)
+        self.masker.reset_state.assert_called_once()
+        self.assertEqual(self.masker.add_new_points_or_box.call_args.kwargs["points"], [[1.0, 2.0]])
+        self.assertEqual(state.video_state_epoch, epoch + 1)
+        self.assertTrue(self.client.get("/video/info").json()["predictor_ready"])
+
+    def test_failed_runtime_recovery_disables_predictor_and_preserves_annotations(self):
+        state.annotations.set_prompt(VideoPrompt(**PROMPT))
+        before = state.annotations.snapshot()
+        self.masker.add_new_points_or_box.side_effect = RuntimeError("inference and replay failed")
+        response = self.client.post("/video/add_new_points_or_box", json=PROMPT)
+        self.assertEqual(response.status_code, 503)
+        self.assertIsNone(state.video_masker)
+        self.assertEqual(state.annotations.snapshot(), before)
+        self.assertFalse(self.client.get("/video/info").json()["predictor_ready"])
+        self.assertEqual(self.client.post("/video/add_new_points_or_box", json=PROMPT).status_code, 400)
+
+    def test_failed_prompt_persistence_rejects_candidate_and_restores_runtime(self):
+        write_session_metadata()
+        before = state.annotations.snapshot()
+        with patch.object(service, "mask_logits_to_2d_bool", side_effect=lambda mask: mask > 0), \
+                patch("video.prompts.write_session_metadata", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.client.post("/video/add_new_points_or_box", json=PROMPT)
+        self.assertEqual(state.annotations.snapshot(), before)
+        self.assertEqual(self.metadata()["annotations"], before)
+        self.masker.reset_state.assert_called_once()
+
+    def test_failed_clear_and_reset_preserve_accepted_prompts(self):
+        state.annotations.set_prompt(VideoPrompt(**PROMPT))
+        before = state.annotations.snapshot()
+        self.masker.clear_all_prompts_in_frame.side_effect = RuntimeError("clear failed")
+        with self.assertRaisesRegex(RuntimeError, "clear failed"):
+            self.client.post("/video/clear_all_prompts_in_frame", params={"frame_idx": 0, "obj_id": 1})
+        self.assertEqual(state.annotations.snapshot(), before)
+        self.masker.reset_state.side_effect = [RuntimeError("reset failed"), None]
+        with self.assertRaisesRegex(RuntimeError, "reset failed"):
+            self.client.post("/video/reset_state")
+        self.assertEqual(state.annotations.snapshot(), before)
+        self.assertEqual(self.masker.add_new_points_or_box.call_args.kwargs["points"], [[1.0, 2.0]])
+
+    def test_failed_mask_encoding_does_not_publish_prompt_acceptance(self):
+        write_session_metadata()
+        before = state.annotations.snapshot()
+        with patch.object(service, "mask_logits_to_2d_bool", side_effect=lambda mask: mask > 0), \
+                patch.object(service, "encode_live_mask_payload", side_effect=ValueError("bad mask")):
+            with self.assertRaises(ValueError):
+                self.client.post("/video/add_new_points_or_box", json=PROMPT)
+        self.assertEqual(state.annotations.snapshot(), before)
+        self.assertEqual(self.metadata()["annotations"], before)
+        self.masker.reset_state.assert_called_once()
+
     def test_save_without_frontend_annotations_preserves_backend_annotations(self):
         state.annotations.set_prompt(VideoPrompt(**PROMPT))
         write_session_metadata()

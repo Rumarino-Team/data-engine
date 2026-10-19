@@ -36,7 +36,7 @@ def _active_job():
 
 class OperationGuardTests(unittest.TestCase):
     def setUp(self):
-        self.client = TestClient(create_app())
+        self.client = TestClient(create_app(), headers={"X-Session-ID": "absent", "X-Annotation-Revision": "0"})
 
     def tearDown(self):
         with jobs.current_job_lock:
@@ -71,8 +71,8 @@ class OperationGuardTests(unittest.TestCase):
 
     def test_without_active_job_endpoint_uses_normal_validation(self):
         response = self.client.post("/video/reset_state")
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json()["detail"], "Video masker not active.")
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["detail"], "The target session is no longer active. Refresh annotations.")
 
 
 if __name__ == "__main__":

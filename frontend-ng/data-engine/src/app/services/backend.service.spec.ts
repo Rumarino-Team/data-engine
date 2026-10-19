@@ -60,9 +60,28 @@ describe('BackendService', () => {
     service.createObject(precondition);
     service.updateObject({ id: 2, label: 'Hand', color: '#123456' }, precondition);
     service.removeObject(2, precondition);
+    service.resetVideoState(precondition);
+    service.clearAllPromptsInFrame(3, 2, precondition);
+    const prompt = { frame_idx: 3, obj_id: 2, points: [[1, 2]], labels: [1] };
+    service.addNewPointsOrBox(prompt, precondition);
     expect(http.post).toHaveBeenCalledWith('http://127.0.0.1:8000/video/objects', null, {
       headers,
     });
+    expect(http.post).toHaveBeenCalledWith(
+      'http://127.0.0.1:8000/video/reset_state',
+      {},
+      { headers },
+    );
+    expect(http.post).toHaveBeenCalledWith(
+      'http://127.0.0.1:8000/video/clear_all_prompts_in_frame',
+      null,
+      { headers, params: { frame_idx: '3', obj_id: '2' } },
+    );
+    expect(http.post).toHaveBeenCalledWith(
+      'http://127.0.0.1:8000/video/add_new_points_or_box',
+      prompt,
+      { headers },
+    );
     expect(http.put).toHaveBeenCalledWith(
       'http://127.0.0.1:8000/video/objects/2',
       { label: 'Hand', color: '#123456' },

@@ -1,4 +1,5 @@
-import { Injectable, inject } from '@angular/core';
+import { DestroyRef, Injectable, inject } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { firstValueFrom, finalize } from 'rxjs';
 import { BackendService, VideoPropagateResponse } from '../../services/backend.service';
 import { VideoMaskerStateStore } from './video-masker-state.store';
@@ -10,6 +11,7 @@ import { getErrorMessage } from '../video-masker.util';
 /** Runs propagation and clears generated masks while preserving unaffected edits. */
 @Injectable()
 export class MaskPropagationService {
+  private readonly destroyRef = inject(DestroyRef);
   private readonly store = inject(VideoMaskerStateStore);
   private readonly backend = inject(BackendService);
   private readonly framePipeline = inject(FramePipelineService);
@@ -74,17 +76,29 @@ export class MaskPropagationService {
   clearMasks(): void {
     if (this.isBusy) return;
     const backendUrl = this.backend.getApiUrl();
+    const sessionId = this.store.sessionId();
+    const revision = this.store.annotationRevision();
+    if (!sessionId || revision === null || backendUrl !== this.store.annotationsBackendUrl())
+      return;
+    const ownsContext = () =>
+      !this.destroyRef.destroyed &&
+      backendUrl === this.backend.getApiUrl() &&
+      sessionId === this.store.sessionId() &&
+      backendUrl === this.store.annotationsBackendUrl();
     this.store.isLoading.set(true);
     this.backend
-      .resetVideoState()
-      .pipe(finalize(() => this.store.isLoading.set(false)))
+      .resetVideoState({ session_id: sessionId, expected_revision: revision })
+      .pipe(
+        takeUntilDestroyed(this.destroyRef),
+        finalize(() => this.store.isLoading.set(false)),
+      )
       .subscribe({
         next: (response) => {
-          if (
-            backendUrl !== this.backend.getApiUrl() ||
-            !this.store.applyAnnotationSnapshot(response, backendUrl)
-          )
+          if (!ownsContext()) return;
+          if (!this.store.applyAnnotationSnapshot(response, backendUrl)) {
+            this.store.annotationRecoveryRequested.set(true);
             return;
+          }
           this.store.hasManifestMasks.set(false);
           this.store.invalidateTracking();
           this.store.resetInteractiveMaps();
@@ -92,7 +106,10 @@ export class MaskPropagationService {
           this.framePipeline.scheduleFrameLoad(this.store.targetFrameIdx());
         },
         error: (error) => {
-          console.error(error);
+          if (!ownsContext()) return;
+          const status = (error as { status?: number })?.status;
+          if (status === undefined || status === 0 || status === 409 || status >= 500)
+            this.store.annotationRecoveryRequested.set(true);
           this.toast.show(
             'error',
             'Clear failed',

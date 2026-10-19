@@ -50,6 +50,9 @@ class AnnotationPreconditionTests(unittest.TestCase):
                 ("POST", "/video/objects", None),
                 ("PUT", "/video/objects/1", {"label": "changed", "color": "#123456"}),
                 ("POST", "/video/remove_object?obj_id=1", None),
+                ("POST", "/video/add_new_points_or_box", {"frame_idx": 0, "obj_id": 1, "points": [[1, 2]], "labels": [1]}),
+                ("POST", "/video/clear_all_prompts_in_frame?frame_idx=0&obj_id=1", None),
+                ("POST", "/video/reset_state", None),
             ]:
                 with self.subTest(url=url, headers=headers):
                     response = self.client.request(method, url, headers=headers, json=body)
@@ -57,6 +60,9 @@ class AnnotationPreconditionTests(unittest.TestCase):
                     self.assertEqual(state.annotations.snapshot(), before)
                     self.assertEqual((state.active_session_dir / "session.json").read_bytes(), metadata)
         state.video_masker.remove_object.assert_not_called()
+        state.video_masker.add_new_points_or_box.assert_not_called()
+        state.video_masker.clear_all_prompts_in_frame.assert_not_called()
+        state.video_masker.reset_state.assert_not_called()
 
     def test_preconditions_are_required_and_validated(self):
         for headers in [{}, self.headers(revision=-1), self.headers(revision="bad")]:

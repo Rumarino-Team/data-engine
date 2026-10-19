@@ -1,3 +1,4 @@
+import { setAcceptedPoints } from '../../testing/workflow-test-helpers';
 import { describe, beforeEach, expect, it, vi } from 'vitest';
 import { createVideoMaskerFixture } from '../../testing/component-test-helpers';
 import { By } from '@angular/platform-browser';
@@ -52,7 +53,8 @@ describe('ObjectSidebarComponent', () => {
 
   it('navigates to a child frame and sends the correct index when removing its point', () => {
     component.store.numFrames.set(20);
-    component.store.points.set(
+    setAcceptedPoints(
+      component.store,
       new Map([
         [
           2,
@@ -86,7 +88,8 @@ describe('ObjectSidebarComponent', () => {
       { id: 2, label: 'Person', color: '#00ff00' },
     ]);
     component.store.numFrames.set(20);
-    component.store.points.set(
+    setAcceptedPoints(
+      component.store,
       new Map([
         [10, new Map([[1, [{ x: 4, y: 5, label: 0 }]]])],
         [

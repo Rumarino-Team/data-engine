@@ -1,123 +1,78 @@
-import { Injectable, inject } from '@angular/core';
+import { DestroyRef, Injectable, inject } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { firstValueFrom } from 'rxjs';
-import {
-  BackendService,
-  LiveMask,
-  VideoAddPointsOrBoxRequest,
-} from '../../services/backend.service';
+import { BackendService, LiveMask, VideoAddPointsResponse } from '../../services/backend.service';
 import { VideoMaskerStateStore, Point } from './video-masker-state.store';
 import { FramePipelineService } from './frame-pipeline.service';
 import { ToastService } from './toast.service';
 import {
   getErrorMessage,
   getMaskPixelCount,
-  isObjectLiveEdited,
   encodedMaskPixelCount,
   markObjectLiveEdited,
   unmarkObjectLiveEdited,
 } from '../video-masker.util';
 
-/** Applies prompt edits and validates responses before committing or rolling back. */
+/** Keeps pending previews separate from backend-accepted prompts. */
 @Injectable()
 export class PointEditingService {
   private readonly store = inject(VideoMaskerStateStore);
   private readonly backend = inject(BackendService);
   private readonly framePipeline = inject(FramePipelineService);
   private readonly toast = inject(ToastService);
-  private get isBusy(): boolean {
-    return this.store.isInteractionBusy();
-  }
-
-  private markObjectAsLiveEdited(frameIdx: number, objId: number): void {
-    this.store.liveEditedObjectFrames.set(
-      markObjectLiveEdited(this.store.liveEditedObjectFrames(), frameIdx, objId),
-    );
-  }
-
-  private unmarkObjectAsLiveEdited(frameIdx: number, objId: number): void {
-    this.store.liveEditedObjectFrames.set(
-      unmarkObjectLiveEdited(this.store.liveEditedObjectFrames(), frameIdx, objId),
-    );
-  }
-
-  private isObjectLiveEdited(frameIdx: number, objId: number): boolean {
-    return isObjectLiveEdited(this.store.liveEditedObjectFrames(), frameIdx, objId);
-  }
-
-  private showError(title: string, fallbackMessage: string, error: unknown): void {
-    console.error(error);
-    this.toast.show('error', title, getErrorMessage(error, fallbackMessage));
-  }
+  private readonly destroyRef = inject(DestroyRef);
 
   async addPoint(x: number, y: number, label: number, frameIdx: number): Promise<void> {
-    if (this.isBusy) return;
     const objId = this.store.selectedObjectId();
-    if (objId === null || !this.store.objects().some((object) => object.id === objId)) return;
-
-    const previousObjectPoints = this.store.points().get(frameIdx)?.get(objId) || [];
-    await this.submitObjectPoints(objId, frameIdx, previousObjectPoints, [
-      ...previousObjectPoints,
+    if (objId === null) return;
+    await this.submitObjectPoints(objId, frameIdx, [
+      ...(this.store.points().get(frameIdx)?.get(objId) ?? []),
       { x, y, label },
     ]);
   }
 
   async removePoint(objId: number, frameIdx: number, pointIndex: number): Promise<void> {
-    if (this.isBusy) return;
-    const previousObjectPoints = this.store.points().get(frameIdx)?.get(objId) || [];
-    if (pointIndex < 0 || pointIndex >= previousObjectPoints.length) return;
-    const objectPoints = previousObjectPoints.filter((_point, index) => index !== pointIndex);
-    if (objectPoints.length > 0) {
-      await this.submitObjectPoints(objId, frameIdx, previousObjectPoints, objectPoints, false);
-      return;
-    }
-
-    const backendUrl = this.backend.getApiUrl();
-    this.store.isPointRequestInFlight.set(true);
-    try {
-      const response = await firstValueFrom(this.backend.clearAllPromptsInFrame(frameIdx, objId));
-      if (
-        backendUrl !== this.backend.getApiUrl() ||
-        !this.store.applyAnnotationSnapshot(response, backendUrl)
-      )
-        return;
-      const masksMap = new Map(this.store.masks());
-      const frameMasksMap = new Map(masksMap.get(frameIdx) || new Map<number, LiveMask>());
-      frameMasksMap.delete(objId);
-      if (frameMasksMap.size) masksMap.set(frameIdx, frameMasksMap);
-      else masksMap.delete(frameIdx);
-      this.store.masks.set(masksMap);
-      this.unmarkObjectAsLiveEdited(frameIdx, objId);
-      this.store.invalidateTracking();
-      this.framePipeline.redraw();
-    } catch (error) {
-      this.showError('Point removal failed', 'Unable to remove point.', error);
-    } finally {
-      this.store.isPointRequestInFlight.set(false);
-    }
-  }
-
-  private setObjectPoints(frameIdx: number, objId: number, objectPoints: Point[]): void {
-    const pointsMap = new Map(this.store.points());
-    const framePointsMap = new Map(pointsMap.get(frameIdx) || new Map<number, Point[]>());
-    if (objectPoints.length > 0) framePointsMap.set(objId, objectPoints);
-    else framePointsMap.delete(objId);
-    if (framePointsMap.size > 0) pointsMap.set(frameIdx, framePointsMap);
-    else pointsMap.delete(frameIdx);
-    this.store.points.set(pointsMap);
+    const points = this.store.points().get(frameIdx)?.get(objId) ?? [];
+    if (pointIndex < 0 || pointIndex >= points.length) return;
+    await this.submitObjectPoints(
+      objId,
+      frameIdx,
+      points.filter((_, index) => index !== pointIndex),
+    );
   }
 
   private async submitObjectPoints(
     objId: number,
     frameIdx: number,
-    previousObjectPoints: Point[],
     objectPoints: Point[],
-    requireDisplayedFrame = true,
   ): Promise<void> {
+    if (
+      this.store.isInteractionBusy() ||
+      !this.store.objects().some((object) => object.id === objId)
+    )
+      return;
+    const sessionId = this.store.sessionId();
+    const revision = this.store.annotationRevision();
+    const backendUrl = this.backend.getApiUrl();
+    if (!sessionId || revision === null || backendUrl !== this.store.annotationsBackendUrl())
+      return;
     const expectedEpoch = this.store.stateEpoch();
-    this.setObjectPoints(frameIdx, objId, objectPoints);
-
+    const precondition = { session_id: sessionId, expected_revision: revision };
+    const preview = { objId, frameIdx, points: objectPoints };
+    const ownsContext = () =>
+      !this.destroyRef.destroyed &&
+      sessionId === this.store.sessionId() &&
+      backendUrl === this.backend.getApiUrl() &&
+      backendUrl === this.store.annotationsBackendUrl();
+    const ownsUpdate = () =>
+      ownsContext() &&
+      this.store.stateEpoch() === expectedEpoch &&
+      this.store.annotationRevision() === revision &&
+      this.store.pendingPointEdit() === preview;
+    this.store.pendingPointEdit.set(preview);
+    this.store.isPointRequestInFlight.set(true);
     const requestFrameIdx = frameIdx;
-    this.store.lastClickRequestFrameIdx.set(requestFrameIdx);
+    this.store.lastClickRequestFrameIdx.set(frameIdx);
     this.store.lastDebugObjectId.set(objId);
     this.store.lastMaskPixelCount.set(null);
     this.store.lastBackendResponseFrameIdx.set(null);
@@ -125,33 +80,47 @@ export class PointEditingService {
     this.store.lastBackendResponseStateEpoch.set(null);
     this.store.lastFallbackUsed.set(false);
     this.store.lastDiscardReason.set(null);
-
-    const request: VideoAddPointsOrBoxRequest = {
-      frame_idx: requestFrameIdx,
-      obj_id: objId,
-      points: objectPoints.map((point) => [point.x, point.y]),
-      labels: objectPoints.map((point) => point.label),
-      clear_old_points: true,
-    };
-
-    const backendUrl = this.backend.getApiUrl();
-    const liveEditedBeforeRequest = this.isObjectLiveEdited(frameIdx, objId);
-    let responseChangedEpoch = false;
-    const ownsPointUpdate = () =>
-      backendUrl === this.backend.getApiUrl() &&
-      this.store.stateEpoch() === expectedEpoch &&
-      this.store.points().get(frameIdx)?.get(objId) === objectPoints &&
-      this.store.objects().some((object) => object.id === objId);
-
+    this.framePipeline.redraw();
+    let responseReceived = false;
     try {
-      this.store.isPointRequestInFlight.set(true);
-      const response = await firstValueFrom(this.backend.addNewPointsOrBox(request));
-      if (!ownsPointUpdate()) {
+      const request = objectPoints.length
+        ? this.backend.addNewPointsOrBox(
+            {
+              frame_idx: frameIdx,
+              obj_id: objId,
+              points: objectPoints.map(({ x, y }) => [x, y]),
+              labels: objectPoints.map(({ label }) => label),
+              clear_old_points: true,
+            },
+            precondition,
+          )
+        : this.backend.clearAllPromptsInFrame(frameIdx, objId, precondition);
+      const result = await firstValueFrom(request.pipe(takeUntilDestroyed(this.destroyRef)));
+      if (!ownsUpdate()) {
         this.store.lastDiscardReason.set(
           'Discarded point response because the editing state changed.',
         );
         return;
       }
+      responseReceived = true;
+      if (!objectPoints.length) {
+        if (!this.store.applyAnnotationSnapshot(result, backendUrl)) {
+          this.store.annotationRecoveryRequested.set(true);
+          return;
+        }
+        const masks = new Map(this.store.masks());
+        const frame = new Map(masks.get(frameIdx));
+        frame.delete(objId);
+        if (frame.size) masks.set(frameIdx, frame);
+        else masks.delete(frameIdx);
+        this.store.masks.set(masks);
+        this.store.liveEditedObjectFrames.set(
+          unmarkObjectLiveEdited(this.store.liveEditedObjectFrames(), frameIdx, objId),
+        );
+        this.store.invalidateTracking();
+        return;
+      }
+      const response = result as VideoAddPointsResponse;
       if (
         typeof (response as any)?.request_frame_idx !== 'number' ||
         typeof (response as any)?.frame_idx !== 'number' ||
@@ -173,7 +142,6 @@ export class PointEditingService {
             responseStateEpoch,
             'add_new_points_or_box mismatch response',
           );
-          responseChangedEpoch = true;
         }
         this.store.lastDiscardReason.set(reason);
         throw new Error(reason);
@@ -185,12 +153,6 @@ export class PointEditingService {
       this.store.lastBackendResponseFrameFile.set(response.frame_file || 'n/a');
       if (responseRequestFrameIdx !== requestFrameIdx || responseFrameIdx !== requestFrameIdx) {
         const reason = `Discarded response due to frame mismatch (request=${requestFrameIdx}, response_request=${responseRequestFrameIdx}, response_frame=${responseFrameIdx}).`;
-        this.store.lastDiscardReason.set(reason);
-        throw new Error(reason);
-      }
-
-      if (requireDisplayedFrame && this.store.displayedFrameIdx() !== requestFrameIdx) {
-        const reason = `Discarded response because displayed frame moved from ${requestFrameIdx} to ${this.store.displayedFrameIdx()}.`;
         this.store.lastDiscardReason.set(reason);
         throw new Error(reason);
       }
@@ -235,37 +197,38 @@ export class PointEditingService {
         frameMasksMap.set(id, response.out_masks[index]);
       });
       masksMap.set(requestFrameIdx, frameMasksMap);
-      this.markObjectAsLiveEdited(requestFrameIdx, objId);
+      this.store.liveEditedObjectFrames.set(
+        markObjectLiveEdited(this.store.liveEditedObjectFrames(), requestFrameIdx, objId),
+      );
       this.store.masks.set(masksMap);
       this.store.invalidateTracking();
       this.framePipeline.redraw();
     } catch (error) {
-      if (!responseChangedEpoch && !ownsPointUpdate()) {
+      if (!ownsContext()) return;
+      if (!responseReceived && !ownsUpdate()) {
         this.store.lastDiscardReason.set(
           'Discarded point failure because the editing state changed.',
         );
         return;
       }
-      console.error(error);
+      const status = (error as { status?: number })?.status;
+      if (
+        responseReceived ||
+        status === undefined ||
+        status === 0 ||
+        status === 409 ||
+        status >= 500
+      )
+        this.store.annotationRecoveryRequested.set(true);
       this.toast.show(
         'error',
-        'Point update failed',
-        getErrorMessage(error, 'Unable to update point mask.'),
+        objectPoints.length ? 'Point update failed' : 'Point removal failed',
+        getErrorMessage(error, 'Unable to update prompts.'),
       );
-
-      // Never restore prompts into a replacement session or overwrite a newer edit.
-      if (
-        this.store.points().get(frameIdx)?.get(objId) !== objectPoints ||
-        !this.store.objects().some((object) => object.id === objId)
-      )
-        return;
-      if (!liveEditedBeforeRequest) {
-        this.unmarkObjectAsLiveEdited(frameIdx, objId);
-      }
-      this.setObjectPoints(frameIdx, objId, previousObjectPoints);
-      this.framePipeline.redraw();
     } finally {
+      if (this.store.pendingPointEdit() === preview) this.store.pendingPointEdit.set(null);
       this.store.isPointRequestInFlight.set(false);
+      if (!this.destroyRef.destroyed) this.framePipeline.redraw();
     }
   }
 }

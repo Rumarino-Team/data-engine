@@ -1,3 +1,4 @@
+import { setAcceptedPoints } from '../testing/workflow-test-helpers';
 import { TestBed } from '@angular/core/testing';
 import { Subject, of, throwError } from 'rxjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -7,6 +8,7 @@ import { CanvasViewportService } from './canvas-viewport.service';
 
 const apiUrl = 'http://127.0.0.1:8000';
 const snapshot = (revision = 1): VideoInfoResponse => ({
+  predictor_ready: true,
   session_id: 'session-1',
   state_epoch: 3,
   num_frames: 10,
@@ -108,7 +110,7 @@ describe('session annotation snapshots', () => {
     const viewport = TestBed.inject(CanvasViewportService);
     const reset = vi.spyOn(viewport, 'reset');
     editor.store.objects.set([]);
-    editor.store.points.set(new Map());
+    setAcceptedPoints(editor.store, new Map());
     editor.store.annotations.set(null);
     editor.store.selectedObjectId.set(2);
     editor.store.targetFrameIdx.set(7);
@@ -211,7 +213,8 @@ describe('session annotation snapshots', () => {
     const edit = editor.prompts.addPoint(30, 40, 1, 2);
     pending.next(snapshot());
     expect(await refresh).toBe(false);
-    expect(editor.store.points().get(2)?.get(1)?.length).toBe(2);
+    expect(editor.store.points().get(2)?.get(1)?.length).toBe(1);
+    expect(editor.store.previewPoints().get(2)?.get(1)?.length).toBe(2);
     pointResponse.error(new Error('rejected'));
     await edit;
   });
