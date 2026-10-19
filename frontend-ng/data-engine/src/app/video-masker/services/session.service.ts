@@ -13,7 +13,6 @@ import { FramePipelineService } from './frame-pipeline.service';
 import { ToastService } from './toast.service';
 import { EditorJobService } from './editor-job.service';
 import { TrackingService } from './tracking.service';
-import { ObjectOperationsService } from './object-operations.service';
 import {
   buildInteractiveStateSnapshot,
   deserializeLiveMasks,
@@ -31,7 +30,6 @@ export class SessionService {
   private readonly toast = inject(ToastService);
   private readonly jobs = inject(EditorJobService);
   private readonly tracking = inject(TrackingService);
-  private readonly objectOperations = inject(ObjectOperationsService);
   private get isBusy(): boolean {
     return this.store.isInteractionBusy();
   }
@@ -222,9 +220,6 @@ export class SessionService {
       if (request === this.snapshotRequest && !this.destroyRef.destroyed)
         this.store.isLoading.set(false);
     }
-    // Default-object creation is still a frontend workflow until the next slice.
-    if (!res.restored_session && this.store.objects().length === 0)
-      this.objectOperations.addObject();
     return true;
   }
 

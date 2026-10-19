@@ -6,6 +6,7 @@ import {
   VideoAddPointsResponse,
   VideoInitStateResponse,
   AnnotationSnapshot,
+  ObjectCreationResponse,
   VideoObject,
 } from '../../services/backend.service';
 import { DesktopBridgeService } from '../../services/desktop-bridge.service';
@@ -51,8 +52,9 @@ export function createBackendMocks() {
     setApiUrl: vi.fn((value: string) => value),
     resetApiUrl: vi.fn(() => 'http://127.0.0.1:8000'),
     saveVideoSession: vi.fn(),
+    createObject: vi.fn<() => Observable<ObjectCreationResponse>>(),
     removeObject: vi.fn<(id: number) => Observable<AnnotationSnapshot>>(),
-    upsertObject: vi.fn<(object: VideoObject) => Observable<AnnotationSnapshot>>(),
+    updateObject: vi.fn<(object: VideoObject) => Observable<AnnotationSnapshot>>(),
     resetVideoState: vi.fn(() => of({ state_epoch: 4 })),
   };
   backendMock.getVideoInfo.mockImplementation(() => {
@@ -67,9 +69,9 @@ export function createBackendMocks() {
         frame_files: Array.from({ length: result.num_frames }, (_, frame) => `${frame}.jpg`),
         annotations: result.restored_session?.annotations ?? {
           version: 1,
-          revision: 0,
-          next_object_id: 1,
-          objects: {},
+          revision: 1,
+          next_object_id: 2,
+          objects: { 1: { id: 1, label: 'Object 1', color: '#ff0000' } },
           prompts: [],
         },
       })),
@@ -122,7 +124,6 @@ export function objectSnapshot(
       version: 1,
       revision: (store.annotationRevision() ?? 0) + 1,
       next_object_id: Math.max(
-        store.nextObjectId,
         store.annotations()?.next_object_id ?? 1,
         ...objects.map((object) => object.id + 1),
       ),
@@ -136,7 +137,12 @@ export function configureObjectMutationMocks(
   backend: ReturnType<typeof createBackendMocks>['backendMock'],
   store: VideoMaskerStateStore,
 ): void {
-  backend.upsertObject.mockImplementation((object) =>
+  backend.createObject.mockImplementation(() => {
+    const id = store.annotations()?.next_object_id ?? 1;
+    const object = { id, label: `Object ${id}`, color: '#00ff00' };
+    return of({ ...objectSnapshot(store, [...store.objects(), object]), created_object_id: id });
+  });
+  backend.updateObject.mockImplementation((object) =>
     of(
       objectSnapshot(store, [...store.objects().filter((entry) => entry.id !== object.id), object]),
     ),

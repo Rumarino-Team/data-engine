@@ -2,14 +2,14 @@ import { DestroyRef, Injectable, inject } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { Observable, defer, finalize, take } from 'rxjs';
 import { AnnotationSnapshot, BackendService } from '../../services/backend.service';
-import { getErrorMessage, randomColor } from '../video-masker.util';
+import { getErrorMessage } from '../video-masker.util';
 import { FramePipelineService } from './frame-pipeline.service';
 import { ToastService } from './toast.service';
 import { VideoMaskerStateStore } from './video-masker-state.store';
 
 type SessionContext = { backendUrl: string; sessionId: string };
 
-/** Sends object edits and applies accepted backend annotations. ID allocation moves next. */
+/** Sends object intent and applies accepted backend annotations. */
 @Injectable()
 export class ObjectOperationsService {
   private readonly store = inject(VideoMaskerStateStore);
@@ -23,15 +23,16 @@ export class ObjectOperationsService {
     const label = value.trim().slice(0, 200);
     const object = this.store.objects().find((entry) => entry.id === id);
     if (!label || !object || object.label === label) return;
-    void this.mutate(() => this.backend.upsertObject({ ...object, label }), 'Object update failed');
+    void this.mutate(() => this.backend.updateObject({ ...object, label }), 'Object update failed');
   }
 
   addObject(): void {
     if (this.store.isInteractionBusy()) return;
-    const id = this.reserveNextObjectId();
-    this.store.nextObjectId = id + 1;
-    const object = { id, label: `Object ${id}`, color: randomColor() };
-    void this.mutate(() => this.backend.upsertObject(object), 'Object creation failed', id);
+    void this.mutate(
+      () => this.backend.createObject(),
+      'Object creation failed',
+      (snapshot) => snapshot.created_object_id,
+    );
   }
 
   removeObject(): void {
@@ -80,10 +81,10 @@ export class ObjectOperationsService {
     );
   }
 
-  private mutate(
-    send: () => Observable<AnnotationSnapshot>,
+  private mutate<T extends AnnotationSnapshot>(
+    send: () => Observable<T>,
     errorTitle: string,
-    selectId?: number,
+    selectCreated?: (snapshot: T) => number,
     context = this.sessionContext(),
   ): Promise<boolean> {
     if (!context || !this.ownsSession(context)) return Promise.resolve(false);
@@ -110,6 +111,7 @@ export class ObjectOperationsService {
               (id) => !this.store.objects().some((object) => object.id === id),
             );
             if (removed.length) this.clearRemovedRenderCaches(removed);
+            const selectId = selectCreated?.(snapshot);
             if (
               selectId !== undefined &&
               this.store.objects().some((object) => object.id === selectId)
@@ -131,12 +133,6 @@ export class ObjectOperationsService {
           complete: () => resolve(false),
         });
     });
-  }
-
-  private reserveNextObjectId(): number {
-    return this.store
-      .objects()
-      .reduce((next, object) => Math.max(next, object.id + 1), this.store.nextObjectId);
   }
 
   /** Generated masks and textures are view caches; accepted prompts came from the snapshot. */

@@ -273,6 +273,7 @@ def initialize_video_state_from_resolved_input(
         "source_input_path": str(resolved_input_path),
     }
     if source_type != "saved_session":
+        state.annotations.create_object()
         metadata_updates["created_at"] = utc_now_iso()
     else:
         metadata_updates["interactive_state"] = restored_session_payload["interactive_state"]
@@ -566,10 +567,21 @@ async def remove_object(obj_id: int):
     write_session_metadata()
     return annotation_snapshot()
 
-async def upsert_object(obj_id: int, request: VideoObjectUpdate):
+async def create_object():
+    require_no_active_job("create object")
+    if current_session_path() is None:
+        raise HTTPException(status_code=400, detail="No active video session.")
+    obj = state.annotations.create_object()
+    write_session_metadata()
+    return {**annotation_snapshot(), "created_object_id": obj.id}
+
+
+async def update_object(obj_id: int, request: VideoObjectUpdate):
     require_no_active_job("update object")
     if current_session_path() is None:
         raise HTTPException(status_code=400, detail="Video session is not initialized.")
+    if obj_id not in state.annotations.objects:
+        raise HTTPException(status_code=404, detail="Object does not exist.")
     obj = VideoObject(id=obj_id, **request.model_dump()).model_dump()
     state.annotations.upsert_object(obj)
     write_session_metadata()

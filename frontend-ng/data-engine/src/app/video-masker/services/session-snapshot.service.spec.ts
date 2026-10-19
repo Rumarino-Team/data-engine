@@ -86,7 +86,7 @@ describe('session annotation snapshots', () => {
     expect(editor.store.numFrames()).toBe(10);
     expect(editor.store.objects()[0].label).toBe('Accepted hand');
     expect(editor.store.points().get(2)?.get(1)).toEqual([{ x: 10, y: 20, label: 1 }]);
-    expect(backendMock.upsertObject).not.toHaveBeenCalled();
+    expect(backendMock.updateObject).not.toHaveBeenCalled();
   });
 
   it('does not claim initialization succeeded when video/info is unavailable', async () => {
@@ -223,7 +223,7 @@ describe('session annotation snapshots', () => {
     const objectResponse = new Subject<AnnotationSnapshot>();
     backendMock.getVideoInfo.mockReturnValue(pending);
     const refresh = editor.sessions.refreshAnnotations();
-    backendMock.upsertObject.mockReturnValue(objectResponse);
+    backendMock.updateObject.mockReturnValue(objectResponse);
     objectOperations.renameObject(1, 'Draft label');
     expect(editor.store.pendingObjectUpdates()).toBe(1);
     expect(await editor.sessions.refreshAnnotations()).toBe(false);

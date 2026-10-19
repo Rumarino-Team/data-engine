@@ -1,6 +1,7 @@
 """Accepted annotation inputs, independent of predictor lifetime and UI caches."""
 
 from typing import Literal
+from secrets import randbelow
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -24,6 +25,12 @@ class SessionAnnotations(BaseModel):
             raise ValueError("Prompts must reference an existing object.")
         self.next_object_id = max(self.next_object_id, max(self.objects, default=0) + 1)
         return self
+
+    def create_object(self) -> VideoObject:
+        obj = VideoObject(id=self.next_object_id, label=f"Object {self.next_object_id}",
+                          color=f"#{randbelow(0x1000000):06x}")
+        self.upsert_object(obj.model_dump())
+        return obj
 
     def upsert_object(self, obj: dict) -> None:
         accepted = VideoObject.model_validate(obj)

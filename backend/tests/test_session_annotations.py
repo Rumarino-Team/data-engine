@@ -64,6 +64,27 @@ class SessionAnnotationsTests(unittest.TestCase):
             async_loading_frames=False,
         )
 
+    def test_new_session_initializes_and_persists_first_object(self):
+        source = self.root / "source"
+        source.mkdir()
+        (source / "00000.jpg").touch()
+        state.annotations = SessionAnnotations()
+        with patch("video.io.SESSION_CACHE_ROOT", self.root / "cache"):
+            result = service.initialize_video_state_from_resolved_input(
+                source, online_mode=True, batch_size=1,
+                offload_video_to_cpu=True, offload_state_to_cpu=True,
+                async_loading_frames=False,
+            )
+        self.assertNotIn("restored_session", result)
+        annotations = self.client.get("/video/info").json()["annotations"]
+        self.assertEqual(list(annotations["objects"]), ["1"])
+        self.assertEqual(annotations["objects"]["1"]["label"], "Object 1")
+        self.assertEqual(annotations["next_object_id"], 2)
+        self.assertEqual(annotations["revision"], 1)
+        self.assertEqual(annotations, self.metadata()["annotations"])
+        self.reopen()
+        self.assertEqual(state.annotations.snapshot(), annotations)
+
     def test_accepted_prompt_is_persisted_and_snapshot_is_detached(self):
         with patch.object(service, "mask_logits_to_2d_bool", side_effect=lambda mask: mask > 0):
             response = self.client.post("/video/add_new_points_or_box", json=PROMPT)
@@ -142,6 +163,7 @@ class SessionAnnotationsTests(unittest.TestCase):
         self.assertEqual(restored["interactive_state"]["points"], [])
         self.assertEqual(restored["annotations"]["next_object_id"], 2)
         self.assertEqual(self.client.get("/video/mask_data/0").json()["objects"], {})
+        self.assertEqual(self.client.post("/video/objects").json()["created_object_id"], 2)
 
     def test_clear_and_reset_survive_reopening(self):
         for path, params in [("/video/clear_all_prompts_in_frame", {"frame_idx": 0, "obj_id": 1}),

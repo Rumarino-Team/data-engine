@@ -11,6 +11,7 @@ import {
 import { normalizeBackendPath } from './backend-path';
 import type {
   AnnotationSnapshot,
+  ObjectCreationResponse,
   CurrentJobResponse,
   HealthResponse,
   JobResponse,
@@ -124,7 +125,11 @@ export class BackendService {
     });
   }
 
-  upsertObject(object: VideoObject): Observable<AnnotationSnapshot> {
+  createObject(): Observable<ObjectCreationResponse> {
+    return this.http.post<ObjectCreationResponse>(this.endpoint('/video/objects'), null);
+  }
+
+  updateObject(object: VideoObject): Observable<AnnotationSnapshot> {
     return this.http.put<AnnotationSnapshot>(this.endpoint(`/video/objects/${object.id}`), {
       label: object.label,
       color: object.color,

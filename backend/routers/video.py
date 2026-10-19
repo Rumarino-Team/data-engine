@@ -22,7 +22,8 @@ from video.service import (
     reset_video_state,
     save_video_session,
     start_video_init,
-    upsert_object,
+    create_object,
+    update_object,
 )
 
 
@@ -64,9 +65,14 @@ async def clear_all_prompts_in_frame_route(frame_idx: int, obj_id: int):
     return await clear_all_prompts_in_frame(frame_idx, obj_id)
 
 
+@router.post("/video/objects")
+async def create_object_route():
+    return await create_object()
+
+
 @router.put("/video/objects/{obj_id}")
-async def upsert_object_route(request: VideoObjectUpdate, obj_id: int = Path(ge=1)):
-    return await upsert_object(obj_id, request)
+async def update_object_route(request: VideoObjectUpdate, obj_id: int = Path(ge=1)):
+    return await update_object(obj_id, request)
 
 
 @router.post("/video/remove_object")

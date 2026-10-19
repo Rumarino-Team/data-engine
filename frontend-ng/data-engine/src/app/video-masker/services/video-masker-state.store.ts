@@ -100,9 +100,6 @@ export class VideoMaskerStateStore {
     this.annotations.set(structuredClone(info.annotations));
     this.objects.set(this.acceptedObjects());
     this.points.set(this.acceptedPoints());
-    this.nextObjectId = replaceSession
-      ? info.annotations.next_object_id
-      : Math.max(this.nextObjectId, info.annotations.next_object_id);
     this.updateStateEpoch(info.state_epoch, 'annotation snapshot');
     if (!this.objects().some((object) => object.id === this.selectedObjectId())) {
       this.selectedObjectId.set(this.objects()[0]?.id ?? null);
@@ -111,7 +108,6 @@ export class VideoMaskerStateStore {
   }
 
   // Session-scoped bookkeeping shared by object and tracking workflows.
-  nextObjectId = 1;
   trackingRevision = 0;
 
   invalidateTracking(): void {

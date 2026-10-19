@@ -66,7 +66,8 @@ describe('session workflows', () => {
     const [created] = editor.store.objects();
     expect(created).toEqual(expect.objectContaining({ id: 1, label: 'Object 1' }));
     expect(editor.store.selectedObjectId()).toBe(1);
-    expect(backendMock.upsertObject).toHaveBeenCalledWith(created);
+    expect(backendMock.createObject).not.toHaveBeenCalled();
+    expect(backendMock.updateObject).not.toHaveBeenCalled();
   });
 
   it('uses the same init endpoint path flow for saved-session mode', async () => {
@@ -144,8 +145,8 @@ describe('session workflows', () => {
 
     expect(editor.store.objects()).toEqual([]);
     expect(editor.store.selectedObjectId()).toBeNull();
-    expect(editor.store.nextObjectId).toBe(7);
-    expect(backendMock.upsertObject).not.toHaveBeenCalled();
+    expect(editor.store.annotations()?.next_object_id).toBe(7);
+    expect(backendMock.updateObject).not.toHaveBeenCalled();
   });
 
   it('restores interactive state from saved-session init result', async () => {
@@ -235,7 +236,7 @@ describe('session workflows', () => {
     });
     expect(editor.store.objects()).toEqual([{ id: 1, label: 'buoy', color: '#ff6600' }]);
     expect(editor.store.selectedObjectId()).toBe(1);
-    expect(backendMock.upsertObject).not.toHaveBeenCalled();
+    expect(backendMock.updateObject).not.toHaveBeenCalled();
   });
 
   it('restores persisted tracking result from saved-session init result', async () => {
@@ -448,7 +449,7 @@ describe('session workflows', () => {
     editor.store.saveName.set('review-run');
     objectOperations.renameObject(1, 'Left hand');
 
-    expect(backendMock.upsertObject).toHaveBeenCalledWith({
+    expect(backendMock.updateObject).toHaveBeenCalledWith({
       id: 1,
       label: 'Left hand',
       color: '#ff0000',

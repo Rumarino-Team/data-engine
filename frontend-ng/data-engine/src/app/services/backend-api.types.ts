@@ -132,6 +132,10 @@ export interface AnnotationSnapshot {
   annotations: VideoAnnotations | null;
 }
 
+export interface ObjectCreationResponse extends AnnotationSnapshot {
+  created_object_id: number;
+}
+
 export interface VideoInfoResponse extends AnnotationSnapshot {
   num_frames: number;
   frame_files: string[];

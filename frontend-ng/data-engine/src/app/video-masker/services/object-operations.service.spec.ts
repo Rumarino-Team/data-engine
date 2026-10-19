@@ -1,7 +1,7 @@
 import { describe, beforeEach, expect, it, vi } from 'vitest';
 import { Subject, of, throwError } from 'rxjs';
 import { createWorkflowFixture, objectSnapshot } from '../testing/workflow-test-helpers';
-import { AnnotationSnapshot } from '../../services/backend.service';
+import { AnnotationSnapshot, ObjectCreationResponse } from '../../services/backend.service';
 
 describe('object-operations workflows', () => {
   let editor: ReturnType<typeof createWorkflowFixture>['editor'];
@@ -12,42 +12,43 @@ describe('object-operations workflows', () => {
     ({ editor, backendMock, objectOperations } = createWorkflowFixture());
   });
 
-  it('allocates unique IDs across sparse objects and removal of the highest ID', () => {
-    editor.store.objects.set([
-      { id: 1, label: 'One', color: '#ff0000' },
-      { id: 3, label: 'Three', color: '#00ff00' },
-    ]);
+  it('uses the server allocated ID even when it differs from cached allocation metadata', () => {
+    const created = { id: 42, label: 'Server object', color: '#123456' };
+    backendMock.createObject.mockReturnValue(
+      of({
+        ...objectSnapshot(editor.store, [...editor.store.objects(), created]),
+        created_object_id: 42,
+      }),
+    );
     objectOperations.addObject();
-    expect(editor.store.selectedObjectId()).toBe(4);
-    vi.spyOn(editor.framePipeline, 'scheduleFrameLoad').mockImplementation(() => {});
-    objectOperations.removeObject();
-    objectOperations.addObject();
-    expect(editor.store.objects().map((object) => object.id)).toEqual([1, 3, 5]);
+    expect(backendMock.createObject).toHaveBeenCalledWith();
+    expect(editor.store.selectedObjectId()).toBe(42);
+    expect(editor.store.objects().at(-1)).toEqual(created);
+    expect(backendMock.updateObject).not.toHaveBeenCalled();
   });
 
   it('applies accepted relabels and leaves accepted state unchanged on rejection', () => {
     objectOperations.renameObject(1, '  buoy ');
-    expect(backendMock.upsertObject).toHaveBeenLastCalledWith({
+    expect(backendMock.updateObject).toHaveBeenLastCalledWith({
       id: 1,
       label: 'buoy',
       color: '#ff0000',
     });
     expect(editor.store.objects()[0].label).toBe('buoy');
 
-    backendMock.upsertObject.mockReturnValueOnce(throwError(() => new Error('nope')));
+    backendMock.updateObject.mockReturnValueOnce(throwError(() => new Error('nope')));
     objectOperations.renameObject(1, 'gate');
     expect(editor.store.objects()[0].label).toBe('buoy');
     expect(editor.store.toasts()[0].title).toBe('Object update failed');
 
-    backendMock.upsertObject.mockClear();
+    backendMock.updateObject.mockClear();
     objectOperations.renameObject(1, 'buoy');
-    expect(backendMock.upsertObject).not.toHaveBeenCalled();
+    expect(backendMock.updateObject).not.toHaveBeenCalled();
   });
 
-  it('persists newly added objects', () => {
+  it('requests backend object creation', () => {
     objectOperations.addObject();
-    const added = editor.store.objects().at(-1);
-    expect(backendMock.upsertObject).toHaveBeenCalledWith(added);
+    expect(backendMock.createObject).toHaveBeenCalledWith();
   });
 
   it('cleans removed objects from all frame maps without mutating previous snapshots', () => {
@@ -99,21 +100,23 @@ describe('object-operations workflows', () => {
   });
 
   it('waits for accepted creation and uses the returned state without another GET', async () => {
-    const pending = new Subject<AnnotationSnapshot>();
-    backendMock.upsertObject.mockReturnValue(pending);
+    const pending = new Subject<ObjectCreationResponse>();
+    backendMock.createObject.mockReturnValue(pending);
     objectOperations.addObject();
     expect(editor.store.objects()).toHaveLength(1);
     expect(editor.store.selectedObjectId()).toBe(1);
     expect(editor.store.isInteractionBusy()).toBe(true);
     await editor.prompts.addPoint(10, 20, 1, 5);
     expect(backendMock.addNewPointsOrBox).not.toHaveBeenCalled();
-    const sent = backendMock.upsertObject.mock.calls[0][0];
-    const accepted = { ...sent, label: 'Accepted object' };
-    pending.next(objectSnapshot(editor.store, [...editor.store.objects(), accepted]));
-    expect(editor.store.objects().find((object) => object.id === sent.id)?.label).toBe(
+    const accepted = { id: 27, label: 'Accepted object', color: '#123456' };
+    pending.next({
+      ...objectSnapshot(editor.store, [...editor.store.objects(), accepted]),
+      created_object_id: 27,
+    });
+    expect(editor.store.objects().find((object) => object.id === accepted.id)?.label).toBe(
       'Accepted object',
     );
-    expect(editor.store.selectedObjectId()).toBe(sent.id);
+    expect(editor.store.selectedObjectId()).toBe(accepted.id);
     expect(editor.store.annotationRevision()).toBe(1);
     expect(editor.store.isInteractionBusy()).toBe(false);
     expect(backendMock.getVideoInfo).not.toHaveBeenCalled();
@@ -122,7 +125,7 @@ describe('object-operations workflows', () => {
   it('does not leave a phantom object when creation fails', () => {
     const previous = editor.store.objects();
     const accepted = editor.store.annotations();
-    backendMock.upsertObject.mockReturnValue(throwError(() => new Error('rejected')));
+    backendMock.createObject.mockReturnValue(throwError(() => new Error('rejected')));
     objectOperations.addObject();
     expect(editor.store.objects()).toBe(previous);
     expect(editor.store.annotations()).toBe(accepted);
@@ -132,19 +135,19 @@ describe('object-operations workflows', () => {
 
   it('keeps the accepted label while a rename is pending and blocks overlapping object edits', () => {
     const pending = new Subject<AnnotationSnapshot>();
-    backendMock.upsertObject.mockReturnValue(pending);
+    backendMock.updateObject.mockReturnValue(pending);
     const previous = editor.store.objects();
     objectOperations.renameObject(1, 'Draft');
     expect(editor.store.objects()).toBe(previous);
     objectOperations.renameObject(1, 'Later');
-    expect(backendMock.upsertObject).toHaveBeenCalledTimes(1);
+    expect(backendMock.updateObject).toHaveBeenCalledTimes(1);
     pending.error(new Error('rejected'));
     expect(editor.store.objects()).toBe(previous);
   });
 
   it('ignores an older accepted response without rolling back a newer snapshot', () => {
     const pending = new Subject<AnnotationSnapshot>();
-    backendMock.upsertObject.mockReturnValue(pending);
+    backendMock.updateObject.mockReturnValue(pending);
     const older = objectSnapshot(editor.store, [{ id: 1, label: 'Older', color: '#ff0000' }]);
     objectOperations.renameObject(1, 'Older');
     const newer = objectSnapshot(editor.store, [{ id: 1, label: 'Newer', color: '#ff0000' }]);
@@ -158,7 +161,7 @@ describe('object-operations workflows', () => {
 
   it('does not apply a response after the backend URL changes', () => {
     const pending = new Subject<AnnotationSnapshot>();
-    backendMock.upsertObject.mockReturnValue(pending);
+    backendMock.updateObject.mockReturnValue(pending);
     const response = objectSnapshot(editor.store, [
       { id: 1, label: 'Old backend', color: '#ff0000' },
     ]);
@@ -171,7 +174,7 @@ describe('object-operations workflows', () => {
 
   it('does not apply a response to a replacement session', () => {
     const pending = new Subject<AnnotationSnapshot>();
-    backendMock.upsertObject.mockReturnValue(pending);
+    backendMock.updateObject.mockReturnValue(pending);
     const response = objectSnapshot(editor.store, [
       { id: 1, label: 'Old session', color: '#ff0000' },
     ]);
