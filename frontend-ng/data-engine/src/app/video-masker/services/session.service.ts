@@ -39,7 +39,13 @@ export class SessionService {
     effect(() => {
       const status = this.store.apiHealthStatus();
       const initialized = this.store.isInitialized();
-      const busy = this.isBusy || this.store.pendingObjectUpdates() > 0;
+      const busy = this.isBusy;
+      const mutationRecovery = this.store.annotationRecoveryRequested();
+      if (mutationRecovery && initialized && !busy) {
+        this.store.annotationRecoveryRequested.set(false);
+        untracked(() => void this.refreshAnnotations(true));
+        return;
+      }
       if (status === 'offline' && initialized) recoveryPending = true;
       if (status === 'online' && recoveryPending && initialized && !busy) {
         recoveryPending = false;
@@ -49,7 +55,7 @@ export class SessionService {
   }
 
   /** Recover accepted inputs without reopening the video or resetting the viewport. */
-  async refreshAnnotations(): Promise<boolean> {
+  async refreshAnnotations(blockEdits = false): Promise<boolean> {
     if (!this.store.isInitialized() || this.isBusy || this.store.pendingObjectUpdates() > 0)
       return false;
     const backendUrl = this.backend.getApiUrl();
@@ -60,6 +66,7 @@ export class SessionService {
     const points = this.store.points();
     const boxes = this.store.annotations()?.prompts.filter((prompt) => prompt.box);
     const request = ++this.snapshotRequest;
+    if (blockEdits) this.store.isRecoveringAnnotations.set(true);
     try {
       const info = await firstValueFrom(
         this.backend.getVideoInfo().pipe(takeUntilDestroyed(this.destroyRef)),
@@ -74,7 +81,8 @@ export class SessionService {
         epoch !== this.store.stateEpoch() ||
         objects !== this.store.objects() ||
         points !== this.store.points() ||
-        this.isBusy ||
+        this.store.isLoading() ||
+        this.store.isPointRequestInFlight() ||
         this.store.pendingObjectUpdates() > 0
       )
         return false;
@@ -85,6 +93,11 @@ export class SessionService {
       if (!this.store.applyAnnotationSnapshot(info, backendUrl)) return false;
       this.store.numFrames.set(info.num_frames);
       if (
+        objects.map((object) => object.id).join() !==
+          this.store
+            .objects()
+            .map((object) => object.id)
+            .join() ||
         this.pointSignature(points) !== this.pointSignature(this.store.points()) ||
         JSON.stringify(boxes) !==
           JSON.stringify(this.store.annotations()?.prompts.filter((prompt) => prompt.box))
@@ -110,6 +123,8 @@ export class SessionService {
         );
       }
       return false;
+    } finally {
+      if (blockEdits) this.store.isRecoveringAnnotations.set(false);
     }
   }
 

@@ -1,7 +1,11 @@
 import { DestroyRef, Injectable, inject } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { Observable, defer, finalize, take } from 'rxjs';
-import { AnnotationSnapshot, BackendService } from '../../services/backend.service';
+import {
+  AnnotationSnapshot,
+  AnnotationPrecondition,
+  BackendService,
+} from '../../services/backend.service';
 import { getErrorMessage } from '../video-masker.util';
 import { FramePipelineService } from './frame-pipeline.service';
 import { ToastService } from './toast.service';
@@ -23,13 +27,16 @@ export class ObjectOperationsService {
     const label = value.trim().slice(0, 200);
     const object = this.store.objects().find((entry) => entry.id === id);
     if (!label || !object || object.label === label) return;
-    void this.mutate(() => this.backend.updateObject({ ...object, label }), 'Object update failed');
+    void this.mutate(
+      (precondition) => this.backend.updateObject({ ...object, label }, precondition),
+      'Object update failed',
+    );
   }
 
   addObject(): void {
     if (this.store.isInteractionBusy()) return;
     void this.mutate(
-      () => this.backend.createObject(),
+      (precondition) => this.backend.createObject(precondition),
       'Object creation failed',
       (snapshot) => snapshot.created_object_id,
     );
@@ -38,7 +45,11 @@ export class ObjectOperationsService {
   removeObject(): void {
     if (this.store.isInteractionBusy()) return;
     const id = this.store.selectedObjectId();
-    if (id !== null) void this.mutate(() => this.backend.removeObject(id), 'Remove failed');
+    if (id !== null)
+      void this.mutate(
+        (precondition) => this.backend.removeObject(id, precondition),
+        'Remove failed',
+      );
   }
 
   async removeAllObjects(): Promise<void> {
@@ -51,7 +62,7 @@ export class ObjectOperationsService {
       for (const id of ids) {
         if (
           !(await this.mutate(
-            () => this.backend.removeObject(id),
+            (precondition) => this.backend.removeObject(id, precondition),
             'Remove all failed',
             undefined,
             context,
@@ -82,7 +93,7 @@ export class ObjectOperationsService {
   }
 
   private mutate<T extends AnnotationSnapshot>(
-    send: () => Observable<T>,
+    send: (precondition: AnnotationPrecondition) => Observable<T>,
     errorTitle: string,
     selectCreated?: (snapshot: T) => number,
     context = this.sessionContext(),
@@ -90,7 +101,12 @@ export class ObjectOperationsService {
     if (!context || !this.ownsSession(context)) return Promise.resolve(false);
     this.store.pendingObjectUpdates.update((count) => count + 1);
     return new Promise((resolve) => {
-      defer(send)
+      defer(() =>
+        send({
+          session_id: context.sessionId,
+          expected_revision: this.store.annotationRevision()!,
+        }),
+      )
         .pipe(
           take(1),
           takeUntilDestroyed(this.destroyRef),
@@ -104,6 +120,7 @@ export class ObjectOperationsService {
             }
             const previousIds = this.store.objects().map((object) => object.id);
             if (!this.store.applyAnnotationSnapshot(snapshot, context.backendUrl)) {
+              this.store.annotationRecoveryRequested.set(true);
               resolve(false);
               return;
             }
@@ -122,12 +139,16 @@ export class ObjectOperationsService {
             resolve(true);
           },
           error: (error) => {
-            if (this.ownsSession(context))
+            if (this.ownsSession(context)) {
+              const status = (error as { status?: number })?.status;
+              if (status === undefined || status === 0 || status === 409 || status >= 500)
+                this.store.annotationRecoveryRequested.set(true);
               this.toast.show(
                 'error',
                 errorTitle,
                 getErrorMessage(error, 'Unable to update objects.'),
               );
+            }
             resolve(false);
           },
           complete: () => resolve(false),

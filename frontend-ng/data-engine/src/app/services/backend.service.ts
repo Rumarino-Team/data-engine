@@ -11,6 +11,7 @@ import {
 import { normalizeBackendPath } from './backend-path';
 import type {
   AnnotationSnapshot,
+  AnnotationPrecondition,
   ObjectCreationResponse,
   CurrentJobResponse,
   HealthResponse,
@@ -93,8 +94,8 @@ export class BackendService {
     return this.http.post<JobStartResponse>(this.endpoint('/video/init_state'), payload);
   }
 
-  resetVideoState(): Observable<any> {
-    return this.http.post(this.endpoint('/video/reset_state'), {});
+  resetVideoState(): Observable<AnnotationSnapshot> {
+    return this.http.post<AnnotationSnapshot>(this.endpoint('/video/reset_state'), {});
   }
 
   addNewPointsOrBox(request: VideoAddPointsOrBoxRequest): Observable<VideoAddPointsResponse> {
@@ -119,27 +120,51 @@ export class BackendService {
     return this.http.post<VideoSaveResponse>(this.endpoint('/video/save'), payload);
   }
 
-  clearAllPromptsInFrame(frameIdx: number, objId: number): Observable<any> {
-    return this.http.post(this.endpoint('/video/clear_all_prompts_in_frame'), null, {
-      params: { frame_idx: frameIdx.toString(), obj_id: objId.toString() },
+  clearAllPromptsInFrame(frameIdx: number, objId: number): Observable<AnnotationSnapshot> {
+    return this.http.post<AnnotationSnapshot>(
+      this.endpoint('/video/clear_all_prompts_in_frame'),
+      null,
+      {
+        params: { frame_idx: frameIdx.toString(), obj_id: objId.toString() },
+      },
+    );
+  }
+
+  createObject(precondition: AnnotationPrecondition): Observable<ObjectCreationResponse> {
+    return this.http.post<ObjectCreationResponse>(this.endpoint('/video/objects'), null, {
+      headers: this.annotationHeaders(precondition),
     });
   }
 
-  createObject(): Observable<ObjectCreationResponse> {
-    return this.http.post<ObjectCreationResponse>(this.endpoint('/video/objects'), null);
+  updateObject(
+    object: VideoObject,
+    precondition: AnnotationPrecondition,
+  ): Observable<AnnotationSnapshot> {
+    return this.http.put<AnnotationSnapshot>(
+      this.endpoint(`/video/objects/${object.id}`),
+      {
+        label: object.label,
+        color: object.color,
+      },
+      { headers: this.annotationHeaders(precondition) },
+    );
   }
 
-  updateObject(object: VideoObject): Observable<AnnotationSnapshot> {
-    return this.http.put<AnnotationSnapshot>(this.endpoint(`/video/objects/${object.id}`), {
-      label: object.label,
-      color: object.color,
-    });
-  }
-
-  removeObject(objId: number): Observable<AnnotationSnapshot> {
+  removeObject(
+    objId: number,
+    precondition: AnnotationPrecondition,
+  ): Observable<AnnotationSnapshot> {
     return this.http.post<AnnotationSnapshot>(this.endpoint('/video/remove_object'), null, {
+      headers: this.annotationHeaders(precondition),
       params: { obj_id: objId.toString() },
     });
+  }
+
+  private annotationHeaders(precondition: AnnotationPrecondition): Record<string, string> {
+    return {
+      'X-Session-ID': precondition.session_id,
+      'X-Annotation-Revision': String(precondition.expected_revision),
+    };
   }
 
   getVideoInfo(): Observable<VideoInfoResponse> {

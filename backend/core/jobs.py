@@ -1,4 +1,5 @@
 from typing import Any, Callable, Optional
+from contextlib import contextmanager
 from datetime import datetime
 import logging, threading, uuid
 from fastapi import HTTPException
@@ -7,6 +8,18 @@ import torch
 logger = logging.getLogger(__name__)
 current_job: Optional[dict[str, Any]] = None
 current_job_lock = threading.Lock()
+# Foreground edits and job admission share this boundary. Once admitted, an active
+# job excludes foreground edits until its worker has finished.
+foreground_lock = threading.RLock()
+
+
+@contextmanager
+def foreground_operation():
+    """Serialize synchronous mutation bodies; never suspend/await inside this block."""
+    with foreground_lock:
+        require_no_active_job()
+        yield
+
 _UNSET = object()
 
 def utc_now_iso() -> str:
@@ -55,7 +68,7 @@ def clear_current_job_result(job_id: str) -> bool:
 
 def _start_job(operation: str, *, stage: str, stage_label: str, message: str) -> dict[str, Any]:
     global current_job
-    with current_job_lock:
+    with foreground_lock, current_job_lock:
         if _active_job_exists():
             raise HTTPException(status_code=409, detail="Another operation is already running.")
 

@@ -5,7 +5,7 @@ from fastapi import HTTPException
 import torch
 import co_tracker as cot
 from core.config import DEFAULT_STREAMING_TRACK_FRAME_THRESHOLD
-from core.jobs import require_no_active_job
+from core.jobs import foreground_operation
 from core.runtime import cleanup_cuda_memory
 from core.state import state
 from schemas.tracking import TrackingGridRequest, TrackingLoadVideoRequest, TrackingPointsRequest
@@ -43,144 +43,144 @@ def read_tracking_video(video_path: str | Path) -> np.ndarray:
 async def load_tracking_video(request: TrackingLoadVideoRequest):
     """Load a video file for tracking."""
 
-    require_no_active_job("load tracking video")
-    release_active_session(clear_tracker=False, clear_cache_session=True)
-    bump_video_state_epoch()
-    
-    requested_model = getattr(request, "model_name", cot.DEFAULT_COTRACKER_MODEL)
-    try:
-        ensure_tracker_model(requested_model)
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-    
-    resolved_video_path = resolve_input_path(request.video_path, expect_dir=False)
-    state.tracking_video_path = str(resolved_video_path)
-    
-    state.tracking_video = read_tracking_video(state.tracking_video_path)
-    
-    return {
-        "message": "Video loaded successfully",
-        "model_name": state.tracker.model_name,
-        "shape": state.tracking_video.shape,
-        "num_frames": state.tracking_video.shape[0],
-        "resolved_video_path": state.tracking_video_path
-    }
+    with foreground_operation():
+        release_active_session(clear_tracker=False, clear_cache_session=True)
+        bump_video_state_epoch()
+
+        requested_model = getattr(request, "model_name", cot.DEFAULT_COTRACKER_MODEL)
+        try:
+            ensure_tracker_model(requested_model)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+        resolved_video_path = resolve_input_path(request.video_path, expect_dir=False)
+        state.tracking_video_path = str(resolved_video_path)
+
+        state.tracking_video = read_tracking_video(state.tracking_video_path)
+
+        return {
+            "message": "Video loaded successfully",
+            "model_name": state.tracker.model_name,
+            "shape": state.tracking_video.shape,
+            "num_frames": state.tracking_video.shape[0],
+            "resolved_video_path": state.tracking_video_path
+        }
 
 async def track_grid(request: TrackingGridRequest):
     """Track a grid of points across the video."""
-    
-    require_no_active_job("track grid")
-    if state.tracker is None:
-        raise HTTPException(status_code=400, detail="Tracker not active. Call /tracking/load_video first.")
-    
-    if state.tracking_video is None:
-        raise HTTPException(status_code=400, detail="No video loaded. Call /tracking/load_video first.")
-    
-    # Run tracking
-    try:
-        tracks, visibility = state.tracker.track(
-            state.tracking_video,
-            queries=None,
-            grid_size=request.grid_size,
-            add_support_grid=request.add_support_grid
-        )
-    except torch.OutOfMemoryError as error:
-        cleanup_cuda_memory()
-        raise HTTPException(
-            status_code=507,
-            detail="CUDA out of memory during tracking. Try a smaller tracking workload and rerun.",
-        ) from error
-    except RuntimeError as error:
-        if "out of memory" in str(error).lower():
+
+    with foreground_operation():
+        if state.tracker is None:
+            raise HTTPException(status_code=400, detail="Tracker not active. Call /tracking/load_video first.")
+
+        if state.tracking_video is None:
+            raise HTTPException(status_code=400, detail="No video loaded. Call /tracking/load_video first.")
+
+        # Run tracking
+        try:
+            tracks, visibility = state.tracker.track(
+                state.tracking_video,
+                queries=None,
+                grid_size=request.grid_size,
+                add_support_grid=request.add_support_grid
+            )
+        except torch.OutOfMemoryError as error:
             cleanup_cuda_memory()
             raise HTTPException(
                 status_code=507,
                 detail="CUDA out of memory during tracking. Try a smaller tracking workload and rerun.",
             ) from error
-        raise
-    
-    # Save visualization
-    painted_video = cot.paint_point_track(state.tracking_video, tracks, visibility)
-    
-    # Save output video
-    video_name = Path(state.tracking_video_path).stem
-    output_dir = Path(state.tracking_video_path).parent
-    timestamp = int(datetime.now().timestamp())
-    mode_label = cot.DEFAULT_COTRACKER_MODEL.replace("cotracker3_", "")
-    output_filename = f"{video_name}_tracked_grid_{mode_label}_{timestamp}.mp4"
-    output_path = output_dir / output_filename
-    
-    fps = cot.read_video_fps(state.tracking_video_path)
-    cot.write_video_rgb(output_path, painted_video, fps=fps)
+        except RuntimeError as error:
+            if "out of memory" in str(error).lower():
+                cleanup_cuda_memory()
+                raise HTTPException(
+                    status_code=507,
+                    detail="CUDA out of memory during tracking. Try a smaller tracking workload and rerun.",
+                ) from error
+            raise
 
-    cleanup_cuda_memory()
-    
-    return {
-        "message": "Grid tracking completed",
-        "tracks": tracks.tolist(),
-        "visibility": visibility.tolist(),
-        "num_points": tracks.shape[0],
-        "num_frames": tracks.shape[1],
-        "output_video_path": str(output_path)
-    }
+        # Save visualization
+        painted_video = cot.paint_point_track(state.tracking_video, tracks, visibility)
+
+        # Save output video
+        video_name = Path(state.tracking_video_path).stem
+        output_dir = Path(state.tracking_video_path).parent
+        timestamp = int(datetime.now().timestamp())
+        mode_label = cot.DEFAULT_COTRACKER_MODEL.replace("cotracker3_", "")
+        output_filename = f"{video_name}_tracked_grid_{mode_label}_{timestamp}.mp4"
+        output_path = output_dir / output_filename
+
+        fps = cot.read_video_fps(state.tracking_video_path)
+        cot.write_video_rgb(output_path, painted_video, fps=fps)
+
+        cleanup_cuda_memory()
+
+        return {
+            "message": "Grid tracking completed",
+            "tracks": tracks.tolist(),
+            "visibility": visibility.tolist(),
+            "num_points": tracks.shape[0],
+            "num_frames": tracks.shape[1],
+            "output_video_path": str(output_path)
+        }
 
 async def track_points(request: TrackingPointsRequest):
     """Track specific query points across the video."""
-    
-    require_no_active_job("track points")
-    if state.tracker is None:
-        raise HTTPException(status_code=400, detail="Tracker not active. Call /tracking/load_video first.")
-    
-    if state.tracking_video is None:
-        raise HTTPException(status_code=400, detail="No video loaded. Call /tracking/load_video first.")
-    
-    # Convert queries to numpy array
-    queries = np.array(request.queries)
-    
-    # Run tracking
-    try:
-        tracks, visibility = state.tracker.track(
-            state.tracking_video,
-            queries=queries,
-            add_support_grid=request.add_support_grid
-        )
-    except torch.OutOfMemoryError as error:
-        cleanup_cuda_memory()
-        raise HTTPException(
-            status_code=507,
-            detail="CUDA out of memory during tracking. Try a smaller tracking workload and rerun.",
-        ) from error
-    except RuntimeError as error:
-        if "out of memory" in str(error).lower():
+
+    with foreground_operation():
+        if state.tracker is None:
+            raise HTTPException(status_code=400, detail="Tracker not active. Call /tracking/load_video first.")
+
+        if state.tracking_video is None:
+            raise HTTPException(status_code=400, detail="No video loaded. Call /tracking/load_video first.")
+
+        # Convert queries to numpy array
+        queries = np.array(request.queries)
+
+        # Run tracking
+        try:
+            tracks, visibility = state.tracker.track(
+                state.tracking_video,
+                queries=queries,
+                add_support_grid=request.add_support_grid
+            )
+        except torch.OutOfMemoryError as error:
             cleanup_cuda_memory()
             raise HTTPException(
                 status_code=507,
                 detail="CUDA out of memory during tracking. Try a smaller tracking workload and rerun.",
             ) from error
-        raise
-    
-    # Save visualization
-    painted_video = cot.paint_point_track(state.tracking_video, tracks, visibility)
-    
-    # Save output video
-    video_name = Path(state.tracking_video_path).stem
-    output_dir = Path(state.tracking_video_path).parent
-    timestamp = int(datetime.now().timestamp())
-    mode_label = cot.DEFAULT_COTRACKER_MODEL.replace("cotracker3_", "")
-    output_tag = "tracked_points_support" if request.add_support_grid else "tracked_points"
-    output_filename = f"{video_name}_{output_tag}_{mode_label}_{timestamp}.mp4"
-    output_path = output_dir / output_filename
-    
-    fps = cot.read_video_fps(state.tracking_video_path)
-    cot.write_video_rgb(output_path, painted_video, fps=fps)
+        except RuntimeError as error:
+            if "out of memory" in str(error).lower():
+                cleanup_cuda_memory()
+                raise HTTPException(
+                    status_code=507,
+                    detail="CUDA out of memory during tracking. Try a smaller tracking workload and rerun.",
+                ) from error
+            raise
 
-    cleanup_cuda_memory()
-    
-    return {
-        "message": "Point tracking completed",
-        "tracks": tracks.tolist(),
-        "visibility": visibility.tolist(),
-        "num_points": tracks.shape[0],
-        "num_frames": tracks.shape[1],
-        "output_video_path": str(output_path)
-    }
+        # Save visualization
+        painted_video = cot.paint_point_track(state.tracking_video, tracks, visibility)
+
+        # Save output video
+        video_name = Path(state.tracking_video_path).stem
+        output_dir = Path(state.tracking_video_path).parent
+        timestamp = int(datetime.now().timestamp())
+        mode_label = cot.DEFAULT_COTRACKER_MODEL.replace("cotracker3_", "")
+        output_tag = "tracked_points_support" if request.add_support_grid else "tracked_points"
+        output_filename = f"{video_name}_{output_tag}_{mode_label}_{timestamp}.mp4"
+        output_path = output_dir / output_filename
+
+        fps = cot.read_video_fps(state.tracking_video_path)
+        cot.write_video_rgb(output_path, painted_video, fps=fps)
+
+        cleanup_cuda_memory()
+
+        return {
+            "message": "Point tracking completed",
+            "tracks": tracks.tolist(),
+            "visibility": visibility.tolist(),
+            "num_points": tracks.shape[0],
+            "num_frames": tracks.shape[1],
+            "output_video_path": str(output_path)
+        }

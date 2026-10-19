@@ -6,6 +6,7 @@ import {
   VideoAddPointsResponse,
   VideoInitStateResponse,
   AnnotationSnapshot,
+  AnnotationPrecondition,
   ObjectCreationResponse,
   VideoObject,
 } from '../../services/backend.service';
@@ -25,6 +26,23 @@ import { VideoMaskerStateStore } from '../services/video-masker-state.store';
 export const makeResponse = (
   overrides: Partial<VideoAddPointsResponse>,
 ): VideoAddPointsResponse => ({
+  session_id: 'session-1',
+  annotations: {
+    version: 1,
+    revision: 1,
+    next_object_id: 2,
+    objects: { 1: { id: 1, label: 'Object 1', color: '#ff0000' } },
+    prompts: [
+      {
+        frame_idx: 5,
+        obj_id: 1,
+        points: [[10, 20]],
+        labels: [1],
+        clear_old_points: true,
+        box: null,
+      },
+    ],
+  },
   request_frame_idx: 5,
   frame_idx: 5,
   frame_file: '00005.jpg',
@@ -52,9 +70,18 @@ export function createBackendMocks() {
     setApiUrl: vi.fn((value: string) => value),
     resetApiUrl: vi.fn(() => 'http://127.0.0.1:8000'),
     saveVideoSession: vi.fn(),
-    createObject: vi.fn<() => Observable<ObjectCreationResponse>>(),
-    removeObject: vi.fn<(id: number) => Observable<AnnotationSnapshot>>(),
-    updateObject: vi.fn<(object: VideoObject) => Observable<AnnotationSnapshot>>(),
+    createObject:
+      vi.fn<(precondition: AnnotationPrecondition) => Observable<ObjectCreationResponse>>(),
+    clearAllPromptsInFrame: vi.fn<(frame: number, id: number) => Observable<AnnotationSnapshot>>(),
+    removeObject:
+      vi.fn<(id: number, precondition: AnnotationPrecondition) => Observable<AnnotationSnapshot>>(),
+    updateObject:
+      vi.fn<
+        (
+          object: VideoObject,
+          precondition: AnnotationPrecondition,
+        ) => Observable<AnnotationSnapshot>
+      >(),
     resetVideoState: vi.fn(() => of({ state_epoch: 4 })),
   };
   backendMock.getVideoInfo.mockImplementation(() => {
@@ -137,6 +164,20 @@ export function configureObjectMutationMocks(
   backend: ReturnType<typeof createBackendMocks>['backendMock'],
   store: VideoMaskerStateStore,
 ): void {
+  backend.clearAllPromptsInFrame.mockImplementation((frame, id) => {
+    const snapshot = objectSnapshot(store, store.objects());
+    snapshot.annotations!.prompts = snapshot.annotations!.prompts.filter(
+      (prompt) => prompt.frame_idx !== frame || prompt.obj_id !== id,
+    );
+    return of(snapshot);
+  });
+  backend.resetVideoState.mockImplementation(() =>
+    of({
+      ...objectSnapshot(store, store.objects()),
+      state_epoch: 4,
+      annotations: { ...objectSnapshot(store, store.objects()).annotations!, prompts: [] },
+    }),
+  );
   backend.createObject.mockImplementation(() => {
     const id = store.annotations()?.next_object_id ?? 1;
     const object = { id, label: `Object ${id}`, color: '#00ff00' };

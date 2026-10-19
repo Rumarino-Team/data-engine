@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Path
+from fastapi import APIRouter, Depends, Header, Path
 
 from schemas.video import (
     VideoAddMaskRequest,
     VideoAddPointsOrBoxRequest,
     VideoInitStateRequest,
     VideoObjectUpdate,
+    AnnotationPrecondition,
     VideoPropagateRequest,
     VideoSaveRequest,
 )
@@ -28,6 +29,13 @@ from video.service import (
 
 
 router = APIRouter()
+
+
+def annotation_precondition(
+    session_id: str = Header(alias="X-Session-ID", min_length=1),
+    expected_revision: int = Header(alias="X-Annotation-Revision", ge=0),
+) -> AnnotationPrecondition:
+    return AnnotationPrecondition(session_id=session_id, expected_revision=expected_revision)
 
 
 @router.post("/video/init_state")
@@ -66,18 +74,21 @@ async def clear_all_prompts_in_frame_route(frame_idx: int, obj_id: int):
 
 
 @router.post("/video/objects")
-async def create_object_route():
-    return await create_object()
+async def create_object_route(precondition: AnnotationPrecondition = Depends(annotation_precondition)):
+    return await create_object(precondition)
 
 
 @router.put("/video/objects/{obj_id}")
-async def update_object_route(request: VideoObjectUpdate, obj_id: int = Path(ge=1)):
-    return await update_object(obj_id, request)
+async def update_object_route(
+    request: VideoObjectUpdate, obj_id: int = Path(ge=1),
+    precondition: AnnotationPrecondition = Depends(annotation_precondition),
+):
+    return await update_object(obj_id, request, precondition)
 
 
 @router.post("/video/remove_object")
-async def remove_object_route(obj_id: int):
-    return await remove_object(obj_id)
+async def remove_object_route(obj_id: int, precondition: AnnotationPrecondition = Depends(annotation_precondition)):
+    return await remove_object(obj_id, precondition)
 
 
 @router.get("/video/info")

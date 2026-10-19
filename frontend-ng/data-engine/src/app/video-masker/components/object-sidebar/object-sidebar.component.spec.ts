@@ -27,7 +27,10 @@ describe('ObjectSidebarComponent', () => {
     expect(component.store.objects().map((object) => object.id)).toEqual([1, 2]);
     expect(component.store.selectedObjectId()).toBe(2);
     buttons[1].click();
-    expect(backendMock.removeObject).toHaveBeenCalledWith(2);
+    expect(backendMock.removeObject).toHaveBeenCalledWith(2, {
+      session_id: 'session-1',
+      expected_revision: 1,
+    });
     expect(component.store.objects().map((object) => object.id)).toEqual([1]);
     expect(component.store.selectedObjectId()).toBe(1);
   });

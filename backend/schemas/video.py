@@ -160,3 +160,8 @@ class InteractiveState(BaseModel):
 class VideoSaveRequest(BaseModel):
     name: str
     interactive_state: Optional[InteractiveState] = None
+
+
+class AnnotationPrecondition(BaseModel):
+    session_id: str = Field(min_length=1)
+    expected_revision: int = Field(ge=0)

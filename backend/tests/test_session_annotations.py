@@ -46,6 +46,10 @@ class SessionAnnotationsTests(unittest.TestCase):
         self.masker.add_new_points_or_box.return_value = (0, [1], [np.ones((3, 3))])
         state.video_masker = self.masker
         self.client = TestClient(create_app())
+        def preconditions(request):
+            request.headers.setdefault("X-Session-ID", state.active_session_id or "absent")
+            request.headers.setdefault("X-Annotation-Revision", str(state.annotations.revision))
+        self.client.event_hooks["request"].append(preconditions)
 
     def tearDown(self):
         state.__dict__.clear()
@@ -95,6 +99,7 @@ class SessionAnnotationsTests(unittest.TestCase):
         self.assertEqual(self.client.get("/video/document").status_code, 404)
         self.assertEqual(snapshot["annotations"]["revision"], 1)
         self.assertEqual(snapshot["annotations"], self.metadata()["annotations"])
+        self.assertEqual(response.json()["annotations"], snapshot["annotations"])
         snapshot["annotations"]["prompts"][0]["points"][0][0] = 999
         self.assertEqual(state.annotations.prompts[0].points, [[1, 2]])
 
@@ -171,7 +176,9 @@ class SessionAnnotationsTests(unittest.TestCase):
             with self.subTest(path=path):
                 state.annotations.set_prompt(VideoPrompt(**PROMPT))
                 write_session_metadata()
-                self.assertEqual(self.client.post(path, params=params).status_code, 200)
+                response = self.client.post(path, params=params)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()["annotations"], state.annotations.snapshot())
                 self.reopen()
                 self.assertEqual(state.annotations.prompts, [])
                 self.assertEqual(self.metadata()["interactive_state"]["points"], [])

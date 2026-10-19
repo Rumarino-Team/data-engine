@@ -71,10 +71,15 @@ export class PointEditingService {
       return;
     }
 
+    const backendUrl = this.backend.getApiUrl();
     this.store.isPointRequestInFlight.set(true);
     try {
-      await firstValueFrom(this.backend.clearAllPromptsInFrame(frameIdx, objId));
-      this.setObjectPoints(frameIdx, objId, []);
+      const response = await firstValueFrom(this.backend.clearAllPromptsInFrame(frameIdx, objId));
+      if (
+        backendUrl !== this.backend.getApiUrl() ||
+        !this.store.applyAnnotationSnapshot(response, backendUrl)
+      )
+        return;
       const masksMap = new Map(this.store.masks());
       const frameMasksMap = new Map(masksMap.get(frameIdx) || new Map<number, LiveMask>());
       frameMasksMap.delete(objId);
@@ -129,9 +134,11 @@ export class PointEditingService {
       clear_old_points: true,
     };
 
+    const backendUrl = this.backend.getApiUrl();
     const liveEditedBeforeRequest = this.isObjectLiveEdited(frameIdx, objId);
     let responseChangedEpoch = false;
     const ownsPointUpdate = () =>
+      backendUrl === this.backend.getApiUrl() &&
       this.store.stateEpoch() === expectedEpoch &&
       this.store.points().get(frameIdx)?.get(objId) === objectPoints &&
       this.store.objects().some((object) => object.id === objId);
@@ -212,6 +219,11 @@ export class PointEditingService {
           throw new Error('Encoded mask metadata does not match its pixels.');
         }
       });
+
+      if (!this.store.applyAnnotationSnapshot(response, backendUrl)) {
+        this.store.annotationRecoveryRequested.set(true);
+        return;
+      }
 
       const maskPixelCount = getMaskPixelCount(response.mask_pixel_counts, objId);
       this.store.lastMaskPixelCount.set(maskPixelCount);

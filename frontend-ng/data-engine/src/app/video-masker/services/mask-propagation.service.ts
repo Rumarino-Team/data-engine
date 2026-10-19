@@ -73,13 +73,18 @@ export class MaskPropagationService {
 
   clearMasks(): void {
     if (this.isBusy) return;
+    const backendUrl = this.backend.getApiUrl();
     this.store.isLoading.set(true);
     this.backend
       .resetVideoState()
       .pipe(finalize(() => this.store.isLoading.set(false)))
       .subscribe({
         next: (response) => {
-          this.store.updateStateEpoch(response?.state_epoch, 'reset');
+          if (
+            backendUrl !== this.backend.getApiUrl() ||
+            !this.store.applyAnnotationSnapshot(response, backendUrl)
+          )
+            return;
           this.store.hasManifestMasks.set(false);
           this.store.invalidateTracking();
           this.store.resetInteractiveMaps();

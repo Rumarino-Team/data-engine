@@ -449,11 +449,14 @@ describe('session workflows', () => {
     editor.store.saveName.set('review-run');
     objectOperations.renameObject(1, 'Left hand');
 
-    expect(backendMock.updateObject).toHaveBeenCalledWith({
-      id: 1,
-      label: 'Left hand',
-      color: '#ff0000',
-    });
+    expect(backendMock.updateObject).toHaveBeenCalledWith(
+      {
+        id: 1,
+        label: 'Left hand',
+        color: '#ff0000',
+      },
+      expect.objectContaining({ session_id: 'session-1' }),
+    );
 
     editor.sessions.save();
     await Promise.resolve();

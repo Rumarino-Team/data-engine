@@ -52,6 +52,28 @@ describe('BackendService', () => {
     expect(service.getApiUrl()).toBe('http://127.0.0.1:8000');
   });
 
+  it('sends required identity and revision headers on every object mutation', () => {
+    const http = { post: vi.fn(), put: vi.fn() };
+    const service = new BackendService(http as unknown as HttpClient);
+    const precondition = { session_id: 'session-a', expected_revision: 7 };
+    const headers = { 'X-Session-ID': 'session-a', 'X-Annotation-Revision': '7' };
+    service.createObject(precondition);
+    service.updateObject({ id: 2, label: 'Hand', color: '#123456' }, precondition);
+    service.removeObject(2, precondition);
+    expect(http.post).toHaveBeenCalledWith('http://127.0.0.1:8000/video/objects', null, {
+      headers,
+    });
+    expect(http.put).toHaveBeenCalledWith(
+      'http://127.0.0.1:8000/video/objects/2',
+      { label: 'Hand', color: '#123456' },
+      { headers },
+    );
+    expect(http.post).toHaveBeenCalledWith('http://127.0.0.1:8000/video/remove_object', null, {
+      headers,
+      params: { obj_id: '2' },
+    });
+  });
+
   it('prefers stored API URL over global config', () => {
     localStorage.setItem('dataEngineApiUrl', 'http://192.168.0.50:9000/');
     (globalThis as { __DATA_ENGINE_API_URL__?: string }).__DATA_ENGINE_API_URL__ =

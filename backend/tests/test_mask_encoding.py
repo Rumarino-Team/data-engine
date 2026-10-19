@@ -4,6 +4,7 @@ from pathlib import Path
 import unittest
 import ast
 import asyncio
+from contextlib import nullcontext
 import logging
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -88,7 +89,7 @@ class LiveMaskResponseTests(unittest.TestCase):
         namespace = {"np": np, "state": self.state, "logger": logging.getLogger(__name__),
                      "encode_live_mask_payload": encode_live_mask_payload,
                      "mask_logits_to_2d_bool": lambda mask: np.asarray(mask, dtype=bool),
-                     "require_no_active_job": Mock(), "record_prompt_event": self.record,
+                     "foreground_operation": nullcontext, "annotation_snapshot": lambda: {}, "record_prompt_event": self.record,
                      "VideoAddPointsOrBoxRequest": object, "VideoAddMaskRequest": object}
         exec(compile(ast.Module(body=[function], type_ignores=[]), str(source), "exec"), namespace)
         return asyncio.run(namespace[name](request))

@@ -25,6 +25,10 @@ class VideoObjectTests(unittest.TestCase):
         state.active_session_id = "object-session"
         state.annotations = SessionAnnotations()
         self.client = TestClient(create_app())
+        def preconditions(request):
+            request.headers.setdefault("X-Session-ID", state.active_session_id or "absent")
+            request.headers.setdefault("X-Annotation-Revision", str(state.annotations.revision))
+        self.client.event_hooks["request"].append(preconditions)
 
     def tearDown(self):
         with jobs.current_job_lock:
@@ -74,7 +78,7 @@ class VideoObjectTests(unittest.TestCase):
 
     def test_create_requires_session_and_is_guarded_during_jobs(self):
         state.active_session_dir = None
-        self.assertEqual(self.client.post("/video/objects").status_code, 400)
+        self.assertEqual(self.client.post("/video/objects").status_code, 409)
         state.active_session_dir = self.session_path
         with jobs.current_job_lock:
             jobs.current_job = {"job_id": "active", "status": "running"}
@@ -92,7 +96,7 @@ class VideoObjectTests(unittest.TestCase):
     def test_update_requires_session(self):
         state.active_session_dir = None
         response = self.client.put("/video/objects/1", json={"label": "buoy", "color": "#ff0000"})
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 409)
 
     def test_update_is_guarded_while_job_active(self):
         with jobs.current_job_lock:

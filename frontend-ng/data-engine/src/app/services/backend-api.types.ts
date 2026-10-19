@@ -50,7 +50,7 @@ export interface VideoSaveResponse {
   state_epoch: number;
 }
 
-export interface VideoAddPointsResponse {
+export interface VideoAddPointsResponse extends AnnotationSnapshot {
   request_frame_idx: number;
   frame_idx: number;
   frame_file: string;
@@ -287,4 +287,9 @@ export interface JobResponse<T = unknown> {
 
 export interface CurrentJobResponse {
   job: BackendJob | null;
+}
+
+export interface AnnotationPrecondition {
+  session_id: string;
+  expected_revision: number;
 }

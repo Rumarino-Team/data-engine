@@ -75,6 +75,8 @@ export class VideoMaskerStateStore {
     return frames;
   });
   pendingObjectUpdates = signal(0);
+  annotationRecoveryRequested = signal(false);
+  isRecoveringAnnotations = signal(false);
 
   /** Replaces accepted inputs without changing navigation or other presentation state. */
   applyAnnotationSnapshot(
@@ -146,7 +148,11 @@ export class VideoMaskerStateStore {
   isFrameLoading = signal<boolean>(false);
   isPointRequestInFlight = signal<boolean>(false);
   isInteractionBusy = computed(
-    () => this.isLoading() || this.isPointRequestInFlight() || this.pendingObjectUpdates() > 0,
+    () =>
+      this.isLoading() ||
+      this.isPointRequestInFlight() ||
+      this.pendingObjectUpdates() > 0 ||
+      this.isRecoveringAnnotations(),
   );
   apiHealthStatus = signal<ApiHealthStatus>('checking');
   activeJob = signal<BackendJob | null>(null);
