@@ -84,7 +84,7 @@ export class MaskPropagationService {
       .subscribe({
         next: (response) => {
           if (!ownsContext()) return;
-          if (!this.store.applyAnnotationSnapshot(response, backendUrl)) {
+          if (!this.store.applyAnnotationUpdate(response, backendUrl)) {
             this.store.annotationRecoveryRequested.set(true);
             return;
           }

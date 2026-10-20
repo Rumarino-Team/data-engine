@@ -20,6 +20,7 @@ from sessions.metadata import write_session_metadata
 from video import service
 from video.prompts import restore_video_masker_from_prompt_events
 from sessions.metadata import interactive_state_projection
+from annotation_delta import apply_delta, same_annotations
 
 
 OBJECT = {"id": 1, "label": "Hand", "color": "#ff0000"}
@@ -90,6 +91,7 @@ class SessionAnnotationsTests(unittest.TestCase):
         self.assertEqual(state.annotations.snapshot(), annotations)
 
     def test_accepted_prompt_is_persisted_and_snapshot_is_detached(self):
+        before = state.annotations.snapshot()
         with patch.object(service, "mask_logits_to_2d_bool", side_effect=lambda mask: mask > 0):
             response = self.client.post("/video/add_new_points_or_box", json=PROMPT)
         self.assertEqual(response.status_code, 200)
@@ -99,7 +101,8 @@ class SessionAnnotationsTests(unittest.TestCase):
         self.assertEqual(self.client.get("/video/document").status_code, 404)
         self.assertEqual(snapshot["annotations"]["revision"], 1)
         self.assertEqual(snapshot["annotations"], self.metadata()["annotations"])
-        self.assertEqual(response.json()["annotations"], snapshot["annotations"])
+        self.assertNotIn("annotations", response.json())
+        self.assertTrue(same_annotations(apply_delta(before, response.json()["annotation_delta"]), snapshot["annotations"]))
         snapshot["annotations"]["prompts"][0]["points"][0][0] = 999
         self.assertEqual(state.annotations.prompts[0].points, [[1, 2]])
 
@@ -127,7 +130,9 @@ class SessionAnnotationsTests(unittest.TestCase):
         self.assertEqual(mask_data["sources"], {"1": "override"})
         self.assertEqual(self.client.get("/video/mask_data/0").json(), mask_data)
         self.assertEqual(self.client.get("/video/mask_frame/0").status_code, 404)
-        self.assertEqual(self.metadata()["annotations"]["mask_overrides"][0]["counts"], [9])
+        reference = self.metadata()["annotations"]["mask_overrides"][0]
+        self.assertEqual(set(reference), {"frame_idx", "obj_id", "artifact"})
+        self.assertEqual(json.loads(self.override_file(reference["artifact"]).read_text())["counts"], [9])
         state.interactive_mask_files = {}
         self.masker.add_new_mask.reset_mock()
         self.reopen()
@@ -300,7 +305,7 @@ class SessionAnnotationsTests(unittest.TestCase):
         expected = state.annotations.snapshot()
         restored = self.reopen()
         self.assertEqual(state.annotations.snapshot(), expected)
-        self.assertEqual(restored["restored_session"]["interactive_state"]["points"][0]["x"], 1)
+        self.assertEqual(restored["restored_session"]["annotations"]["prompts"][0]["points"], [[1, 2]])
         self.masker.add_new_points_or_box.assert_called_once_with(
             frame_idx=0, obj_id=1, points=[[1, 2]], labels=[1], clear_old_points=True, box=None,
         )
@@ -309,13 +314,16 @@ class SessionAnnotationsTests(unittest.TestCase):
         state.annotations.set_prompt(VideoPrompt(**PROMPT))
         write_session_metadata()
         with patch.object(service, "SAVED_ROOT", self.root / "saved"):
-            response = self.client.post("/video/save", json={"name": "review", "interactive_state": {
+            # Editor state carries preferences only; client copies of inputs are rejected outright.
+            stale = self.client.post("/video/save", json={"name": "review", "interactive_state": {
                 "points": [{"frame_idx": 0, "obj_id": 1, "x": 99, "y": 99, "label": 1}],
                 "live_masks": [{"frame_idx": 0, "obj_id": 1, "height": 1, "width": 1, "counts": [0, 1]}],
             }})
+            self.assertEqual(stale.status_code, 422)
+            response = self.client.post("/video/save", json={"name": "review", "interactive_state": {
+                "selected_object_id": 1, "interaction_mode": "negative", "current_frame_idx": 0}})
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(self.metadata()["interactive_state"]["points"][0]["x"], 1)
-        self.assertEqual(self.metadata()["interactive_state"]["live_masks"], [])
+        self.assertEqual(self.metadata()["interactive_state"]["interaction_mode"], "negative")
         self.assertEqual(self.metadata()["annotations"], state.annotations.snapshot())
 
     def test_delete_then_reopen_does_not_resurrect_inputs_or_manifest_masks(self):
@@ -324,16 +332,11 @@ class SessionAnnotationsTests(unittest.TestCase):
         manifest = {"num_frames": 1, "frames": {"0": {"objects": {"1": {"size": [1, 1], "rle": [[0, 1]]}}}}}
         (self.session / "masks" / "manifest.json").write_text(json.dumps(manifest))
         self.assertEqual(self.client.post("/video/remove_object", params={"obj_id": 1}).status_code, 200)
-        # Inject an obsolete frontend cache to verify canonical precedence during loading.
-        metadata = self.metadata()
-        metadata["interactive_state"]["points"] = [
-            {"frame_idx": 0, "obj_id": 1, "x": 1, "y": 2, "label": 1}]
-        (self.session / "session.json").write_text(json.dumps(metadata))
         restored = self.reopen()["restored_session"]
         self.assertEqual(state.annotations.objects, {})
         self.assertEqual(state.annotations.next_object_id, 2)
         self.assertEqual(state.annotations.prompts, [])
-        self.assertEqual(restored["interactive_state"]["points"], [])
+        self.assertNotIn("points", restored["interactive_state"])
         self.assertEqual(restored["annotations"]["next_object_id"], 2)
         self.assertEqual(self.client.get("/video/mask_data/0").json()["objects"], {})
         self.assertEqual(self.client.post("/video/objects").json()["created_object_id"], 2)
@@ -344,12 +347,14 @@ class SessionAnnotationsTests(unittest.TestCase):
             with self.subTest(path=path):
                 state.annotations.set_prompt(VideoPrompt(**PROMPT))
                 write_session_metadata()
+                before = state.annotations.snapshot()
                 response = self.client.post(path, params=params)
                 self.assertEqual(response.status_code, 200)
-                self.assertEqual(response.json()["annotations"], state.annotations.snapshot())
+                self.assertTrue(same_annotations(apply_delta(before, response.json()["annotation_delta"]),
+                                                 state.annotations.snapshot()))
                 self.reopen()
                 self.assertEqual(state.annotations.prompts, [])
-                self.assertEqual(self.metadata()["interactive_state"]["points"], [])
+                self.assertNotIn("points", self.metadata()["interactive_state"])
                 self.assertIn(1, state.annotations.objects)
 
     def test_box_prompts_survive_reconstruction_without_changing_revision(self):
@@ -405,25 +410,112 @@ class SessionAnnotationsTests(unittest.TestCase):
         self.assertIsNone(response.json()["annotations"])
         self.assertIsNone(response.json()["session_id"])
 
-    def test_replacing_prompts_keeps_unrelated_frames_and_projects_appends(self):
+    def test_replacing_prompts_keeps_unrelated_frames_and_merges_appends(self):
         annotations = SessionAnnotations(objects={1: OBJECT})
         annotations.set_prompt(VideoPrompt(**PROMPT))
         annotations.set_prompt(VideoPrompt(**{**PROMPT, "frame_idx": 1}))
-        annotations.set_prompt(VideoPrompt(**{**PROMPT, "points": [[2, 2]], "clear_old_points": False}))
-        self.assertEqual(len(annotations.interactive_points()), 3)
+        annotations.set_prompt(VideoPrompt(**{**PROMPT, "points": [[2, 2]]}), clear_old_points=False)
+        self.assertEqual(len(annotations.prompts), 2)
+        self.assertEqual(next(p for p in annotations.prompts if p.frame_idx == 0).points, [[1, 2], [2, 2]])
         annotations.set_prompt(VideoPrompt(**{**PROMPT, "points": [[3, 3]]}))
-        self.assertEqual([point["x"] for point in annotations.interactive_points()], [1, 3])
+        self.assertEqual({p.frame_idx: p.points for p in annotations.prompts}, {0: [[3, 3]], 1: [[1, 2]]})
         annotations.upsert_object(OBJECT)
         self.assertEqual(annotations.revision, 4)
 
-    def test_equivalent_frontend_point_order_keeps_generated_mask_cache(self):
-        state.annotations.set_prompt(VideoPrompt(**PROMPT))
-        state.annotations.set_prompt(VideoPrompt(**{**PROMPT, "frame_idx": 1}))
-        points = state.annotations.interactive_points()
-        mask = {"frame_idx": 0, "obj_id": 1, "height": 1, "width": 1, "counts": [0, 1]}
-        projection = interactive_state_projection({"points": list(reversed(points)), "live_masks": [mask]})
-        self.assertEqual(projection["points"], points)
-        self.assertEqual(projection["live_masks"], [])
+    def test_appended_clicks_stay_one_prompt_and_replay_equivalently(self):
+        with patch.object(service, "mask_logits_to_2d_bool", side_effect=lambda mask: mask > 0):
+            for point in ([1, 2], [2, 2], [3, 1]):
+                response = self.client.post("/video/add_new_points_or_box", json={
+                    **PROMPT, "points": [point], "labels": [1], "clear_old_points": False})
+                self.assertEqual(response.status_code, 200)
+        # Clicks reach the predictor incrementally, but annotations hold one merged prompt.
+        self.assertEqual(self.masker.add_new_points_or_box.call_args.kwargs["clear_old_points"], False)
+        self.assertEqual([prompt.points for prompt in state.annotations.prompts], [[[1, 2], [2, 2], [3, 1]]])
+        self.assertEqual(self.metadata()["annotations"]["prompts"][0]["labels"], [1, 1, 1])
+        self.masker.add_new_points_or_box.reset_mock()
+        self.reopen()
+        self.masker.add_new_points_or_box.assert_called_once_with(
+            frame_idx=0, obj_id=1, points=[[1, 2], [2, 2], [3, 1]], labels=[1, 1, 1],
+            clear_old_points=True, box=None)
+
+    def test_duplicate_prompt_keys_are_rejected(self):
+        with self.assertRaises(ValueError):
+            SessionAnnotations(objects={1: OBJECT}, prompts=[PROMPT, {**PROMPT, "points": [[5, 5]]}])
+
+    def test_every_mutation_delta_reconstructs_the_snapshot(self):
+        self.masker.add_new_points_or_box.side_effect = lambda **kwargs: (0, [kwargs["obj_id"]], [np.ones((3, 3))])
+        steps = [
+            ("post", "/video/objects", {}),
+            ("post", "/video/add_new_points_or_box", {"json": {**PROMPT, "obj_id": 2}}),
+            ("post", "/video/add_new_points_or_box", {"json": {**PROMPT, "points": [[2, 2]], "clear_old_points": False}}),
+            ("override", None, {}),
+            ("post", "/video/add_new_points_or_box", {"json": PROMPT}),
+            ("put", "/video/objects/2", {"json": {"label": "Cup", "color": "#00ff00"}}),
+            ("post", "/video/clear_all_prompts_in_frame", {"params": {"frame_idx": 0, "obj_id": 1}}),
+            ("post", "/video/remove_object", {"params": {"obj_id": 2}}),
+            ("post", "/video/reset_state", {}),
+        ]
+        snapshot = self.client.get("/video/info").json()["annotations"]
+        with patch.object(service, "mask_logits_to_2d_bool", side_effect=lambda mask: mask > 0):
+            for method, path, kwargs in steps:
+                with self.subTest(path=path, kwargs=kwargs):
+                    if method == "override":
+                        response = self.add_override(True)
+                    else:
+                        response = getattr(self.client, method)(path, **kwargs)
+                    self.assertEqual(response.status_code, 200)
+                    self.assertNotIn("annotations", response.json())
+                    snapshot = apply_delta(snapshot, response.json()["annotation_delta"])
+                    self.assertTrue(same_annotations(snapshot, self.client.get("/video/info").json()["annotations"]))
+
+    def override_file(self, artifact):
+        return self.session / "masks" / "overrides" / artifact
+
+    def override_files(self):
+        return sorted(path.name for path in (self.session / "masks" / "overrides").glob("*.json"))
+
+    def test_replaced_and_cleared_overrides_reclaim_their_artifacts(self):
+        self.add_override(True)
+        first = state.annotations.mask_overrides[0].artifact
+        self.add_override(False)
+        second = state.annotations.mask_overrides[0].artifact
+        self.assertEqual(self.override_files(), [second])
+        self.assertNotIn(first, json.dumps(self.metadata()))
+        self.client.post("/video/clear_all_prompts_in_frame", params={"frame_idx": 0, "obj_id": 1})
+        self.assertEqual(self.override_files(), [])
+
+    def test_rejected_override_leaves_previous_artifact_and_no_new_file(self):
+        self.add_override(True)
+        accepted = self.override_files()
+        with patch.object(service, "write_session_metadata", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.add_override(False)
+        self.assertEqual(self.override_files(), accepted)
+
+    def test_reopen_sweeps_orphans_and_rejects_missing_artifacts(self):
+        self.add_override(True)
+        accepted = self.override_files()
+        self.override_file("0" * 32 + ".json").write_text("{}")
+        self.reopen()
+        self.assertEqual(self.override_files(), accepted)
+        self.override_file(accepted[0]).unlink()
+        with self.assertRaisesRegex(HTTPException, "Mask override artifact is unavailable"):
+            self.reopen()
+
+    def test_metadata_writes_never_reread_session_json(self):
+        write_session_metadata({"created_at": "then", "latest_tracking_result_id": "abc"})
+        with patch("sessions.metadata.load_mask_manifest", side_effect=AssertionError("re-read")):
+            state.annotations.set_prompt(VideoPrompt(**PROMPT))
+            write_session_metadata()
+        self.assertEqual(self.metadata()["created_at"], "then")
+        self.assertEqual(self.metadata()["latest_tracking_result_id"], "abc")
+        self.assertEqual(self.metadata()["annotations"], state.annotations.snapshot())
+        self.reopen()
+        self.assertEqual(state.session_metadata["latest_tracking_result_id"], "abc")
+
+    def test_editor_state_projection_drops_deleted_selection(self):
+        projection = interactive_state_projection({"selected_object_id": 7, "interaction_mode": "positive"})
+        self.assertEqual(projection, {"selected_object_id": None, "interaction_mode": "positive", "version": 1})
 
 
 if __name__ == "__main__":

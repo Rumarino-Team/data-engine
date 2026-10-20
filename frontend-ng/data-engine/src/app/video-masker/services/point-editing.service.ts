@@ -98,7 +98,7 @@ export class PointEditingService {
       }
       responseReceived = true;
       if (!objectPoints.length) {
-        if (!this.store.applyAnnotationSnapshot(result, backendUrl)) {
+        if (!this.store.applyAnnotationUpdate(result, backendUrl)) {
           this.store.annotationRecoveryRequested.set(true);
           return;
         }
@@ -144,7 +144,7 @@ export class PointEditingService {
         throw new Error(reason);
       }
 
-      if (!this.store.applyAnnotationSnapshot(response, backendUrl)) {
+      if (!this.store.applyAnnotationUpdate(response, backendUrl)) {
         this.store.annotationRecoveryRequested.set(true);
         return;
       }

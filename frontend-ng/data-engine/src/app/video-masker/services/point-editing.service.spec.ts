@@ -4,7 +4,7 @@ import { VideoAddPointsResponse } from '../../services/backend.service';
 import { TestBed } from '@angular/core/testing';
 import { describe, beforeEach, expect, it } from 'vitest';
 import { Subject, of, throwError } from 'rxjs';
-import { createWorkflowFixture, makeResponse } from '../testing/workflow-test-helpers';
+import { createWorkflowFixture, makeInfo, makeResponse } from '../testing/workflow-test-helpers';
 
 describe('point-editing workflows', () => {
   let editor: ReturnType<typeof createWorkflowFixture>['editor'];
@@ -33,10 +33,7 @@ describe('point-editing workflows', () => {
     'recovers uncertain point status %s without replaying the request',
     async (status) => {
       editor.store.isInitialized.set(true);
-      const accepted = makeResponse({});
-      backendMock.getVideoInfo.mockReturnValue(
-        of({ ...accepted, predictor_ready: true, num_frames: 10, frame_files: [] }),
-      );
+      backendMock.getVideoInfo.mockReturnValue(of(makeInfo()));
       backendMock.addNewPointsOrBox.mockReturnValue(throwError(() => ({ status })));
       await editor.prompts.addPoint(10, 20, 1, 5);
       TestBed.tick();
@@ -73,9 +70,7 @@ describe('point-editing workflows', () => {
       session_id: 'session-1',
       expected_revision: 0,
     });
-    backendMock.getVideoInfo.mockReturnValue(
-      of({ ...makeResponse({}), predictor_ready: true, num_frames: 10, frame_files: [] }),
-    );
+    backendMock.getVideoInfo.mockReturnValue(of(makeInfo()));
     pending.error({ status: 409 });
     await removal;
     TestBed.tick();
@@ -88,9 +83,7 @@ describe('point-editing workflows', () => {
   it('requires reload when recovery reports an unusable predictor', async () => {
     editor.store.isInitialized.set(true);
     backendMock.addNewPointsOrBox.mockReturnValue(throwError(() => ({ status: 503 })));
-    backendMock.getVideoInfo.mockReturnValue(
-      of({ ...makeResponse({}), predictor_ready: false, num_frames: 10, frame_files: [] }),
-    );
+    backendMock.getVideoInfo.mockReturnValue(of(makeInfo({ predictor_ready: false })));
     await editor.prompts.addPoint(10, 20, 1, 5);
     TestBed.tick();
     await Promise.resolve();
@@ -106,9 +99,7 @@ describe('point-editing workflows', () => {
       const accepted = editor.store.points();
       editor.store.isInitialized.set(true);
       backendMock.resetVideoState.mockReturnValue(throwError(() => ({ status })));
-      backendMock.getVideoInfo.mockReturnValue(
-        of({ ...makeResponse({}), predictor_ready: true, num_frames: 10, frame_files: [] }),
-      );
+      backendMock.getVideoInfo.mockReturnValue(of(makeInfo()));
       editor.propagation.clearMasks();
       expect(editor.store.points()).toBe(accepted);
       expect(backendMock.resetVideoState).toHaveBeenCalledWith({
@@ -141,7 +132,7 @@ describe('point-editing workflows', () => {
     backendMock.addNewPointsOrBox.mockReturnValue(response);
     const pending = editor.prompts.addPoint(10, 20, 1, 5);
     editor.store.applyAnnotationSnapshot(
-      { ...makeResponse({}), session_id: 'replacement' },
+      makeInfo({ session_id: 'replacement' }),
       backendMock.getApiUrl(),
       true,
     );

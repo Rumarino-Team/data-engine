@@ -2,12 +2,14 @@ from typing import Any, TYPE_CHECKING
 from uuid import uuid4
 from functools import lru_cache
 from pathlib import Path
-import re
+import logging, re
 
 if TYPE_CHECKING:
-    from schemas.video import InteractiveMaskRLE
+    from schemas.video import InteractiveMaskRLE, MaskOverride
 import numpy as np
 from video.mask_encoding import encode_mask_payload, encode_live_mask_payload
+
+logger = logging.getLogger(__name__)
 
 def manifest_frame_payload(frame_masks: dict[int, np.ndarray]) -> dict[str, Any]:
     objects: dict[str, Any] = {}
@@ -69,7 +71,7 @@ def decode_override(mask: "InteractiveMaskRLE") -> np.ndarray:
     return np.repeat(np.arange(len(mask.counts)) % 2, mask.counts).astype(bool).reshape(mask.height, mask.width)
 
 
-def accepted_mask(frame_idx: int, obj_id: int, mask: np.ndarray) -> "InteractiveMaskRLE":
+def encode_override(frame_idx: int, obj_id: int, mask: np.ndarray) -> "InteractiveMaskRLE":
     from schemas.video import InteractiveMaskRLE
     flat = np.asarray(mask, dtype=bool).reshape(-1)
     boundaries = np.flatnonzero(flat[1:] != flat[:-1]) + 1
@@ -78,6 +80,75 @@ def accepted_mask(frame_idx: int, obj_id: int, mask: np.ndarray) -> "Interactive
         counts.insert(0, 0)
     return InteractiveMaskRLE(frame_idx=frame_idx, obj_id=obj_id,
                               height=mask.shape[0], width=mask.shape[1], counts=counts)
+
+
+def _overrides_dir() -> Path:
+    from sessions.metadata import current_masks_dir
+    masks_dir = current_masks_dir()
+    if masks_dir is None:
+        raise ValueError("No active session for mask overrides.")
+    return masks_dir / "overrides"
+
+
+def store_mask_override(frame_idx: int, obj_id: int, mask: np.ndarray) -> "MaskOverride":
+    """Publish pixels as a new immutable artifact; the caller accepts its reference."""
+    from schemas.video import MaskOverride
+    from utils import write_mask_manifest
+    artifact = f"{uuid4().hex}.json"
+    write_mask_manifest(_overrides_dir() / artifact, encode_override(frame_idx, obj_id, mask).model_dump())
+    return MaskOverride(frame_idx=frame_idx, obj_id=obj_id, artifact=artifact)
+
+
+@lru_cache(maxsize=256)
+def _read_override(path: Path) -> tuple["InteractiveMaskRLE", dict[str, Any]]:
+    # Artifacts are immutable, so the decoded RLE and its wire payload can be shared.
+    from schemas.video import InteractiveMaskRLE
+    from utils import load_mask_manifest
+    rle = InteractiveMaskRLE.model_validate(load_mask_manifest(path))
+    return rle, encode_live_mask_payload(decode_override(rle))
+
+
+def _load_override(ref: "MaskOverride") -> tuple["InteractiveMaskRLE", dict[str, Any]]:
+    path = _overrides_dir() / ref.artifact
+    try:
+        # The cache trusts immutability, not existence; a reclaimed file must not stay readable.
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        rle, payload = _read_override(path)
+    except (OSError, ValueError) as error:
+        raise ValueError(f"Mask override artifact is unavailable: {ref.artifact}") from error
+    if (rle.frame_idx, rle.obj_id) != (ref.frame_idx, ref.obj_id):
+        raise ValueError(f"Mask override artifact does not match its reference: {ref.artifact}")
+    return rle, payload
+
+
+def override_pixels(ref: "MaskOverride") -> np.ndarray:
+    return decode_override(_load_override(ref)[0])
+
+
+def override_payload(ref: "MaskOverride") -> dict[str, Any]:
+    return _load_override(ref)[1]
+
+
+def reclaim_override_artifacts(keep: set[str]) -> None:
+    """Best effort: an unreferenced artifact is garbage once metadata no longer names it."""
+    try:
+        overrides_dir = _overrides_dir()
+        if not overrides_dir.is_dir():
+            return
+        for path in overrides_dir.glob("*.json"):
+            if path.name not in keep:
+                path.unlink(missing_ok=True)
+    except OSError:
+        logger.warning("Unable to reclaim mask override artifacts", exc_info=True)
+
+
+def discard_override_artifacts(names: set[str]) -> None:
+    for name in names:
+        try:
+            (_overrides_dir() / name).unlink(missing_ok=True)
+        except (OSError, ValueError):
+            logger.warning("Unable to remove mask override artifact %s", name, exc_info=True)
 
 
 def retain_interactive_masks(frame_idx: int, obj_ids: list[int], encoded_masks: list[dict]) -> None:
@@ -149,7 +220,7 @@ def effective_mask_data(frame_idx: int) -> dict[str, Any]:
             sources[str(obj_id)] = "live"
     for mask in state.annotations.mask_overrides:
         if mask.frame_idx == frame_idx:
-            objects[str(mask.obj_id)] = encode_live_mask_payload(decode_override(mask))
+            objects[str(mask.obj_id)] = override_payload(mask)
             sources[str(mask.obj_id)] = "override"
     return {"session_id": state.active_session_id, "annotation_revision": state.annotations.revision,
             "state_epoch": state.video_state_epoch, "frame_idx": frame_idx,

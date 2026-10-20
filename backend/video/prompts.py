@@ -1,7 +1,7 @@
 from typing import Optional
 from contextlib import contextmanager
 import logging
-from video.masks import decode_override
+from video.masks import override_pixels, discard_override_artifacts
 from fastapi import HTTPException
 import sam2_video_masker as svm
 from core.jobs import update_job
@@ -17,9 +17,8 @@ def record_prompt_event(request: "VideoAddPointsOrBoxRequest"):
         "points": [list(map(float, point)) for point in (request.points or [])],
         "labels": [int(label) for label in (request.labels or [])],
         "box": [float(v) for v in request.box] if request.box is not None else None,
-        "clear_old_points": bool(request.clear_old_points),
     })
-    state.annotations.set_prompt(event)
+    state.annotations.set_prompt(event, clear_old_points=request.clear_old_points)
 
 
 def replay_annotation_prompts() -> None:
@@ -27,11 +26,11 @@ def replay_annotation_prompts() -> None:
         state.video_masker.add_new_points_or_box(
             frame_idx=event["frame_idx"], obj_id=event["obj_id"],
             points=event["points"] or None, labels=event["labels"] or None,
-            clear_old_points=event["clear_old_points"], box=event["box"],
+            clear_old_points=True, box=event["box"],
         )
     for mask in state.annotations.mask_overrides:
         state.video_masker.add_new_mask(frame_idx=mask.frame_idx, obj_id=mask.obj_id,
-                                       mask=decode_override(mask))
+                                       mask=override_pixels(mask))
 
 
 def restore_video_masker_from_prompt_events(
@@ -92,6 +91,10 @@ def prompt_runtime_edit():
     try:
         yield
     except Exception:
+        # Override artifacts published by the rejected edit were never committed.
+        discard_override_artifacts({mask.artifact for mask in state.annotations.mask_overrides}
+                                   - {mask.artifact for mask in previous.mask_overrides}
+                                   - state.committed_override_artifacts)
         state.annotations = previous
         state.interactive_mask_files = previous_masks
         try:

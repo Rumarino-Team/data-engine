@@ -22,11 +22,11 @@ from schemas.video import (
 )
 from sessions.cache import bump_video_state_epoch, prepare_video_masker_for_video_init, reset_video_session_state
 from schemas.video import InteractiveState
-from sessions.metadata import current_masks_dir, current_session_path, interactive_state_projection, load_session_metadata, sanitize_save_name, write_session_metadata
+from sessions.metadata import current_masks_dir, current_session_path, interactive_state_projection, load_session_metadata, persisted_session_fields, sanitize_save_name, write_session_metadata
 from sessions.paths import path_is_relative_to, resolve_input_path, resolve_saved_session_layout, validate_video_input_path
 from utils import load_mask_manifest
 from video.io import copy_frames_directory_to_session, create_active_session, extract_video_to_session_frames
-from video.masks import mask_logits_to_2d_bool, accepted_mask, retain_interactive_masks, effective_mask_data
+from video.masks import mask_logits_to_2d_bool, store_mask_override, override_pixels, reclaim_override_artifacts, retain_interactive_masks, effective_mask_data
 from video.manifest_cache import load_cached_mask_manifest
 from video.mask_encoding import encode_live_mask_payload
 from video.prompts import record_prompt_event, replay_annotation_prompts, prompt_runtime_edit
@@ -87,11 +87,17 @@ def initialize_video_state_from_resolved_input(
             interactive_state = InteractiveState.model_validate(
                 session_metadata.get("interactive_state") or {}
             ).model_dump()
+            for mask in annotations.mask_overrides:
+                override_pixels(mask)
         except (KeyError, ValidationError, ValueError) as error:
             raise HTTPException(status_code=400, detail=f"Invalid session annotations or editor state: {error}") from error
         state.active_session_id = session_id
         state.annotations = annotations
         state.interactive_mask_files = session_metadata.get("interactive_mask_files", {})
+        state.session_metadata = persisted_session_fields(session_metadata)
+        state.committed_override_artifacts = {mask.artifact for mask in annotations.mask_overrides}
+        # Orphans are artifacts from edits interrupted before or after their metadata commit.
+        reclaim_override_artifacts(state.committed_override_artifacts)
         restored_session_payload = {
             "annotations": state.annotations.snapshot(),
             "interactive_state": interactive_state_projection(interactive_state),
@@ -373,7 +379,7 @@ async def reset_video_state(precondition: AnnotationPrecondition):
             state_epoch = bump_video_state_epoch()
             write_session_metadata()
             return {
-                **annotation_snapshot(),
+                **annotation_update(precondition),
                 "message": "Video state reset successfully",
                 "state_epoch": state_epoch,
             }
@@ -491,7 +497,7 @@ async def add_new_points_or_box(request: VideoAddPointsOrBoxRequest, preconditio
             )
 
             return {
-                **annotation_snapshot(),
+                **annotation_update(precondition),
                 "mask_data": mask_data,
                 "request_frame_idx": int(request.frame_idx),
                 "frame_idx": returned_frame_idx,
@@ -516,10 +522,10 @@ async def add_new_mask(request: VideoAddMaskRequest, precondition: AnnotationPre
         with prompt_runtime_edit():
             state.video_masker.clear_all_prompts_in_frame(request.frame_idx, request.obj_id)
             state.video_masker.add_new_mask(frame_idx=request.frame_idx, obj_id=request.obj_id, mask=mask)
-            state.annotations.set_mask(accepted_mask(request.frame_idx, request.obj_id, mask))
+            state.annotations.set_mask(store_mask_override(request.frame_idx, request.obj_id, mask))
             mask_data = effective_mask_data(request.frame_idx)
             write_session_metadata()
-            return {**annotation_snapshot(), "mask_data": mask_data}
+            return {**annotation_update(precondition), "mask_data": mask_data}
 
 async def save_video_session(request: VideoSaveRequest):
     with foreground_operation():
@@ -573,7 +579,7 @@ async def clear_all_prompts_in_frame(frame_idx: int, obj_id: int, precondition: 
             state.annotations.clear_prompts(frame_idx, obj_id)
             mask_data = effective_mask_data(frame_idx)
             write_session_metadata()
-            return {**annotation_snapshot(), "mask_data": mask_data,
+            return {**annotation_update(precondition), "mask_data": mask_data,
                     "message": "Cleared all prompts in frame successfully"}
 
 async def remove_object(obj_id: int, precondition: AnnotationPrecondition):
@@ -584,14 +590,14 @@ async def remove_object(obj_id: int, precondition: AnnotationPrecondition):
         state.video_masker.remove_object(obj_id)
         state.annotations.remove_object(obj_id)
         write_session_metadata()
-        return annotation_snapshot()
+        return annotation_update(precondition)
 
 async def create_object(precondition: AnnotationPrecondition):
     with foreground_operation():
         validate_annotation_precondition(precondition)
         obj = state.annotations.create_object()
         write_session_metadata()
-        return {**annotation_snapshot(), "created_object_id": obj.id}
+        return {**annotation_update(precondition), "created_object_id": obj.id}
 
 
 async def update_object(obj_id: int, request: VideoObjectUpdate, precondition: AnnotationPrecondition):
@@ -602,7 +608,7 @@ async def update_object(obj_id: int, request: VideoObjectUpdate, precondition: A
         obj = VideoObject(id=obj_id, **request.model_dump()).model_dump()
         state.annotations.upsert_object(obj)
         write_session_metadata()
-        return annotation_snapshot()
+        return annotation_update(precondition)
 
 
 def validate_annotation_precondition(precondition: AnnotationPrecondition):
@@ -610,6 +616,15 @@ def validate_annotation_precondition(precondition: AnnotationPrecondition):
         raise HTTPException(status_code=409, detail="The target session is no longer active. Refresh annotations.")
     if precondition.expected_revision != state.annotations.revision:
         raise HTTPException(status_code=409, detail="Annotations changed. Refresh before editing again.")
+
+
+def annotation_update(precondition: AnnotationPrecondition):
+    """Mutation response: only accepted changes since the validated precondition revision."""
+    return {
+        "session_id": state.active_session_id,
+        "state_epoch": int(state.video_state_epoch),
+        "annotation_delta": state.annotations.take_delta(precondition.expected_revision),
+    }
 
 
 def annotation_snapshot():

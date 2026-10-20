@@ -5,12 +5,16 @@ import {
   BackendService,
   VideoAddPointsResponse,
   VideoInitStateResponse,
+  AnnotationDelta,
   AnnotationSnapshot,
+  AnnotationUpdate,
   AnnotationPrecondition,
   ObjectCreationResponse,
   VideoObject,
   LiveMask,
   VideoMaskDataResponse,
+  VideoAnnotations,
+  VideoInfoResponse,
 } from '../../services/backend.service';
 import { DesktopBridgeService } from '../../services/desktop-bridge.service';
 import { BackendConnectionService } from '../services/backend-connection.service';
@@ -25,26 +29,95 @@ import { ToastService } from '../services/toast.service';
 import { TrackingService } from '../services/tracking.service';
 import { Point, VideoMaskerStateStore } from '../services/video-masker-state.store';
 
+const INITIAL_ANNOTATIONS: VideoAnnotations = {
+  version: 1,
+  revision: 0,
+  next_object_id: 2,
+  objects: { '1': { id: 1, label: 'Object 1', color: '#ff0000' } },
+  prompts: [],
+  mask_overrides: [],
+  input_revisions: {},
+};
+
+/** Accepted state after the default point response: one prompt on frame 5. */
+export const ACCEPTED_POINT_ANNOTATIONS: VideoAnnotations = {
+  ...INITIAL_ANNOTATIONS,
+  revision: 1,
+  prompts: [{ frame_idx: 5, obj_id: 1, points: [[10, 20]], labels: [1], box: null }],
+  input_revisions: { '1': 1 },
+};
+
+const promptKey = (entry: { frame_idx: number; obj_id: number }): [number, number] => [
+  entry.frame_idx,
+  entry.obj_id,
+];
+
+/** Builds the delta a backend would send to move `before` to `after`. */
+export function annotationDelta(
+  before: VideoAnnotations,
+  after: VideoAnnotations,
+): AnnotationDelta {
+  const keyed = <T extends { frame_idx: number; obj_id: number }>(entries: T[] = []) =>
+    new Map(entries.map((entry) => [promptKey(entry).join(':'), entry]));
+  const diffKeyed = <T extends { frame_idx: number; obj_id: number }>(
+    previous: T[] = [],
+    next: T[] = [],
+  ) => {
+    const old = keyed(previous);
+    const current = keyed(next);
+    return {
+      upserts: [...current]
+        .filter(([key, entry]) => JSON.stringify(old.get(key)) !== JSON.stringify(entry))
+        .map(([, entry]) => entry),
+      removed: [...old].filter(([key]) => !current.has(key)).map(([, entry]) => promptKey(entry)),
+    };
+  };
+  const prompts = diffKeyed(before.prompts, after.prompts);
+  const masks = diffKeyed(before.mask_overrides, after.mask_overrides);
+  const beforeInputs = before.input_revisions ?? {};
+  const afterInputs = after.input_revisions ?? {};
+  return {
+    base_revision: before.revision,
+    revision: after.revision,
+    next_object_id: after.next_object_id,
+    objects: Object.fromEntries(
+      Object.entries(after.objects).filter(
+        ([id, object]) => JSON.stringify(before.objects[id]) !== JSON.stringify(object),
+      ),
+    ),
+    removed_objects: Object.keys(before.objects)
+      .filter((id) => !(id in after.objects))
+      .map(Number),
+    prompts: prompts.upserts,
+    removed_prompts: prompts.removed,
+    mask_overrides: masks.upserts,
+    removed_mask_overrides: masks.removed,
+    input_revisions: Object.fromEntries(
+      Object.entries(afterInputs).filter(([id, revision]) => beforeInputs[id] !== revision),
+    ),
+    removed_input_revisions: Object.keys(beforeInputs)
+      .filter((id) => !(id in afterInputs))
+      .map(Number),
+  };
+}
+
+/** Converts an intended accepted snapshot into the mutation response the store receives. */
+export function toUpdate<T extends AnnotationSnapshot>(
+  store: VideoMaskerStateStore,
+  snapshot: T,
+): Omit<T, 'annotations'> & AnnotationUpdate {
+  const { annotations, ...rest } = snapshot;
+  return {
+    ...rest,
+    annotation_delta: annotationDelta(store.annotations() ?? INITIAL_ANNOTATIONS, annotations!),
+  };
+}
+
 export const makeResponse = (
   overrides: Partial<VideoAddPointsResponse>,
 ): VideoAddPointsResponse => ({
   session_id: 'session-1',
-  annotations: {
-    version: 1,
-    revision: 1,
-    next_object_id: 2,
-    objects: { 1: { id: 1, label: 'Object 1', color: '#ff0000' } },
-    prompts: [
-      {
-        frame_idx: 5,
-        obj_id: 1,
-        points: [[10, 20]],
-        labels: [1],
-        clear_old_points: true,
-        box: null,
-      },
-    ],
-  },
+  annotation_delta: annotationDelta(INITIAL_ANNOTATIONS, ACCEPTED_POINT_ANNOTATIONS),
   mask_data: {
     session_id: 'session-1',
     annotation_revision: 1,
@@ -59,6 +132,17 @@ export const makeResponse = (
   mask_pixel_counts: { 1: 1 },
   mask_shapes: { 1: [2, 2] },
   state_epoch: 3,
+  ...overrides,
+});
+
+/** /video/info after the default point response was accepted. */
+export const makeInfo = (overrides: Partial<VideoInfoResponse> = {}): VideoInfoResponse => ({
+  session_id: 'session-1',
+  state_epoch: 3,
+  annotations: structuredClone(ACCEPTED_POINT_ANNOTATIONS),
+  predictor_ready: true,
+  num_frames: 10,
+  frame_files: [],
   ...overrides,
 });
 
@@ -79,17 +163,15 @@ export function createBackendMocks() {
     saveVideoSession: vi.fn(),
     createObject:
       vi.fn<(precondition: AnnotationPrecondition) => Observable<ObjectCreationResponse>>(),
-    clearAllPromptsInFrame: vi.fn<(frame: number, id: number) => Observable<AnnotationSnapshot>>(),
+    clearAllPromptsInFrame: vi.fn<(frame: number, id: number) => Observable<AnnotationUpdate>>(),
     removeObject:
-      vi.fn<(id: number, precondition: AnnotationPrecondition) => Observable<AnnotationSnapshot>>(),
+      vi.fn<(id: number, precondition: AnnotationPrecondition) => Observable<AnnotationUpdate>>(),
     updateObject:
       vi.fn<
-        (
-          object: VideoObject,
-          precondition: AnnotationPrecondition,
-        ) => Observable<AnnotationSnapshot>
+        (object: VideoObject, precondition: AnnotationPrecondition) => Observable<AnnotationUpdate>
       >(),
-    resetVideoState: vi.fn(() => of({ state_epoch: 4 })),
+    resetVideoState:
+      vi.fn<(precondition: AnnotationPrecondition) => Observable<AnnotationUpdate>>(),
   };
   backendMock.getVideoInfo.mockImplementation(() => {
     const job = backendMock.getJob.mock.results.at(-1)?.value as Observable<{
@@ -133,13 +215,7 @@ export function initializeEditorStore(store: VideoMaskerStateStore): void {
     {
       session_id: 'session-1',
       state_epoch: 3,
-      annotations: {
-        version: 1,
-        revision: 0,
-        next_object_id: 2,
-        objects: { '1': { id: 1, label: 'Object 1', color: '#ff0000' } },
-        prompts: [],
-      },
+      annotations: structuredClone(INITIAL_ANNOTATIONS),
     },
     'http://127.0.0.1:8000',
     true,
@@ -164,8 +240,21 @@ export function objectSnapshot(
       ),
       objects: Object.fromEntries(objects.map((object) => [object.id, object])),
       prompts: (store.annotations()?.prompts ?? []).filter((prompt) => ids.has(prompt.obj_id)),
+      mask_overrides: (store.annotations()?.mask_overrides ?? []).filter((mask) =>
+        ids.has(mask.obj_id),
+      ),
+      input_revisions: Object.fromEntries(
+        Object.entries(store.annotations()?.input_revisions ?? {}).filter(([id]) =>
+          ids.has(Number(id)),
+        ),
+      ),
     },
   };
+}
+
+/** Mutation response that moves the store to `objectSnapshot(store, objects)`. */
+export function objectUpdate(store: VideoMaskerStateStore, objects: VideoObject[]) {
+  return toUpdate(store, objectSnapshot(store, objects));
 }
 
 export function configureObjectMutationMocks(
@@ -185,28 +274,32 @@ export function configureObjectMutationMocks(
       objects: {},
       sources: {},
     };
-    return of(snapshot);
+    return of(toUpdate(store, snapshot));
   });
   backend.resetVideoState.mockImplementation(() =>
-    of({
-      ...objectSnapshot(store, store.objects()),
-      state_epoch: 4,
-      annotations: { ...objectSnapshot(store, store.objects()).annotations!, prompts: [] },
-    }),
+    of(
+      toUpdate(store, {
+        ...objectSnapshot(store, store.objects()),
+        state_epoch: 4,
+        annotations: {
+          ...objectSnapshot(store, store.objects()).annotations!,
+          prompts: [],
+          mask_overrides: [],
+        },
+      }),
+    ),
   );
   backend.createObject.mockImplementation(() => {
     const id = store.annotations()?.next_object_id ?? 1;
     const object = { id, label: `Object ${id}`, color: '#00ff00' };
-    return of({ ...objectSnapshot(store, [...store.objects(), object]), created_object_id: id });
+    return of({ ...objectUpdate(store, [...store.objects(), object]), created_object_id: id });
   });
   backend.updateObject.mockImplementation((object) =>
-    of(
-      objectSnapshot(store, [...store.objects().filter((entry) => entry.id !== object.id), object]),
-    ),
+    of(objectUpdate(store, [...store.objects().filter((entry) => entry.id !== object.id), object])),
   );
   backend.removeObject.mockImplementation((id) =>
     of(
-      objectSnapshot(
+      objectUpdate(
         store,
         store.objects().filter((object) => object.id !== id),
       ),
@@ -266,7 +359,6 @@ export function setAcceptedPoints(
         obj_id,
         points: points.map(({ x, y }) => [x, y]),
         labels: points.map(({ label }) => label),
-        clear_old_points: true,
         box: null,
       })),
     ),

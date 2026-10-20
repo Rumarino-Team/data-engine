@@ -15,6 +15,9 @@ class BackendState:
     video_source_path: Optional[str] = None
     annotations: SessionAnnotations = field(default_factory=SessionAnnotations)
     interactive_mask_files: dict[str, str] = field(default_factory=dict)
+    # Non-annotation session.json fields, and the override artifacts session.json last committed.
+    session_metadata: dict[str, Any] = field(default_factory=dict)
+    committed_override_artifacts: set[str] = field(default_factory=set)
     mask_manifest_path: Optional[str] = None
     video_state_epoch: int = 0
     active_session_dir: Optional[Path] = None

@@ -5,6 +5,7 @@ import {
   TrackPromptPointMetadata,
   VideoAnnotations,
   AnnotationSnapshot,
+  AnnotationUpdate,
 } from '../../services/backend.service';
 import {
   DebugMaskSource,
@@ -57,15 +58,10 @@ export class VideoMaskerStateStore {
     for (const prompt of this.annotations()?.prompts ?? []) {
       let objects = frames.get(prompt.frame_idx);
       if (!objects) frames.set(prompt.frame_idx, (objects = new Map()));
-      const points = prompt.clear_old_points === false ? (objects.get(prompt.obj_id) ?? []) : [];
-      objects.set(prompt.obj_id, [
-        ...points,
-        ...(prompt.points ?? []).map(([x, y], index) => ({
-          x,
-          y,
-          label: prompt.labels[index],
-        })),
-      ]);
+      objects.set(
+        prompt.obj_id,
+        (prompt.points ?? []).map(([x, y], index) => ({ x, y, label: prompt.labels[index] })),
+      );
     }
     for (const [frameIdx, objects] of frames) {
       for (const [objId, points] of objects) if (!points.length) objects.delete(objId);
@@ -96,16 +92,81 @@ export class VideoMaskerStateStore {
     )
       return false;
 
-    this.sessionId.set(info.session_id);
+    this.acceptAnnotations(
+      info.session_id,
+      backendUrl,
+      structuredClone(info.annotations),
+      info.state_epoch,
+    );
+    return true;
+  }
+
+  /** Patches the accepted snapshot; a delta for any other revision requires recovery. */
+  applyAnnotationUpdate(update: AnnotationUpdate, backendUrl: string): boolean {
+    const current = this.annotations();
+    const delta = update.annotation_delta;
+    if (!update.session_id || !delta || !current) return false;
+    if (this.sessionId() !== update.session_id || this.annotationsBackendUrl() !== backendUrl)
+      return false;
+    if (current.revision !== delta.base_revision || update.state_epoch < this.stateEpoch())
+      return false;
+
+    const key = (entry: { frame_idx: number; obj_id: number }) =>
+      `${entry.frame_idx}:${entry.obj_id}`;
+    const replace = <T extends { frame_idx: number; obj_id: number }>(
+      entries: T[],
+      removed: [number, number][],
+      upserts: T[],
+    ): T[] => {
+      const replaced = new Set([
+        ...removed.map(([frame_idx, obj_id]) => key({ frame_idx, obj_id })),
+        ...upserts.map(key),
+      ]);
+      return [...entries.filter((entry) => !replaced.has(key(entry))), ...structuredClone(upserts)];
+    };
+    const objects = { ...current.objects };
+    for (const id of delta.removed_objects) delete objects[id];
+    Object.assign(objects, structuredClone(delta.objects));
+    const inputRevisions = { ...current.input_revisions };
+    for (const id of delta.removed_input_revisions) delete inputRevisions[id];
+    Object.assign(inputRevisions, delta.input_revisions);
+
+    this.acceptAnnotations(
+      update.session_id,
+      backendUrl,
+      {
+        ...current,
+        revision: delta.revision,
+        next_object_id: delta.next_object_id,
+        objects,
+        prompts: replace(current.prompts, delta.removed_prompts, delta.prompts),
+        mask_overrides: replace(
+          current.mask_overrides ?? [],
+          delta.removed_mask_overrides,
+          delta.mask_overrides,
+        ),
+        input_revisions: inputRevisions,
+      },
+      update.state_epoch,
+    );
+    return true;
+  }
+
+  private acceptAnnotations(
+    sessionId: string,
+    backendUrl: string,
+    annotations: VideoAnnotations,
+    stateEpoch: number,
+  ): void {
+    this.sessionId.set(sessionId);
     this.annotationsBackendUrl.set(backendUrl);
-    this.annotations.set(structuredClone(info.annotations));
+    this.annotations.set(annotations);
     this.objects.set(this.acceptedObjects());
     this.pendingPointEdit.set(null);
-    this.updateStateEpoch(info.state_epoch, 'annotation snapshot');
+    this.updateStateEpoch(stateEpoch, 'annotation snapshot');
     if (!this.objects().some((object) => object.id === this.selectedObjectId())) {
       this.selectedObjectId.set(this.objects()[0]?.id ?? null);
     }
-    return true;
   }
 
   // Session-scoped bookkeeping shared by object and tracking workflows.

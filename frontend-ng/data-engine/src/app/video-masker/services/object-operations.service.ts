@@ -2,7 +2,7 @@ import { DestroyRef, Injectable, inject } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { Observable, defer, finalize, take } from 'rxjs';
 import {
-  AnnotationSnapshot,
+  AnnotationUpdate,
   AnnotationPrecondition,
   BackendService,
 } from '../../services/backend.service';
@@ -92,7 +92,7 @@ export class ObjectOperationsService {
     );
   }
 
-  private mutate<T extends AnnotationSnapshot>(
+  private mutate<T extends AnnotationUpdate>(
     send: (precondition: AnnotationPrecondition) => Observable<T>,
     errorTitle: string,
     selectCreated?: (snapshot: T) => number,
@@ -119,7 +119,7 @@ export class ObjectOperationsService {
               return;
             }
             const previousIds = this.store.objects().map((object) => object.id);
-            if (!this.store.applyAnnotationSnapshot(snapshot, context.backendUrl)) {
+            if (!this.store.applyAnnotationUpdate(snapshot, context.backendUrl)) {
               this.store.annotationRecoveryRequested.set(true);
               resolve(false);
               return;

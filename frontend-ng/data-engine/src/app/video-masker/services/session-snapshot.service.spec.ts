@@ -3,8 +3,12 @@ import { setAcceptedPoints } from '../testing/workflow-test-helpers';
 import { TestBed } from '@angular/core/testing';
 import { Subject, of, throwError } from 'rxjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { VideoInfoResponse, AnnotationSnapshot } from '../../services/backend.service';
-import { createWorkflowFixture, objectSnapshot } from '../testing/workflow-test-helpers';
+import { VideoInfoResponse, AnnotationUpdate } from '../../services/backend.service';
+import {
+  annotationDelta,
+  createWorkflowFixture,
+  objectUpdate,
+} from '../testing/workflow-test-helpers';
 import { CanvasViewportService } from './canvas-viewport.service';
 
 const apiUrl = 'http://127.0.0.1:8000';
@@ -28,7 +32,6 @@ const snapshot = (revision = 1): VideoInfoResponse => ({
         obj_id: 1,
         points: [[10, 20]],
         labels: [1],
-        clear_old_points: true,
         box: null,
       },
     ],
@@ -62,10 +65,7 @@ describe('session annotation snapshots', () => {
             num_frames: 5,
             restored_session: {
               annotations: snapshot().annotations,
-              interactive_state: {
-                points: [{ frame_idx: 2, obj_id: 1, x: 999, y: 999, label: 1 }],
-                live_masks: [],
-              },
+              interactive_state: { version: 1, current_frame_idx: 2 },
             },
           },
         },
@@ -134,28 +134,101 @@ describe('session annotation snapshots', () => {
     expect(backendMock.initVideoState).not.toHaveBeenCalled();
   });
 
-  it('derives replacement, appended and box-only prompt views from the accepted cache', () => {
+  it('derives point and box-only prompt views from the accepted cache', () => {
     const { editor } = fixture;
     const accepted = snapshot();
     const point = {
       frame_idx: 0,
       obj_id: 1,
-      points: [[1, 1]],
-      labels: [1],
-      clear_old_points: true,
+      points: [
+        [1, 1],
+        [2, 2],
+      ],
+      labels: [1, 0],
       box: null,
     };
     accepted.annotations!.prompts = [
       point,
-      { ...point, points: [[2, 2]], clear_old_points: false },
-      { ...point, frame_idx: 1 },
       { ...point, frame_idx: 1, points: [], labels: [], box: [0, 0, 2, 2] },
     ];
     editor.store.applyAnnotationSnapshot(accepted, apiUrl, true);
-    expect(editor.store.points().get(0)?.get(1)?.length).toBe(2);
+    expect(editor.store.points().get(0)?.get(1)).toEqual([
+      { x: 1, y: 1, label: 1 },
+      { x: 2, y: 2, label: 0 },
+    ]);
     expect(editor.store.points().has(1)).toBe(false);
     accepted.annotations!.prompts[0].points[0][0] = 999;
     expect(editor.store.acceptedPoints().get(0)?.get(1)?.[0].x).toBe(1);
+  });
+
+  it('patches accepted annotations from a mutation delta', () => {
+    const { editor } = fixture;
+    const accepted = snapshot();
+    accepted.annotations!.mask_overrides = [
+      { frame_idx: 3, obj_id: 2, artifact: `${'a'.repeat(32)}.json` },
+    ];
+    editor.store.applyAnnotationSnapshot(accepted, apiUrl, true);
+    const applied = editor.store.applyAnnotationUpdate(
+      {
+        session_id: 'session-1',
+        state_epoch: 3,
+        annotation_delta: {
+          ...annotationDelta(accepted.annotations!, accepted.annotations!),
+          revision: 2,
+          objects: { '1': { id: 1, label: 'Left hand', color: '#ff0000' } },
+          removed_objects: [],
+          prompts: [{ frame_idx: 2, obj_id: 1, points: [[5, 6]], labels: [0], box: null }],
+          removed_mask_overrides: [[3, 2]],
+          input_revisions: { '1': 2 },
+        },
+      },
+      apiUrl,
+    );
+    expect(applied).toBe(true);
+    const annotations = editor.store.annotations()!;
+    expect(annotations.revision).toBe(2);
+    expect(annotations.objects['1'].label).toBe('Left hand');
+    expect(annotations.objects['2'].label).toBe('Cup');
+    expect(annotations.prompts).toEqual([
+      { frame_idx: 2, obj_id: 1, points: [[5, 6]], labels: [0], box: null },
+    ]);
+    expect(annotations.mask_overrides).toEqual([]);
+    expect(annotations.input_revisions).toEqual({ '1': 2 });
+    expect(editor.store.objects().map((object) => object.label)).toEqual(['Left hand', 'Cup']);
+  });
+
+  it('rejects a delta built on another revision or session without changing state', () => {
+    const { editor } = fixture;
+    const accepted = snapshot(4);
+    editor.store.applyAnnotationSnapshot(accepted, apiUrl, true);
+    const before = editor.store.annotations();
+    const delta = {
+      ...annotationDelta(accepted.annotations!, accepted.annotations!),
+      revision: 5,
+      removed_objects: [2],
+    };
+    for (const update of [
+      { session_id: 'session-1', state_epoch: 3, annotation_delta: { ...delta, base_revision: 3 } },
+      { session_id: 'other', state_epoch: 3, annotation_delta: delta },
+      { session_id: 'session-1', state_epoch: 2, annotation_delta: delta },
+    ]) {
+      expect(editor.store.applyAnnotationUpdate(update, apiUrl)).toBe(false);
+      expect(editor.store.annotations()).toBe(before);
+    }
+    expect(
+      editor.store.applyAnnotationUpdate(
+        { session_id: 'session-1', state_epoch: 3, annotation_delta: delta },
+        'http://other',
+      ),
+    ).toBe(false);
+    expect(
+      editor.store.applyAnnotationUpdate(
+        { session_id: 'session-1', state_epoch: 3, annotation_delta: delta },
+        apiUrl,
+      ),
+    ).toBe(true);
+    expect(Object.keys(editor.store.annotations()!.objects)).toEqual(['1']);
+    expect(editor.store.annotations()!.prompts.map((prompt) => prompt.obj_id)).toEqual([1]);
   });
 
   it('rejects a snapshot with an older accepted revision', async () => {
@@ -224,7 +297,7 @@ describe('session annotation snapshots', () => {
     const { editor, backendMock, objectOperations } = fixture;
     connect();
     const pending = new Subject<VideoInfoResponse>();
-    const objectResponse = new Subject<AnnotationSnapshot>();
+    const objectResponse = new Subject<AnnotationUpdate>();
     backendMock.getVideoInfo.mockReturnValue(pending);
     const refresh = editor.sessions.refreshAnnotations();
     backendMock.updateObject.mockReturnValue(objectResponse);
@@ -232,7 +305,7 @@ describe('session annotation snapshots', () => {
     expect(editor.store.pendingObjectUpdates()).toBe(1);
     expect(await editor.sessions.refreshAnnotations()).toBe(false);
     objectResponse.next(
-      objectSnapshot(
+      objectUpdate(
         editor.store,
         editor.store
           .objects()

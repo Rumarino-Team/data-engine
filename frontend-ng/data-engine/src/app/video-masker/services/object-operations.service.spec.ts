@@ -6,9 +6,11 @@ import { Subject, of, throwError } from 'rxjs';
 import {
   createWorkflowFixture,
   objectSnapshot,
+  objectUpdate,
+  toUpdate,
   makeResponse,
 } from '../testing/workflow-test-helpers';
-import { AnnotationSnapshot, ObjectCreationResponse } from '../../services/backend.service';
+import { AnnotationUpdate, ObjectCreationResponse } from '../../services/backend.service';
 
 describe('object-operations workflows', () => {
   let editor: ReturnType<typeof createWorkflowFixture>['editor'];
@@ -110,7 +112,7 @@ describe('object-operations workflows', () => {
     const created = { id: 42, label: 'Server object', color: '#123456' };
     backendMock.createObject.mockReturnValue(
       of({
-        ...objectSnapshot(editor.store, [...editor.store.objects(), created]),
+        ...objectUpdate(editor.store, [...editor.store.objects(), created]),
         created_object_id: 42,
       }),
     );
@@ -175,7 +177,7 @@ describe('object-operations workflows', () => {
     backendMock.removeObject
       .mockReturnValueOnce(
         of(
-          objectSnapshot(
+          objectUpdate(
             editor.store,
             editor.store.objects().filter((object) => object.id !== 1),
           ),
@@ -188,7 +190,7 @@ describe('object-operations workflows', () => {
   });
 
   it('blocks point requests during object removal and unlocks after failure', async () => {
-    const removal$ = new Subject<AnnotationSnapshot>();
+    const removal$ = new Subject<AnnotationUpdate>();
     backendMock.removeObject.mockReturnValue(removal$);
     objectOperations.removeObject();
     await editor.prompts.addPoint(10, 20, 1, 5);
@@ -209,7 +211,7 @@ describe('object-operations workflows', () => {
     expect(backendMock.addNewPointsOrBox).not.toHaveBeenCalled();
     const accepted = { id: 27, label: 'Accepted object', color: '#123456' };
     pending.next({
-      ...objectSnapshot(editor.store, [...editor.store.objects(), accepted]),
+      ...objectUpdate(editor.store, [...editor.store.objects(), accepted]),
       created_object_id: 27,
     });
     expect(editor.store.objects().find((object) => object.id === accepted.id)?.label).toBe(
@@ -233,7 +235,7 @@ describe('object-operations workflows', () => {
   });
 
   it('keeps the accepted label while a rename is pending and blocks overlapping object edits', () => {
-    const pending = new Subject<AnnotationSnapshot>();
+    const pending = new Subject<AnnotationUpdate>();
     backendMock.updateObject.mockReturnValue(pending);
     const previous = editor.store.objects();
     objectOperations.renameObject(1, 'Draft');
@@ -245,9 +247,9 @@ describe('object-operations workflows', () => {
   });
 
   it('ignores an older accepted response without rolling back a newer snapshot', () => {
-    const pending = new Subject<AnnotationSnapshot>();
+    const pending = new Subject<AnnotationUpdate>();
     backendMock.updateObject.mockReturnValue(pending);
-    const older = objectSnapshot(editor.store, [{ id: 1, label: 'Older', color: '#ff0000' }]);
+    const older = objectUpdate(editor.store, [{ id: 1, label: 'Older', color: '#ff0000' }]);
     objectOperations.renameObject(1, 'Older');
     const newer = objectSnapshot(editor.store, [{ id: 1, label: 'Newer', color: '#ff0000' }]);
     newer.annotations!.revision = 10;
@@ -259,9 +261,9 @@ describe('object-operations workflows', () => {
   });
 
   it('does not apply a response after the backend URL changes', () => {
-    const pending = new Subject<AnnotationSnapshot>();
+    const pending = new Subject<AnnotationUpdate>();
     backendMock.updateObject.mockReturnValue(pending);
-    const response = objectSnapshot(editor.store, [
+    const response = objectUpdate(editor.store, [
       { id: 1, label: 'Old backend', color: '#ff0000' },
     ]);
     objectOperations.renameObject(1, 'Old backend');
@@ -272,9 +274,9 @@ describe('object-operations workflows', () => {
   });
 
   it('does not apply a response to a replacement session', () => {
-    const pending = new Subject<AnnotationSnapshot>();
+    const pending = new Subject<AnnotationUpdate>();
     backendMock.updateObject.mockReturnValue(pending);
-    const response = objectSnapshot(editor.store, [
+    const response = objectUpdate(editor.store, [
       { id: 1, label: 'Old session', color: '#ff0000' },
     ]);
     objectOperations.renameObject(1, 'Old session');
@@ -296,9 +298,9 @@ describe('object-operations workflows', () => {
       editor.store.objects().filter((object) => object.id !== 1),
     );
     accepted.annotations!.prompts = [
-      { frame_idx: 9, obj_id: 2, points: [[3, 4]], labels: [1], clear_old_points: true, box: null },
+      { frame_idx: 9, obj_id: 2, points: [[3, 4]], labels: [1], box: null },
     ];
-    backendMock.removeObject.mockReturnValue(of(accepted));
+    backendMock.removeObject.mockReturnValue(of(toUpdate(editor.store, accepted)));
     objectOperations.removeObject();
     expect(editor.store.points().get(9)?.get(2)).toEqual([{ x: 3, y: 4, label: 1 }]);
     expect(editor.store.selectedObjectId()).toBe(2);

@@ -19,29 +19,38 @@ def current_masks_dir() -> Optional[Path]:
     session_path = current_session_path()
     return session_path / "masks" if session_path is not None else None
 
+# Session fields owned outside annotations; kept in memory so writes never re-read session.json.
+PERSISTED_METADATA_KEYS = (
+    "interactive_state",
+    "created_at",
+    "saved_at",
+    "saved_path",
+    "source_input_path",
+    "latest_tracking_result_id",
+    "latest_tracking_result_path",
+    "latest_tracking_result_updated_at",
+    "latest_tracking_result_summary",
+)
+
+def persisted_session_fields(metadata: dict[str, Any]) -> dict[str, Any]:
+    return {key: metadata[key] for key in PERSISTED_METADATA_KEYS if key in metadata}
+
 def interactive_state_projection(raw_state: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-    """Project accepted points and editor preferences; never trust client mask caches."""
+    """Editor preferences that still reference accepted objects."""
     interactive = dict(raw_state or {})
     interactive["version"] = 1
-    interactive["points"] = state.annotations.interactive_points()
-    interactive["live_masks"] = []
     if interactive.get("selected_object_id") not in state.annotations.objects:
         interactive["selected_object_id"] = None
     return interactive
 
 def write_session_metadata(extra: Optional[dict[str, Any]] = None) -> None:
+    from video.masks import discard_override_artifacts
     session_path = current_session_path()
     if session_path is None:
         return
-    existing_metadata: dict[str, Any] = {}
     session_metadata_path = session_path / "session.json"
-    if session_metadata_path.exists():
-        try:
-            loaded = load_mask_manifest(session_metadata_path)
-            if isinstance(loaded, dict):
-                existing_metadata = loaded
-        except Exception:
-            logger.warning("Failed to read existing session metadata from %s", session_metadata_path)
+    if extra:
+        state.session_metadata.update(extra)
     metadata = {
         "session_id": state.active_session_id,
         "saved_name": state.active_session_saved_name,
@@ -61,26 +70,12 @@ def write_session_metadata(extra: Optional[dict[str, Any]] = None) -> None:
                 "offload_state_to_cpu": state.video_masker.offload_state_to_cpu,
             }
         )
-    for key in (
-        "interactive_state",
-        "created_at",
-        "saved_at",
-        "saved_path",
-        "source_input_path",
-        "latest_tracking_result_id",
-        "latest_tracking_result_path",
-        "latest_tracking_result_updated_at",
-        "latest_tracking_result_summary",
-    ):
-        if key in existing_metadata:
-            metadata[key] = existing_metadata[key]
-    if extra:
-        metadata.update(extra)
+    metadata.update(state.session_metadata)
     # Editor caches cannot replace accepted annotation inputs.
     metadata["interactive_mask_files"] = state.interactive_mask_files
     metadata["annotations"] = state.annotations.snapshot()
     metadata["interactive_state"] = interactive_state_projection(metadata.get("interactive_state"))
-    metadata["schema_version"] = 3
+    metadata["schema_version"] = 4
     # A failed write must leave the last complete annotations readable.
     temporary_path = None
     try:
@@ -94,6 +89,11 @@ def write_session_metadata(extra: Optional[dict[str, Any]] = None) -> None:
     finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
+    # Replaced override pixels become garbage only after metadata stops naming them.
+    referenced = {mask.artifact for mask in state.annotations.mask_overrides}
+    stale = state.committed_override_artifacts - referenced
+    state.committed_override_artifacts = referenced
+    discard_override_artifacts(stale)
 
 def load_session_metadata(session_root: Path) -> dict[str, Any]:
     session_json_path = session_root / "session.json"

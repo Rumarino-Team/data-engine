@@ -225,8 +225,6 @@ describe('BackendService', () => {
         selected_object_id: 1,
         interaction_mode: 'positive',
         current_frame_idx: 3,
-        points: [{ frame_idx: 3, obj_id: 1, x: 10, y: 20, label: 1 }],
-        live_masks: [{ frame_idx: 3, obj_id: 1, height: 2, width: 2, counts: [0, 1, 3] }],
       })
       .subscribe();
 
@@ -238,8 +236,6 @@ describe('BackendService', () => {
         selected_object_id: 1,
         interaction_mode: 'positive',
         current_frame_idx: 3,
-        points: [{ frame_idx: 3, obj_id: 1, x: 10, y: 20, label: 1 }],
-        live_masks: [{ frame_idx: 3, obj_id: 1, height: 2, width: 2, counts: [0, 1, 3] }],
       },
     });
   });

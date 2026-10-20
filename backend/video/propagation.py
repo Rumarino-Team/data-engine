@@ -14,7 +14,7 @@ from sessions.cache import clear_window_cache
 from sessions.metadata import current_masks_dir, write_session_metadata
 from utils import build_empty_mask_manifest, load_mask_manifest, prepare_video_masks_output, save_single_video_mask_frame, write_mask_manifest
 from video.io import build_window_dir
-from video.masks import manifest_frame_payload, decode_override
+from video.masks import manifest_frame_payload, override_pixels
 from video.prompts import restore_video_masker_from_prompt_events
 from tracking.guidance import load_latest_tracking_guidance
 
@@ -318,14 +318,14 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
                     obj_id=int(event["obj_id"]),
                     points=points,
                     labels=labels,
-                    clear_old_points=bool(event.get("clear_old_points", True)),
+                    clear_old_points=True,
                     box=event.get("box"),
                 )
 
             for mask in state.annotations.mask_overrides:
                 if window_start <= mask.frame_idx <= window_end:
                     state.video_masker.add_new_mask(frame_idx=mask.frame_idx - window_start,
-                                                   obj_id=mask.obj_id, mask=decode_override(mask))
+                                                   obj_id=mask.obj_id, mask=override_pixels(mask))
 
             if tracking_guidance is not None and tracking_guidance.points:
                 excluded_tracked_guidance = {(mask.frame_idx, mask.obj_id) for mask in state.annotations.mask_overrides}
@@ -413,7 +413,7 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
                 # Explicit masks remain exact inputs even if inference alters their pixels.
                 for mask in state.annotations.mask_overrides:
                     if mask.frame_idx == global_frame_idx:
-                        frame_masks[mask.obj_id] = decode_override(mask)
+                        frame_masks[mask.obj_id] = override_pixels(mask)
                 manifest_frames[str(global_frame_idx)] = {
                     **manifest_frame_payload(frame_masks),
                     "input_revisions": {str(obj_id): state.annotations.input_revisions.get(int(obj_id), 0)

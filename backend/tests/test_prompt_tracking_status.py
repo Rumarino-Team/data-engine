@@ -56,7 +56,6 @@ class PromptTrackingStatusTests(unittest.TestCase):
                 "points": [[10.0, 20.0]],
                 "labels": [1],
                 "box": None,
-                "clear_old_points": True,
             }
         ])
         state.video_masker = _FakeInteractiveMasker()

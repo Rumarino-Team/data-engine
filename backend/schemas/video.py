@@ -1,7 +1,5 @@
 from typing import Optional
-import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from core.config import DEFAULT_MAX_INTERACTIVE_LIVE_MASKS
 
 class VideoInitStateRequest(BaseModel):
     video_frames_dir: str
@@ -18,7 +16,6 @@ class VideoPrompt(BaseModel):
     obj_id: int = Field(ge=1)
     points: list[list[float]] = Field(default_factory=list)
     labels: list[int] = Field(default_factory=list)
-    clear_old_points: bool = True
     box: Optional[list[float]] = None
 
     @model_validator(mode="after")
@@ -37,6 +34,9 @@ class VideoPrompt(BaseModel):
 
 
 class VideoAddPointsOrBoxRequest(VideoPrompt):
+    # Request-only: accepted prompts are stored as one merged entry per frame/object.
+    clear_old_points: bool = True
+
     @model_validator(mode="before")
     @classmethod
     def normalize_optional_points(cls, value):
@@ -84,29 +84,6 @@ class VideoObjectUpdate(BaseModel):
 class VideoObject(VideoObjectUpdate):
     id: int = Field(ge=1)
 
-class InteractivePoint(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    frame_idx: int = Field(ge=0)
-    obj_id: int = Field(ge=1)
-    x: float
-    y: float
-    label: int
-
-    @field_validator("x", "y")
-    @classmethod
-    def _validate_finite_coordinate(cls, value: float) -> float:
-        if not np.isfinite(value):
-            raise ValueError("Point coordinates must be finite numbers.")
-        return float(value)
-
-    @field_validator("label")
-    @classmethod
-    def _validate_label(cls, value: int) -> int:
-        if int(value) not in (0, 1):
-            raise ValueError("Point label must be 0 or 1.")
-        return int(value)
-
 class InteractiveMaskRLE(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -136,15 +113,22 @@ class InteractiveMaskRLE(BaseModel):
             )
         return self
 
+class MaskOverride(BaseModel):
+    """Accepted explicit mask; pixels live in an immutable artifact under masks/overrides."""
+    model_config = ConfigDict(extra="forbid")
+
+    frame_idx: int = Field(ge=0)
+    obj_id: int = Field(ge=1)
+    artifact: str = Field(pattern=r"^[0-9a-f]{32}\.json$")
+
 class InteractiveState(BaseModel):
+    """Editor preferences only; accepted points and masks come from annotations."""
     model_config = ConfigDict(extra="forbid")
 
     version: int = Field(default=1, ge=1)
     selected_object_id: Optional[int] = Field(default=None, ge=1)
     interaction_mode: Optional[str] = None
     current_frame_idx: Optional[int] = Field(default=None, ge=0)
-    points: list[InteractivePoint] = Field(default_factory=list)
-    live_masks: list[InteractiveMaskRLE] = Field(default_factory=list)
 
     @field_validator("interaction_mode")
     @classmethod
@@ -154,15 +138,6 @@ class InteractiveState(BaseModel):
         if value not in {"positive", "negative"}:
             raise ValueError("interaction_mode must be positive or negative.")
         return value
-
-    @model_validator(mode="after")
-    def _validate_limits(self) -> "InteractiveState":
-        if len(self.live_masks) > DEFAULT_MAX_INTERACTIVE_LIVE_MASKS:
-            raise ValueError(
-                f"Too many live masks in interactive_state ({len(self.live_masks)}). "
-                f"Maximum allowed is {DEFAULT_MAX_INTERACTIVE_LIVE_MASKS}."
-            )
-        return self
 
 class VideoSaveRequest(BaseModel):
     name: str

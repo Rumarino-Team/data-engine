@@ -10,7 +10,7 @@ import {
 } from './backend-api-url';
 import { normalizeBackendPath } from './backend-path';
 import type {
-  AnnotationSnapshot,
+  AnnotationUpdate,
   AnnotationPrecondition,
   ObjectCreationResponse,
   CurrentJobResponse,
@@ -94,8 +94,8 @@ export class BackendService {
     return this.http.post<JobStartResponse>(this.endpoint('/video/init_state'), payload);
   }
 
-  resetVideoState(precondition: AnnotationPrecondition): Observable<AnnotationSnapshot> {
-    return this.http.post<AnnotationSnapshot>(
+  resetVideoState(precondition: AnnotationPrecondition): Observable<AnnotationUpdate> {
+    return this.http.post<AnnotationUpdate>(
       this.endpoint('/video/reset_state'),
       {},
       { headers: this.annotationHeaders(precondition) },
@@ -132,8 +132,8 @@ export class BackendService {
     frameIdx: number,
     objId: number,
     precondition: AnnotationPrecondition,
-  ): Observable<AnnotationSnapshot> {
-    return this.http.post<AnnotationSnapshot>(
+  ): Observable<AnnotationUpdate> {
+    return this.http.post<AnnotationUpdate>(
       this.endpoint('/video/clear_all_prompts_in_frame'),
       null,
       {
@@ -152,8 +152,8 @@ export class BackendService {
   updateObject(
     object: VideoObject,
     precondition: AnnotationPrecondition,
-  ): Observable<AnnotationSnapshot> {
-    return this.http.put<AnnotationSnapshot>(
+  ): Observable<AnnotationUpdate> {
+    return this.http.put<AnnotationUpdate>(
       this.endpoint(`/video/objects/${object.id}`),
       {
         label: object.label,
@@ -166,8 +166,8 @@ export class BackendService {
   removeObject(
     objId: number,
     precondition: AnnotationPrecondition,
-  ): Observable<AnnotationSnapshot> {
-    return this.http.post<AnnotationSnapshot>(this.endpoint('/video/remove_object'), null, {
+  ): Observable<AnnotationUpdate> {
+    return this.http.post<AnnotationUpdate>(this.endpoint('/video/remove_object'), null, {
       headers: this.annotationHeaders(precondition),
       params: { obj_id: objId.toString() },
     });

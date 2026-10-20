@@ -105,7 +105,7 @@ class AnnotationPreconditionTests(unittest.TestCase):
                     self.assertFalse(admission.done())
                 finally:
                     release.set()
-                self.assertEqual(edit.result(timeout=5)["annotations"]["revision"], 2)
+                self.assertEqual(edit.result(timeout=5)["annotation_delta"]["revision"], 2)
                 self.assertEqual(admission.result(timeout=5)["status"], "queued")
         self.assertEqual(self.client.post("/video/objects", headers=self.headers(revision=2)).status_code, 409)
 

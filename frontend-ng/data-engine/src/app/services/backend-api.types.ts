@@ -50,7 +50,7 @@ export interface VideoSaveResponse {
   state_epoch: number;
 }
 
-export interface VideoAddPointsResponse extends AnnotationSnapshot {
+export interface VideoAddPointsResponse extends AnnotationUpdate {
   request_frame_idx: number;
   frame_idx: number;
   frame_file: string;
@@ -81,20 +81,11 @@ export interface VideoObject {
   color: string;
 }
 
-export interface InteractivePoint {
+/** Accepted explicit mask; pixels are served through mask data, never in annotations. */
+export interface MaskOverride {
   frame_idx: number;
   obj_id: number;
-  x: number;
-  y: number;
-  label: 0 | 1;
-}
-
-export interface InteractiveMaskRle {
-  frame_idx: number;
-  obj_id: number;
-  height: number;
-  width: number;
-  counts: number[];
+  artifact: string;
 }
 
 export interface VideoSaveInteractiveState {
@@ -102,16 +93,14 @@ export interface VideoSaveInteractiveState {
   selected_object_id?: number | null;
   interaction_mode?: 'positive' | 'negative' | null;
   current_frame_idx?: number | null;
-  points?: InteractivePoint[];
-  live_masks?: InteractiveMaskRle[];
 }
 
+/** One accepted prompt per frame/object; points are the complete accepted set. */
 export interface VideoPrompt {
   frame_idx: number;
   obj_id: number;
   points: number[][];
   labels: number[];
-  clear_old_points: boolean;
   box: number[] | null;
 }
 
@@ -121,8 +110,23 @@ export interface VideoAnnotations {
   next_object_id: number;
   objects: Record<string, VideoObject>;
   prompts: VideoPrompt[];
-  mask_overrides?: InteractiveMaskRle[];
+  mask_overrides?: MaskOverride[];
   input_revisions?: Record<string, number>;
+}
+
+/** Current values for keys a mutation changed, applicable only at `base_revision`. */
+export interface AnnotationDelta {
+  base_revision: number;
+  revision: number;
+  next_object_id: number;
+  objects: Record<string, VideoObject>;
+  removed_objects: number[];
+  prompts: VideoPrompt[];
+  removed_prompts: [number, number][];
+  mask_overrides: MaskOverride[];
+  removed_mask_overrides: [number, number][];
+  input_revisions: Record<string, number>;
+  removed_input_revisions: number[];
 }
 
 export interface AnnotationSnapshot {
@@ -132,7 +136,15 @@ export interface AnnotationSnapshot {
   annotations: VideoAnnotations | null;
 }
 
-export interface ObjectCreationResponse extends AnnotationSnapshot {
+/** Mutation response; full snapshots come only from /video/info and initialization. */
+export interface AnnotationUpdate {
+  mask_data?: VideoMaskDataResponse;
+  session_id: string | null;
+  state_epoch: number;
+  annotation_delta: AnnotationDelta;
+}
+
+export interface ObjectCreationResponse extends AnnotationUpdate {
   created_object_id: number;
 }
 

@@ -14,7 +14,7 @@ from core.annotations import SessionAnnotations
 from schemas.video import VideoPropagateRequest
 from utils import build_empty_mask_manifest, load_mask_manifest, write_mask_manifest
 from video import propagation
-from video.masks import manifest_frame_payload, accepted_mask
+from video.masks import manifest_frame_payload, store_mask_override
 
 
 class PartialPropagationTests(unittest.TestCase):
@@ -50,8 +50,9 @@ class PartialPropagationTests(unittest.TestCase):
                                                     prompts=[{"frame_idx": 1, "obj_id": 1, "points": [[1, 1]], "labels": [1]}]),
                         mask_manifest_path=str(masks / "manifest.json"),
                     )
+                    patches.enter_context(patch("video.masks._overrides_dir", lambda: masks / "overrides"))
                     if explicit_override:
-                        state.annotations.set_mask(accepted_mask(1, 1, np.ones((8, 8), dtype=bool)))
+                        state.annotations.set_mask(store_mask_override(1, 1, np.ones((8, 8), dtype=bool)))
                     state.interactive_mask_files = {str(i): "old-artifact.json" for i in range(5)}
                     for name, value in {
                         "state": state, "WINDOW_FRAMES_ROOT": root / "windows",

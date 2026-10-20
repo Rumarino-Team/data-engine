@@ -67,7 +67,6 @@ class TrackingResultTests(unittest.TestCase):
                 "points": [[10.0, 20.0]],
                 "labels": [1],
                 "box": None,
-                "clear_old_points": True,
             },
             {
                 "frame_idx": 1,
@@ -75,7 +74,6 @@ class TrackingResultTests(unittest.TestCase):
                 "points": [[30.0, 40.0]],
                 "labels": [1],
                 "box": None,
-                "clear_old_points": False,
             },
         ])
         save_prompt_tracking_result(
@@ -104,7 +102,6 @@ class TrackingResultTests(unittest.TestCase):
                 "points": [[30.0, 40.0]],
                 "labels": [1],
                 "box": None,
-                "clear_old_points": True,
             }
         ])
         save_prompt_tracking_result(
@@ -132,7 +129,6 @@ class TrackingResultTests(unittest.TestCase):
                 "points": [[10.0, 20.0]],
                 "labels": [1],
                 "box": None,
-                "clear_old_points": True,
             }
         ])
         save_prompt_tracking_result(
