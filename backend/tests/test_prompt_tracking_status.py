@@ -24,6 +24,9 @@ class _FakeInteractiveMasker:
 class _FakeTracker:
     model_name = "cotracker3_online"
 
+    def prepare_video(self, video):
+        return video
+
     def track(self, video, *, queries, add_support_grid):
         return np.array([[[10.0, 20.0], [11.0, 21.0]]], dtype=np.float32), np.array([[True, True]])
 

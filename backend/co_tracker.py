@@ -1,13 +1,36 @@
 import torch
+import torch.nn.functional as F
 import numpy as np
 import cv2
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple, Union
 import colorsys
 import random
 
 VIDEO_INPUT_RESO = (384, 512) # Resolution of the input video to the model
 DEFAULT_COTRACKER_MODEL = "cotracker3_online"
+# Full-resolution frames uploaded per resize step; bounds peak upload memory.
+PREPARE_CHUNK_FRAMES = 16
+
+
+def resize_frames_to_model(frames_rgb: np.ndarray, resolution: Tuple[int, int], device) -> torch.Tensor:
+    """(T, H, W, 3) uint8 RGB -> (T, 3, h, w) float32 at model resolution.
+
+    Same float conversion and bilinear/align_corners resize the online predictor
+    applies to each chunk, so feeding the result changes no model input.
+    """
+    chunk = torch.from_numpy(np.ascontiguousarray(frames_rgb)).to(device)
+    chunk = chunk.permute(0, 3, 1, 2).float()
+    return F.interpolate(chunk, tuple(resolution), mode="bilinear", align_corners=True)
+
+
+@dataclass
+class PreparedVideo:
+    """Model-resolution frames on the tracker device, plus the source size for coordinates."""
+    frames: torch.Tensor  # (1, T, 3, h, w) float32
+    height: int
+    width: int
 
 
 def read_video_rgb(video_path: str | Path) -> np.ndarray:
@@ -68,22 +91,53 @@ def write_video_rgb(output_path: str | Path, video: np.ndarray, fps: float) -> N
 
 
 class FrameChunkLoader:
-    """Loads bounded frame ranges as CoTracker-ready GPU tensors."""
+    """Loads bounded frame ranges as model-resolution CoTracker tensors.
+
+    Online windows overlap by half, so frames from the previous chunk are reused
+    instead of decoded again; only one chunk of resized frames is retained.
+    """
 
     def __init__(
         self,
         video_dir: str | Path,
         frame_files: Sequence[str],
         device: str | torch.device,
+        resolution: Tuple[int, int] = VIDEO_INPUT_RESO,
     ):
         self.video_dir = Path(video_dir)
         self.frame_files = list(frame_files)
         self.device = torch.device(device)
+        self.resolution = tuple(resolution)
         self._frame_shape: tuple[int, int, int] | None = None
+        self._cached: dict[int, torch.Tensor] = {}
 
     @property
     def num_frames(self) -> int:
         return len(self.frame_files)
+
+    @property
+    def frame_size(self) -> tuple[int, int]:
+        """Source (height, width); known after the first chunk is loaded."""
+        if self._frame_shape is None:
+            raise ValueError("Frame size is unknown until a chunk is loaded.")
+        return self._frame_shape[0], self._frame_shape[1]
+
+    def _load_frame(self, frame_idx: int) -> torch.Tensor:
+        frame_path = self.video_dir / self.frame_files[frame_idx]
+        frame_bgr = cv2.imread(str(frame_path))
+        if frame_bgr is None:
+            raise ValueError(f"Unable to read frame {frame_idx}: {frame_path}")
+
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        if self._frame_shape is None:
+            self._frame_shape = tuple(frame_rgb.shape)
+        elif tuple(frame_rgb.shape) != self._frame_shape:
+            raise ValueError(
+                "Frame dimensions changed during tracking: "
+                f"expected {self._frame_shape}, got {tuple(frame_rgb.shape)} "
+                f"at frame {frame_idx} ({frame_path})."
+            )
+        return resize_frames_to_model(frame_rgb[None], self.resolution, self.device)[0]
 
     def load_chunk(self, start_idx: int, end_idx_exclusive: int) -> torch.Tensor:
         start_idx = int(start_idx)
@@ -94,26 +148,12 @@ class FrameChunkLoader:
                 f"for {self.num_frames} frames."
             )
 
-        frames: list[np.ndarray] = []
-        for frame_idx in range(start_idx, end_idx_exclusive):
-            frame_path = self.video_dir / self.frame_files[frame_idx]
-            frame_bgr = cv2.imread(str(frame_path))
-            if frame_bgr is None:
-                raise ValueError(f"Unable to read frame {frame_idx}: {frame_path}")
-
-            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-            if self._frame_shape is None:
-                self._frame_shape = tuple(frame_rgb.shape)
-            elif tuple(frame_rgb.shape) != self._frame_shape:
-                raise ValueError(
-                    "Frame dimensions changed during tracking: "
-                    f"expected {self._frame_shape}, got {tuple(frame_rgb.shape)} "
-                    f"at frame {frame_idx} ({frame_path})."
-                )
-            frames.append(frame_rgb)
-
-        chunk_np = np.stack(frames, axis=0)
-        return torch.from_numpy(chunk_np).permute(0, 3, 1, 2)[None].float().to(self.device)
+        frames = {
+            frame_idx: self._cached[frame_idx] if frame_idx in self._cached else self._load_frame(frame_idx)
+            for frame_idx in range(start_idx, end_idx_exclusive)
+        }
+        self._cached = frames
+        return torch.stack(list(frames.values()))[None]
 
 # Generate random colormaps for visualizing different points.
 def get_colors(num_colors: int) -> List[Tuple[int, int, int]]:
@@ -288,12 +328,43 @@ class CoTracker:
         # for correlation, reducing drift on long sequences and with many points.
         self.model.support_grid_size = 10
 
-    def track(self, video: np.ndarray, queries: Optional[np.ndarray] = None, grid_size=15, add_support_grid=True):
+    @property
+    def model_resolution(self) -> Tuple[int, int]:
+        return tuple(getattr(self.model, "interp_shape", VIDEO_INPUT_RESO))
+
+    def prepare_video(self, video: np.ndarray) -> PreparedVideo:
+        """Resize once on the device; reuse the result across query batches."""
+        video = np.asarray(video)
+        if video.ndim != 4 or video.shape[-1] != 3 or video.shape[0] == 0:
+            raise ValueError(f"Expected video shape (T, H, W, 3), got {video.shape}.")
+        num_frames, height, width = video.shape[:3]
+        resolution = self.model_resolution
+        frames = torch.empty((1, num_frames, 3, *resolution), dtype=torch.float32, device=self.device)
+        for start in range(0, num_frames, PREPARE_CHUNK_FRAMES):
+            end = min(num_frames, start + PREPARE_CHUNK_FRAMES)
+            frames[0, start:end] = resize_frames_to_model(video[start:end], resolution, self.device)
+        return PreparedVideo(frames=frames, height=int(height), width=int(width))
+
+    # The predictor scales coordinates by (model - 1) / (source - 1). Inputs are
+    # already at model resolution, so its factors are exactly 1 and the source
+    # scaling happens here instead, with the same arithmetic.
+    def _queries_to_model(self, queries: torch.Tensor, height: int, width: int) -> torch.Tensor:
+        model_height, model_width = self.model_resolution
+        queries = queries.clone()
+        queries[:, :, 1:] *= queries.new_tensor([(model_width - 1) / (width - 1), (model_height - 1) / (height - 1)])
+        return queries
+
+    def _tracks_from_model(self, tracks: torch.Tensor, height: int, width: int) -> torch.Tensor:
+        model_height, model_width = self.model_resolution
+        return tracks * tracks.new_tensor([(width - 1) / (model_width - 1), (height - 1) / (model_height - 1)])
+
+    def track(self, video: Union[np.ndarray, PreparedVideo], queries: Optional[np.ndarray] = None, grid_size=15, add_support_grid=True):
         """
         Tracks points in a video.
 
         Args:
-            video (np.ndarray): A video as a numpy array of shape (T, H, W, 3) in RGB format.
+            video: A (T, H, W, 3) RGB array, or a PreparedVideo from prepare_video() to
+                   avoid resizing again for each query batch.
             queries (Optional[np.ndarray]): An array of query points of shape (N, 3) where each
                                             row is (t, x, y). If None, a grid of points is tracked.
             grid_size (int): The size of the grid for grid tracking.
@@ -305,20 +376,22 @@ class CoTracker:
                 - visibility (np.ndarray): The predicted visibility of each point of shape (N, T).
         """
 
-        # Preprocess video on CPU first to avoid holding full-resolution frames on GPU.
-        # Shape: (B, T, C, H, W) — the predictor wrapper expects this layout.
-        video_torch = torch.from_numpy(video).permute(0, 3, 1, 2)[None].float().to(self.device)
+        # Full-resolution frames never reach the GPU as float; only model-resolution
+        # frames (B, T, C, h, w) do, the layout the predictor wrapper expects.
+        prepared = video if isinstance(video, PreparedVideo) else self.prepare_video(video)
 
         # Build query tensor if user supplied points
         queries_torch = None
         if queries is not None:
             queries = np.asarray(queries, dtype=np.float32)
             queries_torch = torch.from_numpy(queries).float()[None].to(self.device)  # (1, N, 3)
+            queries_torch = self._queries_to_model(queries_torch, prepared.height, prepared.width)
 
         with torch.inference_mode():
             pred_tracks, pred_visibility = self._track_online(
-                video_torch, queries_torch, grid_size, add_support_grid
+                prepared.frames, queries_torch, grid_size, add_support_grid
             )
+        pred_tracks = self._tracks_from_model(pred_tracks, prepared.height, prepared.width)
 
         # pred_tracks: (B, T, N, 2),  pred_visibility: (B, T, N)
         # Transpose to (N, T, 2) and (N, T) for our output convention.
@@ -360,11 +433,12 @@ class CoTracker:
             raise ValueError(f"Query frame index out of bounds for {num_frames} frames.")
 
         queries_torch = torch.from_numpy(queries).float()[None].to(self.device)
-        pred_tracks, pred_visibility = self._track_online_streaming(
+        pred_tracks, pred_visibility, (height, width) = self._track_online_streaming(
             frame_loader,
             queries_torch,
             add_support_grid=add_support_grid,
         )
+        pred_tracks = self._tracks_from_model(pred_tracks, height, width)
 
         tracks_np = pred_tracks[0].permute(1, 0, 2).detach().cpu().numpy()
         visibility_np = pred_visibility[0].permute(1, 0).detach().cpu().numpy().astype(bool)
@@ -438,11 +512,13 @@ class CoTracker:
 
         init_end = min(num_frames, chunk_len)
         init_chunk = frame_loader.load_chunk(0, init_end)
+        # Source size is known once the first chunk is decoded.
+        height, width = frame_loader.frame_size
         try:
             self.model(
                 video_chunk=init_chunk,
                 is_first_step=True,
-                queries=queries_torch,
+                queries=self._queries_to_model(queries_torch, height, width),
                 add_support_grid=add_support_grid,
             )
         finally:
@@ -467,7 +543,7 @@ class CoTracker:
                 f"The video may be too short for the sliding window."
             )
 
-        return pred_tracks, pred_visibility
+        return pred_tracks, pred_visibility, (height, width)
 
 if __name__ == '__main__':
     import argparse

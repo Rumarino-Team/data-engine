@@ -142,6 +142,8 @@ def run_prompt_tracking_job(request: TrackingPromptPointsRequest) -> dict[str, A
         tracks_batches: list[np.ndarray] = []
         visibility_batches: list[np.ndarray] = []
         index = 0
+        # Resize once; every query batch reuses the same model-resolution frames.
+        prepared_video = state.tracker.prepare_video(video)
 
         while index < query_array.shape[0]:
             end_index = min(query_array.shape[0], index + batch_size)
@@ -149,7 +151,7 @@ def run_prompt_tracking_job(request: TrackingPromptPointsRequest) -> dict[str, A
 
             try:
                 batch_tracks, batch_visibility = state.tracker.track(
-                    video,
+                    prepared_video,
                     queries=query_batch,
                     add_support_grid=add_support_grid,
                 )
@@ -198,6 +200,7 @@ def run_prompt_tracking_job(request: TrackingPromptPointsRequest) -> dict[str, A
             video_dir=Path(state.video_dir),
             frame_files=state.video_frame_files,
             device=state.tracker.device,
+            resolution=state.tracker.model_resolution,
         )
 
         initial_batch_size = int(DEFAULT_PROMPT_TRACK_BATCH_SIZE)
