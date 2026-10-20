@@ -52,7 +52,7 @@ class PartialPropagationTests(unittest.TestCase):
                     )
                     if explicit_override:
                         state.annotations.set_mask(accepted_mask(1, 1, np.ones((8, 8), dtype=bool)))
-                    state.interactive_masks = {str(i): {"1": {"mask": "old"}} for i in range(5)}
+                    state.interactive_mask_files = {str(i): "old-artifact.json" for i in range(5)}
                     for name, value in {
                         "state": state, "WINDOW_FRAMES_ROOT": root / "windows",
                         "current_masks_dir": lambda: masks, "clear_window_cache": Mock(),
@@ -83,7 +83,7 @@ class PartialPropagationTests(unittest.TestCase):
                             else:
                                 self.assertEqual(overlay.read_bytes(), f"old-{i}".encode())
                         self.assertEqual(response["video_segments_total_frames"], 2)
-                        self.assertEqual(set(state.interactive_masks), {"0", "3", "4"})
+                        self.assertEqual(set(state.interactive_mask_files), {"0", "3", "4"})
                         if explicit_override:
                             self.assertTrue(any(call.kwargs["mask"].all() for call in masker.add_new_mask.call_args_list))
 

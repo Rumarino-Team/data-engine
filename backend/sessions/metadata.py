@@ -77,7 +77,7 @@ def write_session_metadata(extra: Optional[dict[str, Any]] = None) -> None:
     if extra:
         metadata.update(extra)
     # Editor caches cannot replace accepted annotation inputs.
-    metadata["interactive_masks"] = state.interactive_masks
+    metadata["interactive_mask_files"] = state.interactive_mask_files
     metadata["annotations"] = state.annotations.snapshot()
     metadata["interactive_state"] = interactive_state_projection(metadata.get("interactive_state"))
     metadata["schema_version"] = 3

@@ -85,15 +85,15 @@ def prompt_runtime_edit():
     This does not make mask artifact deletion a filesystem transaction.
     """
     # Frame entries are replaced, never mutated by foreground edits.
-    previous_masks = state.interactive_masks
-    state.interactive_masks = dict(previous_masks)
+    previous_masks = state.interactive_mask_files
+    state.interactive_mask_files = dict(previous_masks)
     previous = state.annotations
     state.annotations = previous.model_copy(deep=True)
     try:
         yield
     except Exception:
         state.annotations = previous
-        state.interactive_masks = previous_masks
+        state.interactive_mask_files = previous_masks
         try:
             state.video_masker.reset_state()
             replay_annotation_prompts()

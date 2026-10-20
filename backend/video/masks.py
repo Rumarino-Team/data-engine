@@ -1,4 +1,8 @@
 from typing import Any, TYPE_CHECKING
+from uuid import uuid4
+from functools import lru_cache
+from pathlib import Path
+import re
 
 if TYPE_CHECKING:
     from schemas.video import InteractiveMaskRLE
@@ -78,11 +82,42 @@ def accepted_mask(frame_idx: int, obj_id: int, mask: np.ndarray) -> "Interactive
 
 def retain_interactive_masks(frame_idx: int, obj_ids: list[int], encoded_masks: list[dict]) -> None:
     from core.state import state
-    state.interactive_masks[str(frame_idx)] = {
+    from sessions.metadata import current_masks_dir
+    from utils import write_mask_manifest
+    masks_dir = current_masks_dir()
+    if masks_dir is None:
+        raise ValueError("No active session for interactive masks.")
+    payload = {
         str(obj_id): {"input_revision": state.annotations.input_revisions.get(obj_id, 0),
                       "mask": mask}
         for obj_id, mask in zip(obj_ids, encoded_masks) if obj_id in state.annotations.objects
     }
+    # Publish an immutable artifact first, then accept its reference with annotations.
+    # If metadata acceptance fails, the previous reference still names untouched pixels.
+    artifact_name = f"{uuid4().hex}.json"
+    write_mask_manifest(masks_dir / "interactive" / artifact_name, payload)
+    state.interactive_mask_files[str(frame_idx)] = artifact_name
+
+
+@lru_cache(maxsize=1)
+def _read_interactive_mask_file(path: Path) -> dict[str, Any]:
+    # UUID artifacts are immutable. Keep their cache separate from the propagation manifest.
+    from utils import load_mask_manifest
+    return load_mask_manifest(path)
+
+
+def load_interactive_masks(frame_idx: int) -> dict[str, Any]:
+    from core.state import state
+    from sessions.metadata import current_masks_dir
+    artifact_name = state.interactive_mask_files.get(str(frame_idx))
+    if artifact_name is None:
+        return {}
+    if not isinstance(artifact_name, str) or not re.fullmatch(r"[0-9a-f]{32}\.json", artifact_name):
+        raise ValueError("Invalid interactive mask artifact reference.")
+    masks_dir = current_masks_dir()
+    if masks_dir is None:
+        raise ValueError("No active session for interactive masks.")
+    return _read_interactive_mask_file(masks_dir / "interactive" / artifact_name)
 
 
 def effective_mask_data(frame_idx: int) -> dict[str, Any]:
@@ -106,7 +141,7 @@ def effective_mask_data(frame_idx: int) -> dict[str, Any]:
                 frame.get("input_revisions", {}).get(str(obj_id)) == state.annotations.input_revisions.get(object_id, 0)):
             objects[str(obj_id)] = mask
             sources[str(obj_id)] = "manifest"
-    for obj_id, result in state.interactive_masks.get(str(frame_idx), {}).items():
+    for obj_id, result in load_interactive_masks(frame_idx).items():
         object_id = int(obj_id)
         if (object_id in state.annotations.objects and
                 result["input_revision"] == state.annotations.input_revisions.get(object_id, 0)):

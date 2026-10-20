@@ -91,7 +91,7 @@ def initialize_video_state_from_resolved_input(
             raise HTTPException(status_code=400, detail=f"Invalid session annotations or editor state: {error}") from error
         state.active_session_id = session_id
         state.annotations = annotations
-        state.interactive_masks = session_metadata.get("interactive_masks", {})
+        state.interactive_mask_files = session_metadata.get("interactive_mask_files", {})
         restored_session_payload = {
             "annotations": state.annotations.snapshot(),
             "interactive_state": interactive_state_projection(interactive_state),
@@ -367,10 +367,8 @@ async def reset_video_state(precondition: AnnotationPrecondition):
         with prompt_runtime_edit():
             state.video_masker.reset_state()
             reset_video_session_state()
-            masks_dir = current_masks_dir()
-            if masks_dir is not None:
-                shutil.rmtree(masks_dir, ignore_errors=True)
-                masks_dir.mkdir(parents=True, exist_ok=True)
+            # Reset publishes empty references and invalidates input revisions.
+            # Keep artifacts intact until acceptance; physical reclamation is separate.
             state.mask_manifest_path = None
             state_epoch = bump_video_state_epoch()
             write_session_metadata()

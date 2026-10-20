@@ -128,7 +128,7 @@ class SessionAnnotationsTests(unittest.TestCase):
         self.assertEqual(self.client.get("/video/mask_data/0").json(), mask_data)
         self.assertEqual(self.client.get("/video/mask_frame/0").status_code, 404)
         self.assertEqual(self.metadata()["annotations"]["mask_overrides"][0]["counts"], [9])
-        state.interactive_masks = {}
+        state.interactive_mask_files = {}
         self.masker.add_new_mask.reset_mock()
         self.reopen()
         self.masker.add_new_mask.assert_called_once()

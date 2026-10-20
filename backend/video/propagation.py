@@ -497,7 +497,7 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
     with foreground_lock:
         write_mask_manifest(manifest_file_path, manifest)
         for frame_idx in processed_frames:
-            state.interactive_masks.pop(str(frame_idx), None)
+            state.interactive_mask_files.pop(str(frame_idx), None)
         state.mask_manifest_path = str(manifest_file_path)
         write_session_metadata()
     update_job(

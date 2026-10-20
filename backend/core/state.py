@@ -14,7 +14,7 @@ class BackendState:
     tracking_video_path: Optional[str] = None
     video_source_path: Optional[str] = None
     annotations: SessionAnnotations = field(default_factory=SessionAnnotations)
-    interactive_masks: dict = field(default_factory=dict)
+    interactive_mask_files: dict[str, str] = field(default_factory=dict)
     mask_manifest_path: Optional[str] = None
     video_state_epoch: int = 0
     active_session_dir: Optional[Path] = None

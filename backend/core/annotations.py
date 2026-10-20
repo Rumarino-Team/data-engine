@@ -64,14 +64,16 @@ class SessionAnnotations(BaseModel):
         self.input_revisions[prompt.obj_id] = self.revision
 
     def clear_prompts(self, frame_idx: int | None = None, obj_id: int | None = None) -> None:
-        remaining = [event for event in self.prompts
-                     if not ((frame_idx is None or event.frame_idx == frame_idx)
-                             and (obj_id is None or event.obj_id == obj_id))]
-        remaining_masks = [mask for mask in self.mask_overrides
-                           if not ((frame_idx is None or mask.frame_idx == frame_idx)
-                                   and (obj_id is None or mask.obj_id == obj_id))]
-        affected = {event.obj_id for event in self.prompts if event not in remaining}
-        affected.update(mask.obj_id for mask in self.mask_overrides if mask not in remaining_masks)
+        def matches(event) -> bool:
+            return ((frame_idx is None or event.frame_idx == frame_idx)
+                    and (obj_id is None or event.obj_id == obj_id))
+
+        # Single pass: membership tests against `remaining` were quadratic in prompt count.
+        remaining, remaining_masks, affected = [], [], set()
+        for event in self.prompts:
+            (affected.add(event.obj_id) if matches(event) else remaining.append(event))
+        for mask in self.mask_overrides:
+            (affected.add(mask.obj_id) if matches(mask) else remaining_masks.append(mask))
         if affected:
             self.prompts = remaining
             self.mask_overrides = remaining_masks
