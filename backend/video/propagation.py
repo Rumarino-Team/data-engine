@@ -6,7 +6,7 @@ from fastapi import HTTPException
 import numpy as np
 import torch
 from core.config import WINDOW_FRAMES_ROOT
-from core.jobs import queue_long_job, update_job
+from core.jobs import queue_long_job, update_job, foreground_lock
 from core.runtime import cleanup_cuda_memory
 from core.state import state
 from schemas.video import VideoPropagateRequest
@@ -14,7 +14,7 @@ from sessions.cache import clear_window_cache
 from sessions.metadata import current_masks_dir, write_session_metadata
 from utils import build_empty_mask_manifest, load_mask_manifest, prepare_video_masks_output, save_single_video_mask_frame, write_mask_manifest
 from video.io import build_window_dir
-from video.masks import manifest_frame_payload
+from video.masks import manifest_frame_payload, decode_override
 from video.prompts import restore_video_masker_from_prompt_events
 from tracking.guidance import load_latest_tracking_guidance
 
@@ -79,7 +79,7 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
     if not state.video_frame_files:
         raise HTTPException(status_code=400, detail="No video frames available. Call /video/init_state first.")
 
-    if not state.annotations.prompt_events():
+    if not state.annotations.prompts and not state.annotations.mask_overrides:
         raise HTTPException(status_code=400, detail="No prompts available for propagation.")
 
     effective_online_mode = state.video_masker.online_mode if request.online_mode is None else bool(request.online_mode)
@@ -93,7 +93,7 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
     if request.start_frame_idx is not None:
         start_frame_idx = int(request.start_frame_idx)
     else:
-        start_frame_idx = min(int(event["frame_idx"]) for event in state.annotations.prompt_events())
+        start_frame_idx = min(event.frame_idx for event in [*state.annotations.prompts, *state.annotations.mask_overrides])
     start_frame_idx = min(max(start_frame_idx, 0), num_frames - 1)
 
     if request.max_frame_num_to_track is None:
@@ -180,6 +180,9 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
 
     run_root = WINDOW_FRAMES_ROOT / f"run_{uuid.uuid4().hex[:12]}"
     run_root.mkdir(parents=True, exist_ok=True)
+    overlay_dir = masks_dir / f"overlays_{uuid.uuid4().hex}"
+    if request.export_overlay_frames:
+        overlay_dir.mkdir()
 
     saved_mask_paths_serializable: dict[int, list[str]] = {}
     saved_mask_frame_count = 0
@@ -319,8 +322,13 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
                     box=event.get("box"),
                 )
 
+            for mask in state.annotations.mask_overrides:
+                if window_start <= mask.frame_idx <= window_end:
+                    state.video_masker.add_new_mask(frame_idx=mask.frame_idx - window_start,
+                                                   obj_id=mask.obj_id, mask=decode_override(mask))
+
             if tracking_guidance is not None and tracking_guidance.points:
-                excluded_tracked_guidance: set[tuple[int, int]] = set()
+                excluded_tracked_guidance = {(mask.frame_idx, mask.obj_id) for mask in state.annotations.mask_overrides}
                 if window_index > 0 and boundary_masks and boundary_frame_idx is not None:
                     excluded_tracked_guidance.update(
                         (int(boundary_frame_idx), int(obj_id))
@@ -402,7 +410,15 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
                     message=f"Processed {len(processed_frames)} of {expected_total_frames} frames",
                     append_history=len(processed_frames) == 1 or len(processed_frames) == expected_total_frames,
                 )
-                manifest_frames[str(global_frame_idx)] = manifest_frame_payload(frame_masks)
+                # Explicit masks remain exact inputs even if inference alters their pixels.
+                for mask in state.annotations.mask_overrides:
+                    if mask.frame_idx == global_frame_idx:
+                        frame_masks[mask.obj_id] = decode_override(mask)
+                manifest_frames[str(global_frame_idx)] = {
+                    **manifest_frame_payload(frame_masks),
+                    "input_revisions": {str(obj_id): state.annotations.input_revisions.get(int(obj_id), 0)
+                                        for obj_id in frame_masks},
+                }
                 if request.include_masks_in_response:
                     video_segments_serializable[global_frame_idx] = {
                         int(obj_id): np.asarray(mask).astype(bool).tolist()
@@ -413,11 +429,12 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
                     try:
                         saved_path = save_single_video_mask_frame(
                             frame_files,
-                            masks_dir,
+                            overlay_dir,
                             global_frame_idx,
                             frame_masks,
                         )
                         if saved_path is not None:
+                            manifest_frames[str(global_frame_idx)]["overlay_path"] = str(Path(saved_path).relative_to(masks_dir))
                             saved_mask_frame_count += 1
                             if request.include_saved_mask_paths:
                                 saved_mask_paths_serializable.setdefault(global_frame_idx, []).append(saved_path)
@@ -477,9 +494,12 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
     finally:
         shutil.rmtree(run_root, ignore_errors=True)
 
-    write_mask_manifest(manifest_file_path, manifest)
-    state.mask_manifest_path = str(manifest_file_path)
-    write_session_metadata()
+    with foreground_lock:
+        write_mask_manifest(manifest_file_path, manifest)
+        for frame_idx in processed_frames:
+            state.interactive_masks.pop(str(frame_idx), None)
+        state.mask_manifest_path = str(manifest_file_path)
+        write_session_metadata()
     update_job(
         stage="saving_manifest",
         stage_label="Saving manifest",

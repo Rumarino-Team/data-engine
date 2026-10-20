@@ -1,3 +1,4 @@
+import { cachedMasks, seedMasks } from '../testing/workflow-test-helpers';
 import { setAcceptedPoints } from '../testing/workflow-test-helpers';
 import { describe, beforeEach, expect, it, vi } from 'vitest';
 import { TestBed } from '@angular/core/testing';
@@ -155,21 +156,17 @@ describe('object-operations workflows', () => {
 
   it('cleans removed objects from all frame maps without mutating previous snapshots', () => {
     vi.spyOn(editor.framePipeline, 'scheduleFrameLoad').mockImplementation(() => {});
-    const removeFromCanvas = vi.spyOn(editor.framePipeline, 'removeObject');
+    const removeFromCanvas = vi.spyOn(editor.framePipeline, 'clearMaskDataCache');
     const points = new Map([[5, new Map([[1, [{ x: 1, y: 2, label: 1 }]]])]]);
     const masks = new Map([[5, new Map([[1, [[true]]]])]]);
-    const edited = new Map([[5, new Set([1])]]);
     setAcceptedPoints(editor.store, points);
-    editor.store.masks.set(masks);
-    editor.store.liveEditedObjectFrames.set(edited);
+    seedMasks(editor, masks);
     objectOperations.removeObject();
     expect(editor.store.points().size).toBe(0);
-    expect(editor.store.masks().size).toBe(0);
-    expect(editor.store.liveEditedObjectFrames().size).toBe(0);
+    expect(cachedMasks(editor.framePipeline).size).toBe(0);
     expect(points.get(5)?.has(1)).toBe(true);
     expect(masks.get(5)?.has(1)).toBe(true);
-    expect(edited.get(5)?.has(1)).toBe(true);
-    expect(removeFromCanvas).toHaveBeenCalledWith(1);
+    expect(removeFromCanvas).toHaveBeenCalled();
   });
 
   it('keeps successful removals when removing all objects fails partway through', async () => {

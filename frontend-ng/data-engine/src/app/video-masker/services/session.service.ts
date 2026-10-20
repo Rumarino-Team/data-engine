@@ -13,11 +13,7 @@ import { FramePipelineService } from './frame-pipeline.service';
 import { ToastService } from './toast.service';
 import { EditorJobService } from './editor-job.service';
 import { TrackingService } from './tracking.service';
-import {
-  buildInteractiveStateSnapshot,
-  deserializeLiveMasks,
-  getErrorMessage,
-} from '../video-masker.util';
+import { getErrorMessage } from '../video-masker.util';
 
 /** Loads, restores, and saves annotation sessions. */
 @Injectable()
@@ -106,8 +102,6 @@ export class SessionService {
         JSON.stringify(boxes) !==
           JSON.stringify(this.store.annotations()?.prompts.filter((prompt) => prompt.box))
       ) {
-        this.store.masks.set(new Map());
-        this.store.liveEditedObjectFrames.set(new Map());
         this.store.invalidateTracking();
       }
       this.framePipeline.clearMaskDataCache();
@@ -208,7 +202,7 @@ export class SessionService {
       this.store.applyAnnotationSnapshot(info, backendUrl, true);
       this.store.numFrames.set(info.num_frames);
       this.store.hasManifestMasks.set(Boolean(res.restored_session?.has_mask_manifest));
-      this.restoreInteractiveSessionState(res.restored_session, info.annotations.revision);
+      this.restoreInteractiveSessionState(res.restored_session);
       if (!this.store.objects().some((object) => object.id === this.store.selectedObjectId())) {
         this.store.selectedObjectId.set(this.store.objects()[0]?.id ?? null);
       }
@@ -244,19 +238,11 @@ export class SessionService {
 
   private restoreInteractiveSessionState(
     restored: RestoredSessionPayload | null | undefined,
-    revision: number,
   ): void {
     if (!restored?.interactive_state) {
       return;
     }
     const interactive = restored.interactive_state;
-    const { masks, liveEditedFrames } = deserializeLiveMasks(
-      restored.annotations.revision === revision ? interactive.live_masks : [],
-    );
-    if (masks.size > 0) {
-      this.store.masks.set(masks);
-      this.store.liveEditedObjectFrames.set(liveEditedFrames);
-    }
     this.store.selectedObjectId.set(interactive.selected_object_id ?? null);
 
     if (
@@ -276,13 +262,12 @@ export class SessionService {
   }
 
   private buildSnapshot(): VideoSaveInteractiveState {
-    return buildInteractiveStateSnapshot({
-      selectedObjectId: this.store.selectedObjectId(),
-      interactionMode: this.store.interactionMode(),
-      currentFrameIdx: this.store.targetFrameIdx(),
-      pointsByFrame: this.store.points(),
-      masksByFrame: this.store.masks(),
-    });
+    return {
+      version: 1,
+      selected_object_id: this.store.selectedObjectId(),
+      interaction_mode: this.store.interactionMode(),
+      current_frame_idx: this.store.targetFrameIdx(),
+    };
   }
 
   save(): void {

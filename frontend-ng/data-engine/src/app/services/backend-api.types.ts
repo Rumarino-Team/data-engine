@@ -54,9 +54,6 @@ export interface VideoAddPointsResponse extends AnnotationSnapshot {
   request_frame_idx: number;
   frame_idx: number;
   frame_file: string;
-  out_obj_ids: number[];
-  out_masks: LiveMask[];
-  mask_encoding?: 'rle' | 'mixed';
   mask_pixel_counts: Record<number, number>;
   mask_shapes: Record<number, [number, number]>;
   single_frame_fallback_used?: boolean;
@@ -105,8 +102,8 @@ export interface VideoSaveInteractiveState {
   selected_object_id?: number | null;
   interaction_mode?: 'positive' | 'negative' | null;
   current_frame_idx?: number | null;
-  points: InteractivePoint[];
-  live_masks: InteractiveMaskRle[];
+  points?: InteractivePoint[];
+  live_masks?: InteractiveMaskRle[];
 }
 
 export interface VideoPrompt {
@@ -124,9 +121,12 @@ export interface VideoAnnotations {
   next_object_id: number;
   objects: Record<string, VideoObject>;
   prompts: VideoPrompt[];
+  mask_overrides?: InteractiveMaskRle[];
+  input_revisions?: Record<string, number>;
 }
 
 export interface AnnotationSnapshot {
+  mask_data?: VideoMaskDataResponse;
   session_id: string | null;
   state_epoch: number;
   annotations: VideoAnnotations | null;
@@ -186,8 +186,12 @@ export interface PackedBitMask {
 export type LiveMask = VideoMaskObjectData | PackedBitMask | boolean[][];
 
 export interface VideoMaskDataResponse {
+  session_id: string;
+  annotation_revision: number;
+  state_epoch: number;
+  sources: Record<string, 'live' | 'manifest' | 'override'>;
   frame_idx: number;
-  objects: { [obj_id: string]: VideoMaskObjectData };
+  objects: { [obj_id: string]: VideoMaskObjectData | PackedBitMask };
 }
 
 export interface TrackPromptPointsRequest {

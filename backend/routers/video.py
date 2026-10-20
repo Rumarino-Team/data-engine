@@ -55,8 +55,9 @@ async def add_new_points_or_box_route(request: VideoAddPointsOrBoxRequest,
 
 
 @router.post("/video/add_new_mask")
-async def add_new_mask_route(request: VideoAddMaskRequest):
-    return await add_new_mask(request)
+async def add_new_mask_route(request: VideoAddMaskRequest,
+                             precondition: AnnotationPrecondition = Depends(annotation_precondition)):
+    return await add_new_mask(request, precondition)
 
 
 @router.post("/video/save")

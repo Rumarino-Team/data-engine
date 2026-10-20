@@ -63,9 +63,16 @@ class VideoPropagateRequest(BaseModel):
     max_mask_values_in_response: Optional[int] = None
 
 class VideoAddMaskRequest(BaseModel):
-    frame_idx: int
-    obj_id: int
+    model_config = ConfigDict(extra="forbid")
+    frame_idx: int = Field(ge=0)
+    obj_id: int = Field(ge=1)
     mask: list[list[bool]]
+
+    @model_validator(mode="after")
+    def validate_mask(self):
+        if not self.mask or not self.mask[0] or any(len(row) != len(self.mask[0]) for row in self.mask):
+            raise ValueError("Mask must be a nonempty rectangular array.")
+        return self
 
 class VideoObjectUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)

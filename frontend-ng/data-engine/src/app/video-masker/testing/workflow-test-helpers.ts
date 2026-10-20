@@ -9,6 +9,8 @@ import {
   AnnotationPrecondition,
   ObjectCreationResponse,
   VideoObject,
+  LiveMask,
+  VideoMaskDataResponse,
 } from '../../services/backend.service';
 import { DesktopBridgeService } from '../../services/desktop-bridge.service';
 import { BackendConnectionService } from '../services/backend-connection.service';
@@ -43,12 +45,17 @@ export const makeResponse = (
       },
     ],
   },
+  mask_data: {
+    session_id: 'session-1',
+    annotation_revision: 1,
+    state_epoch: 3,
+    frame_idx: 5,
+    objects: { '1': { size: [2, 2], rle: [[0, 1]], bbox: [0, 0, 1, 1] } },
+    sources: { '1': 'live' },
+  },
   request_frame_idx: 5,
   frame_idx: 5,
   frame_file: '00005.jpg',
-  out_obj_ids: [1],
-  out_masks: [{ size: [2, 2], rle: [[0, 1]], bbox: [0, 0, 1, 1] }],
-  mask_encoding: 'rle',
   mask_pixel_counts: { 1: 1 },
   mask_shapes: { 1: [2, 2] },
   state_epoch: 3,
@@ -170,6 +177,14 @@ export function configureObjectMutationMocks(
     snapshot.annotations!.prompts = snapshot.annotations!.prompts.filter(
       (prompt) => prompt.frame_idx !== frame || prompt.obj_id !== id,
     );
+    snapshot.mask_data = {
+      session_id: snapshot.session_id!,
+      annotation_revision: snapshot.annotations!.revision,
+      state_epoch: snapshot.state_epoch,
+      frame_idx: frame,
+      objects: {},
+      sources: {},
+    };
     return of(snapshot);
   });
   backend.resetVideoState.mockImplementation(() =>
@@ -256,4 +271,58 @@ export function setAcceptedPoints(
       })),
     ),
   });
+}
+
+export function cachedMasks(pipeline: FramePipelineService): Map<number, Map<number, LiveMask>> {
+  const cache = (
+    pipeline as unknown as { state: { maskDataCache: Map<number, Record<string, LiveMask>> } }
+  ).state.maskDataCache;
+  return new Map(
+    [...cache].map(([frame, objects]) => [
+      frame,
+      new Map(Object.entries(objects).map(([id, mask]) => [Number(id), mask])),
+    ]),
+  );
+}
+
+export function seedMasks(
+  editor: { store: VideoMaskerStateStore; framePipeline: FramePipelineService },
+  masks: Map<number, Map<number, LiveMask>>,
+): void {
+  for (const [frame, objects] of masks) {
+    const encoded: VideoMaskDataResponse['objects'] = {};
+    for (const [id, mask] of objects) {
+      if (!Array.isArray(mask)) {
+        encoded[id] = mask;
+        continue;
+      }
+      const flat = mask.flat();
+      const rle: number[][] = [];
+      for (let i = 0; i < flat.length; ) {
+        if (!flat[i]) {
+          i++;
+          continue;
+        }
+        const start = i;
+        while (i < flat.length && flat[i]) i++;
+        rle.push([start, i - start]);
+      }
+      encoded[id] = {
+        size: [mask.length, mask[0].length],
+        rle,
+        bbox: [0, 0, mask[0].length, mask.length],
+      };
+    }
+    editor.framePipeline.acceptMaskData(
+      {
+        session_id: editor.store.sessionId()!,
+        annotation_revision: editor.store.annotationRevision()!,
+        state_epoch: editor.store.stateEpoch(),
+        frame_idx: frame,
+        objects: encoded,
+        sources: Object.fromEntries([...objects.keys()].map((id) => [id, 'live'])),
+      },
+      frame,
+    );
+  }
 }

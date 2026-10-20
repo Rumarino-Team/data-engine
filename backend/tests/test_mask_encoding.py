@@ -78,8 +78,9 @@ class LiveMaskResponseTests(unittest.TestCase):
         )
         self.state = SimpleNamespace(video_masker=self.masker,
                                      video_frame_files=["00000.jpg"], video_state_epoch=3,
-                                     annotations=SimpleNamespace(objects={1: {}}))
+                                     annotations=SimpleNamespace(objects={1: {}}, mask_overrides=[]))
         self.record = Mock()
+        self.frame_masks = {}
 
     def call(self, name, request):
         # Compile the actual endpoint body while substituting only runtime dependencies.
@@ -88,6 +89,9 @@ class LiveMaskResponseTests(unittest.TestCase):
         function = next(node for node in module.body if isinstance(node, ast.AsyncFunctionDef) and node.name == name)
         namespace = {"np": np, "state": self.state, "logger": logging.getLogger(__name__),
                      "encode_live_mask_payload": encode_live_mask_payload,
+                     "retain_interactive_masks": lambda frame, ids, masks: self.frame_masks.update(dict(zip(map(str, ids), masks))),
+                     "write_session_metadata": Mock(),
+                     "effective_mask_data": lambda frame: {"objects": self.frame_masks},
                      "mask_logits_to_2d_bool": lambda mask: np.asarray(mask, dtype=bool),
                      "foreground_operation": nullcontext, "prompt_runtime_edit": nullcontext,
                      "AnnotationPrecondition": object, "validate_annotation_precondition": Mock(), "annotation_snapshot": lambda: {}, "record_prompt_event": self.record,
@@ -103,14 +107,13 @@ class LiveMaskResponseTests(unittest.TestCase):
         mask = np.indices((17, 19)).sum(axis=0) % 2 == 0
         self.masker.add_new_points_or_box.return_value = (0, [1], [mask])
         result = self.call("add_new_points_or_box", self.request())
-        self.assertEqual(result["out_masks"][0]["encoding"], "packed-bits")
+        self.assertEqual(result["mask_data"]["objects"]["1"]["encoding"], "packed-bits")
         self.assertEqual(result["mask_shapes"], {1: [17, 19]})
         self.assertEqual(result["mask_pixel_counts"], {1: int(mask.sum())})
 
     def test_point_response_contains_encoded_masks_and_matching_metadata(self):
         result = self.call("add_new_points_or_box", self.request())
-        self.assertEqual(result["mask_encoding"], "mixed")
-        self.assertEqual(result["out_masks"], [encode_mask_payload(self.mask)])
+        self.assertEqual(result["mask_data"]["objects"], {"1": encode_mask_payload(self.mask)})
         self.assertEqual(result["mask_pixel_counts"], {1: 1})
         self.assertEqual(result["mask_shapes"], {1: [2, 2]})
         self.assertEqual(result["state_epoch"], 3)
@@ -121,20 +124,16 @@ class LiveMaskResponseTests(unittest.TestCase):
         self.masker.propagate_in_video.return_value = {0: {1: self.mask}}
         result = self.call("add_new_points_or_box", self.request())
         self.assertTrue(result["single_frame_fallback_used"])
-        self.assertEqual(result["out_masks"], [encode_mask_payload(self.mask)])
+        self.assertEqual(result["mask_data"]["objects"], {"1": encode_mask_payload(self.mask)})
         self.assertEqual(result["mask_pixel_counts"], {1: 1})
 
     def test_empty_result_remains_encoded_and_identifiable(self):
         self.masker.add_new_points_or_box.return_value = (0, [1], [np.zeros((2, 2), dtype=bool)])
         result = self.call("add_new_points_or_box", self.request())
-        self.assertEqual(result["out_masks"][0]["rle"], [])
+        self.assertEqual(result["mask_data"]["objects"]["1"]["rle"], [])
         self.assertEqual(result["mask_pixel_counts"], {1: 0})
         self.assertFalse(result["single_frame_fallback_used"])
 
-    def test_add_mask_response_uses_the_same_encoding(self):
-        result = self.call("add_new_mask", SimpleNamespace(frame_idx=0, obj_id=1, mask=self.mask.tolist()))
-        self.assertEqual(result["mask_encoding"], "mixed")
-        self.assertEqual(result["out_masks"], [encode_mask_payload(self.mask)])
 
 
 if __name__ == "__main__":

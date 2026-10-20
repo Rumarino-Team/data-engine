@@ -1,3 +1,4 @@
+import { cachedMasks, seedMasks } from '../testing/workflow-test-helpers';
 import { setAcceptedPoints } from '../testing/workflow-test-helpers';
 import { VideoAddPointsResponse } from '../../services/backend.service';
 import { TestBed } from '@angular/core/testing';
@@ -56,8 +57,8 @@ describe('point-editing workflows', () => {
     await pending;
     expect(editor.store.displayedFrameIdx()).toBe(8);
     expect(editor.store.points().get(5)?.get(1)).toHaveLength(1);
-    expect(editor.store.masks().has(5)).toBe(true);
-    expect(editor.store.masks().has(8)).toBe(false);
+    expect(cachedMasks(editor.framePipeline).has(5)).toBe(true);
+    expect(cachedMasks(editor.framePipeline).has(8)).toBe(false);
   });
 
   it('recovers a rejected last-point removal using accepted state', async () => {
@@ -187,7 +188,8 @@ describe('point-editing workflows', () => {
       const replacementPoints = new Map([[5, new Map([[1, [{ x: 50, y: 60, label: 0 }]]])]]);
       const replacementMasks = new Map([[5, new Map([[1, [[false]]]])]]);
       setAcceptedPoints(editor.store, replacementPoints);
-      editor.store.masks.set(replacementMasks);
+      seedMasks(editor, replacementMasks);
+      const encodedReplacement = cachedMasks(editor.framePipeline);
       if (outcome === 'success') {
         response$.next(makeResponse({}));
         response$.complete();
@@ -197,7 +199,7 @@ describe('point-editing workflows', () => {
       await pending;
       expect(editor.store.stateEpoch()).toBe(4);
       expect(editor.store.points()).toEqual(replacementPoints);
-      expect(editor.store.masks()).toBe(replacementMasks);
+      expect(cachedMasks(editor.framePipeline)).toEqual(encodedReplacement);
       expect(editor.store.isPointRequestInFlight()).toBe(false);
     },
   );
@@ -218,7 +220,7 @@ describe('point-editing workflows', () => {
     response$.complete();
     await pending;
     expect(editor.store.stateEpoch()).toBe(4);
-    expect(editor.store.masks().size).toBe(0);
+    expect(cachedMasks(editor.framePipeline).size).toBe(0);
     expect(editor.store.lastDiscardReason()).toContain('editing state changed');
   });
 
@@ -254,7 +256,7 @@ describe('point-editing workflows', () => {
       expect.objectContaining({ frame_idx: 5 }),
       { session_id: 'session-1', expected_revision: 0 },
     );
-    expect(editor.store.masks().get(5)?.get(1)).toEqual({
+    expect(cachedMasks(editor.framePipeline).get(5)?.get(1)).toEqual({
       size: [2, 2],
       rle: [[0, 1]],
       bbox: [0, 0, 1, 1],
@@ -269,21 +271,9 @@ describe('point-editing workflows', () => {
 
     await editor.prompts.addPoint(10, 20, 1, 5);
 
-    expect(editor.store.masks().get(5)?.get(1)).toBeUndefined();
+    expect(cachedMasks(editor.framePipeline).get(5)?.get(1)).toBeUndefined();
     expect(editor.store.points().get(5)?.get(1)?.length ?? 0).toBe(0);
     expect(editor.store.lastDiscardReason()).toContain('frame mismatch');
-  });
-
-  it('accepts boolean-grid responses from an older backend', async () => {
-    const mask = [
-      [true, false],
-      [false, false],
-    ];
-    backendMock.addNewPointsOrBox.mockReturnValue(
-      of(makeResponse({ out_masks: [mask], mask_encoding: undefined })),
-    );
-    await editor.prompts.addPoint(12, 24, 1, 5);
-    expect(editor.store.masks().get(5)?.get(1)).toBe(mask);
   });
 
   it('accepts packed masks with matching pixel metadata', async () => {
@@ -293,61 +283,52 @@ describe('point-editing workflows', () => {
       data: 'gA==',
     };
     backendMock.addNewPointsOrBox.mockReturnValue(
-      of(makeResponse({ out_masks: [mask], mask_encoding: 'mixed' })),
+      of(
+        makeResponse({
+          mask_data: { ...makeResponse({}).mask_data!, objects: { '1': mask } },
+        }),
+      ),
     );
     await editor.prompts.addPoint(12, 24, 1, 5);
-    expect(editor.store.masks().get(5)?.get(1)).toBe(mask);
+    expect(cachedMasks(editor.framePipeline).get(5)?.get(1)).toBe(mask);
   });
 
   it.each([
-    { out_masks: [] },
-    {
-      out_masks: [{ size: [2, 2], encoding: 'packed-bits', data: 'gQ==' }],
-      mask_encoding: 'mixed',
-    },
-    {
-      out_masks: [{ size: [2, 2], encoding: 'packed-bits', data: 'wA==' }],
-      mask_encoding: 'mixed',
-    },
-    { out_masks: [{ size: [2, 2], rle: [[3, 2]], bbox: [0, 0, 2, 2] }] },
-    { mask_pixel_counts: { 1: 2 } },
-    { mask_shapes: { 1: [3, 2] } },
-  ])('rejects malformed encoded responses before applying masks (%j)', async (overrides) => {
-    const previous = {
-      size: [2, 2] as [number, number],
-      rle: [],
-      bbox: [0, 0, 0, 0] as [number, number, number, number],
-    };
-    editor.store.masks.set(new Map([[5, new Map([[1, previous]])]]));
-    backendMock.addNewPointsOrBox.mockReturnValue(
-      of(makeResponse(overrides as Partial<VideoAddPointsResponse>)),
-    );
+    { size: [2, 2], encoding: 'packed-bits', data: 'gQ==' },
+    { size: [2, 2], rle: [[3, 2]], bbox: [0, 0, 2, 2] },
+  ])('recovers after malformed effective mask payloads (%j)', async (mask) => {
+    const response = makeResponse({});
+    response.mask_data!.objects['1'] = mask as NonNullable<
+      VideoAddPointsResponse['mask_data']
+    >['objects']['1'];
+    backendMock.addNewPointsOrBox.mockReturnValue(of(response));
     await editor.prompts.addPoint(12, 24, 1, 5);
-    expect(editor.store.masks().get(5)?.get(1)).toBe(previous);
-    expect(editor.store.points().get(5)?.get(1)?.length ?? 0).toBe(0);
+    expect(cachedMasks(editor.framePipeline).size).toBe(0);
+    expect(editor.store.annotationRecoveryRequested()).toBe(true);
   });
 
   it('discards stale epoch responses and clears live masks', async () => {
     const existingMasks = new Map<number, Map<number, boolean[][]>>();
     existingMasks.set(2, new Map([[1, [[true]]]]));
-    editor.store.masks.set(existingMasks);
-    editor.store.liveEditedObjectFrames.set(new Map([[2, new Set([1])]]));
+    seedMasks(editor, existingMasks);
 
     backendMock.addNewPointsOrBox.mockReturnValue(of(makeResponse({ state_epoch: 4 })));
 
     await editor.prompts.addPoint(14, 18, 1, 5);
 
     expect(editor.store.stateEpoch()).toBe(4);
-    expect(editor.store.masks().size).toBe(0);
-    expect(editor.store.liveEditedObjectFrames().size).toBe(0);
+    expect(cachedMasks(editor.framePipeline).size).toBe(0);
     expect(editor.store.lastDiscardReason()).toContain('epoch mismatch');
   });
 
-  it('keeps frame/object marked as live-edited even when returned mask is empty', async () => {
+  it('accepts empty interactive results without local suppression markers', async () => {
     backendMock.addNewPointsOrBox.mockReturnValue(
       of(
         makeResponse({
-          out_masks: [{ size: [2, 2], rle: [], bbox: [0, 0, 0, 0] }],
+          mask_data: {
+            ...makeResponse({}).mask_data!,
+            objects: { '1': { size: [2, 2], rle: [], bbox: [0, 0, 0, 0] } },
+          },
           mask_pixel_counts: { 1: 0 },
         }),
       ),
@@ -355,11 +336,10 @@ describe('point-editing workflows', () => {
 
     await editor.prompts.addPoint(30, 40, 1, 5);
 
-    expect(editor.store.liveEditedObjectFrames().get(5)?.has(1)).toBe(true);
     expect(editor.store.lastMaskPixelCount()).toBe(0);
   });
 
-  it('does not mark an object live-edited until the point mask response returns', async () => {
+  it('keeps masks unchanged while a prompt preview is pending', async () => {
     const response$ = new Subject<VideoAddPointsResponse>();
     backendMock.addNewPointsOrBox.mockReturnValue(response$);
 
@@ -367,13 +347,10 @@ describe('point-editing workflows', () => {
 
     expect(editor.store.points().get(5)?.get(1)).toBeUndefined();
     expect(editor.store.previewPoints().get(5)?.get(1)?.length).toBe(1);
-    expect(editor.store.liveEditedObjectFrames().get(5)?.has(1)).toBeFalsy();
 
     response$.next(makeResponse({}));
     response$.complete();
     await pendingRequest;
-
-    expect(editor.store.liveEditedObjectFrames().get(5)?.has(1)).toBe(true);
   });
 
   it('discards the preview and requests recovery when point update conflicts', async () => {

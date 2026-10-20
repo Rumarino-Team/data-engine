@@ -48,18 +48,7 @@ export class MaskPropagationService {
     if (!response) {
       return;
     }
-    const previousMasks = this.store.masks();
-    const previousLiveEdits = this.store.liveEditedObjectFrames();
     this.store.updateStateEpoch(response.state_epoch, 'propagation');
-    // The restored predictor has a new epoch, but propagation only replaces this range.
-    this.store.masks.set(
-      new Map([...previousMasks].filter(([frame]) => frame < startFrameIdx || frame > endFrameIdx)),
-    );
-    this.store.liveEditedObjectFrames.set(
-      new Map(
-        [...previousLiveEdits].filter(([frame]) => frame < startFrameIdx || frame > endFrameIdx),
-      ),
-    );
     const maskManifestPath = response.mask_manifest_path || response['state.mask_manifest_path'];
     this.store.hasManifestMasks.set(Boolean(maskManifestPath));
     if (response.tracked_points_skipped_reason) {

@@ -1,3 +1,4 @@
+import { cachedMasks } from '../testing/workflow-test-helpers';
 import { describe, beforeEach, expect, it } from 'vitest';
 import { of, throwError } from 'rxjs';
 import { createWorkflowFixture } from '../testing/workflow-test-helpers';
@@ -229,11 +230,7 @@ describe('session workflows', () => {
     expect(editor.store.interactionMode()).toBe('negative');
     expect(editor.store.targetFrameIdx()).toBe(4);
     expect(editor.store.points().get(4)?.get(1)?.length).toBe(1);
-    expect(editor.store.masks().get(4)?.get(1)).toEqual({
-      size: [2, 2],
-      rle: [[0, 1]],
-      bbox: [0, 0, 1, 1],
-    });
+    expect(cachedMasks(editor.framePipeline).size).toBe(0);
     expect(editor.store.objects()).toEqual([{ id: 1, label: 'buoy', color: '#ff6600' }]);
     expect(editor.store.selectedObjectId()).toBe(1);
     expect(backendMock.updateObject).not.toHaveBeenCalled();
@@ -465,8 +462,9 @@ describe('session workflows', () => {
     expect(interactiveState).toEqual(
       expect.objectContaining({
         version: 1,
-        points: expect.any(Array),
-        live_masks: expect.any(Array),
+        selected_object_id: 1,
+        interaction_mode: 'positive',
+        current_frame_idx: 0,
       }),
     );
     expect(interactiveState).not.toHaveProperty('objects');

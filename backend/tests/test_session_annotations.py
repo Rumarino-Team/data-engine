@@ -103,6 +103,113 @@ class SessionAnnotationsTests(unittest.TestCase):
         snapshot["annotations"]["prompts"][0]["points"][0][0] = 999
         self.assertEqual(state.annotations.prompts[0].points, [[1, 2]])
 
+    def seed_manifest(self):
+        from video.masks import manifest_frame_payload
+        from utils import write_mask_manifest
+        payload = manifest_frame_payload({1: np.ones((3, 3), dtype=bool)})
+        payload["input_revisions"] = {"1": state.annotations.input_revisions.get(1, 0)}
+        payload["overlay_path"] = "frame_00000_masks.png"
+        write_mask_manifest(self.session / "masks" / "manifest.json",
+                            {"num_frames": 1, "frames": {"0": payload}})
+        (self.session / "masks" / "frame_00000_masks.png").write_bytes(b"overlay")
+
+    def add_override(self, foreground=False):
+        with patch.object(service.cv2, "imread", return_value=np.zeros((3, 3, 3))):
+            return self.client.post("/video/add_new_mask", json={
+                "frame_idx": 0, "obj_id": 1, "mask": np.full((3, 3), foreground).tolist()})
+
+    def test_empty_override_wins_persists_and_replays_without_frontend_cache(self):
+        self.seed_manifest()
+        response = self.add_override()
+        self.assertEqual(response.status_code, 200)
+        mask_data = response.json()["mask_data"]
+        self.assertEqual(mask_data["objects"]["1"]["rle"], [])
+        self.assertEqual(mask_data["sources"], {"1": "override"})
+        self.assertEqual(self.client.get("/video/mask_data/0").json(), mask_data)
+        self.assertEqual(self.client.get("/video/mask_frame/0").status_code, 404)
+        self.assertEqual(self.metadata()["annotations"]["mask_overrides"][0]["counts"], [9])
+        state.interactive_masks = {}
+        self.masker.add_new_mask.reset_mock()
+        self.reopen()
+        self.masker.add_new_mask.assert_called_once()
+        self.assertFalse(self.masker.add_new_mask.call_args.kwargs["mask"].any())
+        self.assertEqual(self.client.get("/video/mask_data/0").json()["objects"], mask_data["objects"])
+
+    def test_prompt_replaces_override_and_clear_does_not_resurrect_propagation(self):
+        self.seed_manifest()
+        self.add_override(True)
+        with patch.object(service, "mask_logits_to_2d_bool", side_effect=lambda mask: mask > 0):
+            response = self.client.post("/video/add_new_points_or_box", json=PROMPT)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(state.annotations.mask_overrides, [])
+        mask_data = response.json()["mask_data"]
+        self.assertEqual(mask_data["sources"], {"1": "live"})
+        self.assertEqual(self.client.get("/video/mask_data/0").json(), mask_data)
+        self.reopen()
+        self.assertEqual(self.client.get("/video/mask_data/0").json()["objects"], mask_data["objects"])
+        self.client.post("/video/clear_all_prompts_in_frame", params={"frame_idx": 0, "obj_id": 1})
+        self.assertEqual(self.client.get("/video/mask_data/0").json()["objects"], {})
+        self.reopen()
+        self.assertEqual(self.client.get("/video/mask_data/0").json()["objects"], {})
+
+    def test_mask_preconditions_and_validation_reject_without_runtime_mutation(self):
+        request = {"frame_idx": 0, "obj_id": 1, "mask": [[True]]}
+        for headers, payload, expected in [
+            ({"X-Session-ID": "other"}, request, 409),
+            ({"X-Annotation-Revision": "99"}, request, 409),
+            ({}, {**request, "mask": [[True], []]}, 422),
+            ({}, {**request, "obj_id": 7}, 404),
+            ({}, {**request, "frame_idx": 2}, 404),
+            ({}, request, 400),
+        ]:
+            with self.subTest(payload=payload, headers=headers), patch.object(service.cv2, "imread", return_value=np.zeros((3, 3, 3))):
+                self.assertEqual(self.client.post("/video/add_new_mask", json=payload, headers=headers).status_code, expected)
+        self.masker.add_new_mask.assert_not_called()
+        self.masker.clear_all_prompts_in_frame.assert_not_called()
+        self.assertEqual(state.annotations.revision, 0)
+
+    def test_failed_override_persistence_restores_previous_mask_and_predictor(self):
+        self.add_override(True)
+        before = self.metadata()
+        with patch.object(service, "write_session_metadata", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.add_override(False)
+        self.assertEqual(state.annotations.snapshot(), before["annotations"])
+        self.assertEqual(self.metadata(), before)
+        self.assertTrue(self.masker.add_new_mask.call_args.kwargs["mask"].all())
+        self.assertEqual(self.client.get("/video/mask_data/0").json()["objects"]["1"]["rle"], [[0, 9]])
+
+    def test_input_changes_invalidate_masks_but_label_changes_do_not(self):
+        state.annotations.set_prompt(VideoPrompt(**PROMPT))
+        self.seed_manifest()
+        self.assertEqual(self.client.get("/video/mask_data/0").json()["sources"], {"1": "manifest"})
+        response = self.client.put("/video/objects/1", json={"label": "Renamed", "color": "#00ff00"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.client.get("/video/mask_data/0").json()["sources"], {"1": "manifest"})
+        state.annotations.set_prompt(VideoPrompt(**{**PROMPT, "points": [[2, 2]]}))
+        self.assertEqual(self.client.get("/video/mask_data/0").json()["objects"], {})
+        self.assertEqual(self.client.get("/video/mask_frame/0").status_code, 404)
+        state.annotations.set_prompt(VideoPrompt(**PROMPT))
+        self.assertEqual(self.client.get("/video/mask_data/0").json()["objects"], {})
+
+    def test_clear_delete_and_reset_invalidate_overrides_after_reopen(self):
+        for endpoint, params in [("clear_all_prompts_in_frame", {"frame_idx": 0, "obj_id": 1}),
+                                 ("reset_state", {}), ("remove_object", {"obj_id": 1})]:
+            with self.subTest(endpoint=endpoint):
+                self.add_override()
+                response = self.client.post("/video/" + endpoint, params=params)
+                self.assertEqual(response.status_code, 200)
+                self.reopen()
+                self.assertEqual(state.annotations.mask_overrides, [])
+                self.assertEqual(self.client.get("/video/mask_data/0").json()["objects"], {})
+
+    def test_reset_logically_invalidates_masks_when_file_cleanup_fails(self):
+        self.seed_manifest()
+        with patch.object(service.shutil, "rmtree"):
+            self.assertEqual(self.client.post("/video/reset_state").status_code, 200)
+        self.assertTrue((self.session / "masks" / "manifest.json").exists())
+        self.assertEqual(self.client.get("/video/mask_data/0").json()["objects"], {})
+
     def test_invalid_prompts_never_reach_predictor_or_change_revision(self):
         invalid = [
             {**PROMPT, "labels": []}, {**PROMPT, "points": [[1]]},
@@ -153,7 +260,7 @@ class SessionAnnotationsTests(unittest.TestCase):
         write_session_metadata()
         before = state.annotations.snapshot()
         with patch.object(service, "mask_logits_to_2d_bool", side_effect=lambda mask: mask > 0), \
-                patch("video.prompts.write_session_metadata", side_effect=OSError("disk full")):
+                patch("video.service.write_session_metadata", side_effect=OSError("disk full")):
             with self.assertRaises(OSError):
                 self.client.post("/video/add_new_points_or_box", json=PROMPT)
         self.assertEqual(state.annotations.snapshot(), before)
@@ -316,7 +423,7 @@ class SessionAnnotationsTests(unittest.TestCase):
         mask = {"frame_idx": 0, "obj_id": 1, "height": 1, "width": 1, "counts": [0, 1]}
         projection = interactive_state_projection({"points": list(reversed(points)), "live_masks": [mask]})
         self.assertEqual(projection["points"], points)
-        self.assertEqual(projection["live_masks"], [mask])
+        self.assertEqual(projection["live_masks"], [])
 
 
 if __name__ == "__main__":

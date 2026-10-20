@@ -1,4 +1,5 @@
-import { describe, beforeEach, expect, it, vi } from 'vitest';
+import { cachedMasks, seedMasks } from '../testing/workflow-test-helpers';
+import { describe, beforeEach, expect, it } from 'vitest';
 import { of } from 'rxjs';
 import { createWorkflowFixture } from '../testing/workflow-test-helpers';
 
@@ -10,7 +11,7 @@ describe('mask-propagation workflows', () => {
     ({ editor, backendMock } = createWorkflowFixture());
   });
 
-  it('loads the propagated manifest while preserving live masks outside the requested range', async () => {
+  it('invalidates rendering caches and refetches backend-selected masks after propagation', async () => {
     backendMock.propagateInVideo.mockReturnValue(
       of({
         job_id: 'job-propagate',
@@ -58,20 +59,13 @@ describe('mask-propagation workflows', () => {
     editor.store.propagationStartFrameIdx.set(1);
     editor.store.propagationEndFrameIdx.set(2);
     const originalMask = [[true, false]];
-    editor.store.masks.set(
-      new Map([0, 1, 2, 4].map((frame) => [frame, new Map([[1, originalMask]])])),
-    );
-    editor.store.liveEditedObjectFrames.set(
-      new Map([0, 1, 2, 4].map((frame) => [frame, new Set([1])])),
-    );
+    seedMasks(editor, new Map([0, 1, 2, 4].map((frame) => [frame, new Map([[1, originalMask]])])));
 
     await editor.propagation.propagate();
 
     expect(editor.store.hasManifestMasks()).toBe(true);
     expect(editor.store.stateEpoch()).toBe(3);
-    expect([...editor.store.masks().keys()]).toEqual([0, 4]);
-    expect(editor.store.masks().get(4)?.get(1)).toBe(originalMask);
-    expect([...editor.store.liveEditedObjectFrames().keys()]).toEqual([0, 4]);
+    expect([...cachedMasks(editor.framePipeline).keys()]).toEqual([]);
     expect(backendMock.propagateInVideo).toHaveBeenCalledWith({
       start_frame_idx: 1,
       max_frame_num_to_track: 2,

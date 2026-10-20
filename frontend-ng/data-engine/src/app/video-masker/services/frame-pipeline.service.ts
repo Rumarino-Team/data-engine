@@ -1,25 +1,24 @@
 import { Injectable, inject, untracked } from '@angular/core';
 import { firstValueFrom, Subject, takeUntil } from 'rxjs';
-import { BackendService, VideoMaskObjectData } from '../../services/backend.service';
+import { BackendService, VideoMaskDataResponse } from '../../services/backend.service';
 import { MaskOverlay } from './mask-texture';
 import { CanvasViewportService } from './canvas-viewport.service';
-import { DebugMaskSource } from '../state/video-masker-ui.types';
 import { VideoMaskerStateStore } from './video-masker-state.store';
-import { evictWithLimit, isObjectLiveEdited, maskHasForeground } from '../video-masker.util';
+import { evictWithLimit, encodedMaskPixelCount } from '../video-masker.util';
 
 interface FramePipelineState {
   frameLoadToken: number;
   pendingFrameIdx: number | null;
   frameLoadAnimationId: number | null;
   frameImageCache: Map<number, HTMLImageElement>;
-  maskDataCache: Map<number, { [objId: string]: VideoMaskObjectData }>;
+  maskDataCache: Map<number, VideoMaskDataResponse['objects']>;
   maxFrameCacheSize: number;
   frameCacheBytes: number;
   currentBaseImage: HTMLImageElement | null;
-  currentMaskObjects: { [objId: string]: VideoMaskObjectData };
+  currentMaskObjects: VideoMaskDataResponse['objects'];
 }
 
-type FrameMasks = { [objId: string]: VideoMaskObjectData };
+type FrameMasks = VideoMaskDataResponse['objects'];
 interface PendingImage {
   image: HTMLImageElement;
   token: number | null;
@@ -46,13 +45,14 @@ export class FramePipelineService {
   private readonly pendingMasks = new Map<number, PendingMasks>();
   // Estimated decoded RGBA pixels, excluding browser overhead and mask textures.
   private readonly maxFrameCacheBytes = 128 * 1024 * 1024;
-  private readonly removedObjectIds = new Set<number>();
+  private maskContext = '';
+  private readonly maskSources = new Map<number, VideoMaskDataResponse['sources']>();
   private readonly state: FramePipelineState = {
     frameLoadToken: 0,
     pendingFrameIdx: null,
     frameLoadAnimationId: null,
     frameImageCache: new Map<number, HTMLImageElement>(),
-    maskDataCache: new Map<number, { [objId: string]: VideoMaskObjectData }>(),
+    maskDataCache: new Map<number, VideoMaskDataResponse['objects']>(),
     maxFrameCacheSize: 24,
     frameCacheBytes: 0,
     currentBaseImage: null,
@@ -76,23 +76,68 @@ export class FramePipelineService {
 
   clearMaskDataCache(): void {
     this.maskGeneration++;
+    this.maskSources.clear();
     for (const pending of this.pendingMasks.values()) pending.cancel();
     this.pendingMasks.clear();
     this.state.maskDataCache.clear();
     this.state.currentMaskObjects = {};
   }
 
-  removeObject(objectId: number): void {
-    // Saved manifests can still contain deleted objects, even after a refetch.
-    this.removedObjectIds.add(objectId);
-    this.clearMaskDataCache();
+  private context(): string {
+    return JSON.stringify([
+      this.backend.getApiUrl(),
+      this.store.sessionId(),
+      this.store.annotationRevision(),
+      this.store.stateEpoch(),
+    ]);
+  }
+
+  private ensureMaskContext(): void {
+    const context = this.context();
+    if (context !== this.maskContext) {
+      this.clearMaskDataCache();
+      this.maskContext = context;
+    }
+  }
+
+  acceptMaskData(response: VideoMaskDataResponse | undefined, frameIdx: number): boolean {
+    this.ensureMaskContext();
+    if (
+      !response ||
+      response.frame_idx !== frameIdx ||
+      response.session_id !== this.store.sessionId() ||
+      response.annotation_revision !== this.store.annotationRevision() ||
+      response.state_epoch !== this.store.stateEpoch() ||
+      this.backend.getApiUrl() !== this.store.annotationsBackendUrl() ||
+      !response.objects ||
+      !response.sources
+    )
+      return false;
+    try {
+      for (const [id, mask] of Object.entries(response.objects)) {
+        if (
+          !this.store.annotations()?.objects[id] ||
+          !['live', 'manifest', 'override'].includes(response.sources[id])
+        )
+          return false;
+        encodedMaskPixelCount(mask);
+      }
+    } catch {
+      return false;
+    }
+    this.state.maskDataCache.set(frameIdx, response.objects);
+    this.maskSources.set(frameIdx, response.sources);
+    evictWithLimit(this.state.maskDataCache, this.state.maxFrameCacheSize);
+    evictWithLimit(this.maskSources, this.state.maxFrameCacheSize);
+    if (frameIdx === this.store.displayedFrameIdx())
+      this.state.currentMaskObjects = response.objects;
+    return true;
   }
 
   clearFrameCaches(): void {
     this.viewport.reset();
     this.cacheGeneration++;
     this.clearMaskDataCache();
-    this.removedObjectIds.clear();
     for (const [frameIdx] of this.pendingImages) this.cancelImage(frameIdx);
     this.state.frameImageCache.clear();
     this.state.frameCacheBytes = 0;
@@ -127,6 +172,7 @@ export class FramePipelineService {
       return;
     }
 
+    this.ensureMaskContext();
     const token = ++this.state.frameLoadToken;
     // Keep only the requested image and useful immediate neighbors in flight.
     for (const [index, pending] of this.pendingImages) {
@@ -150,7 +196,7 @@ export class FramePipelineService {
 
     this.store.isFrameLoading.set(true);
     // Fetch masks alongside the image rather than starting another round trip after it.
-    if (this.store.hasManifestMasks() && !this.state.maskDataCache.has(frameIdx)) {
+    if (!this.state.maskDataCache.has(frameIdx)) {
       void this.loadMaskDataForFrame(frameIdx);
     }
     const pending = this.pendingImages.get(frameIdx);
@@ -160,6 +206,7 @@ export class FramePipelineService {
 
   /** Repaint the frame that is currently displayed, if any. */
   redraw(): void {
+    this.ensureMaskContext();
     const frameIdx = this.store.displayedFrameIdx();
     if (frameIdx < 0 || !this.state.currentBaseImage || !this.attached) {
       return;
@@ -168,54 +215,16 @@ export class FramePipelineService {
   }
 
   private renderFrame(img: HTMLImageElement, frameIdx: number): void {
+    this.ensureMaskContext();
     const overlays: MaskOverlay[] = [];
-    const liveFrameMasks = this.store.masks().get(frameIdx);
-    const liveEditedObjectIds =
-      this.store.liveEditedObjectFrames().get(frameIdx) ?? new Set<number>();
-
-    if (this.store.hasManifestMasks() && Object.keys(this.state.currentMaskObjects).length > 0) {
-      for (const [objIdStr, maskData] of Object.entries(this.state.currentMaskObjects)) {
-        const objId = parseInt(objIdStr, 10);
-        if (
-          liveFrameMasks?.has(objId) ||
-          liveEditedObjectIds.has(objId) ||
-          this.removedObjectIds.has(objId)
-        ) {
-          continue;
-        }
-        const obj = this.store.objects().find((candidate) => candidate.id === objId);
-        overlays.push({ objectId: objId, source: maskData, color: obj?.color || '#ff9800' });
-      }
+    for (const [id, mask] of Object.entries(this.state.currentMaskObjects)) {
+      const object = this.store.objects().find((candidate) => candidate.id === Number(id));
+      if (object) overlays.push({ objectId: object.id, source: mask, color: object.color });
     }
-
-    if (liveFrameMasks) {
-      liveFrameMasks.forEach((mask, objId) => {
-        if (!maskHasForeground(mask)) {
-          return;
-        }
-        const obj = this.store.objects().find((candidate) => candidate.id === objId);
-        if (obj) {
-          overlays.push({ objectId: objId, source: mask, color: obj.color });
-        }
-      });
-    }
-
-    const selectedObjectId = this.store.selectedObjectId();
-    let maskSource: DebugMaskSource = 'none';
-    if (selectedObjectId !== null) {
-      const selectedLiveMask = liveFrameMasks?.get(selectedObjectId);
-      const hasLiveMask = Boolean(selectedLiveMask && maskHasForeground(selectedLiveMask));
-      if (hasLiveMask) {
-        maskSource = 'live';
-      } else if (
-        !liveFrameMasks?.has(selectedObjectId) &&
-        !isObjectLiveEdited(this.store.liveEditedObjectFrames(), frameIdx, selectedObjectId) &&
-        Boolean(this.state.currentMaskObjects[String(selectedObjectId)])
-      ) {
-        maskSource = 'manifest';
-      }
-    }
-    this.store.lastMaskSource.set(maskSource);
+    const selected = this.store.selectedObjectId();
+    this.store.lastMaskSource.set(
+      selected === null ? 'none' : (this.maskSources.get(frameIdx)?.[selected] ?? 'none'),
+    );
 
     const points = Array.from(this.store.previewPoints().get(frameIdx)?.values() ?? []).flat();
     const tracks = this.store.trackedPoints();
@@ -230,6 +239,7 @@ export class FramePipelineService {
     token: number,
   ): Promise<void> {
     if (token !== this.state.frameLoadToken || !this.attached) return;
+    this.ensureMaskContext();
     this.state.currentBaseImage = image;
     const cachedMasks = this.state.maskDataCache.get(frameIdx);
     if (cachedMasks) {
@@ -242,14 +252,14 @@ export class FramePipelineService {
     this.store.isFrameLoading.set(false);
     this.preloadNeighborFrames(frameIdx);
 
-    if (cachedMasks || !this.store.hasManifestMasks()) return;
+    if (cachedMasks) return;
     const generation = this.maskGeneration;
     const masks = await this.loadMaskDataForFrame(frameIdx);
     if (token !== this.state.frameLoadToken || generation !== this.maskGeneration || !masks) {
       return;
     }
     this.state.currentMaskObjects = masks;
-    if (Object.keys(masks).length) this.renderFrame(image, frameIdx);
+    this.renderFrame(image, frameIdx);
   }
 
   private cacheFrameImage(frameIdx: number, image: HTMLImageElement): void {
@@ -330,6 +340,8 @@ export class FramePipelineService {
   private loadMaskDataForFrame(frameIdx: number): Promise<FrameMasks | null> {
     const existing = this.pendingMasks.get(frameIdx);
     if (existing) return existing.promise;
+    this.ensureMaskContext();
+    const context = this.context();
     const generation = this.maskGeneration;
     const abort = new Subject<void>();
     let cancelled = false;
@@ -348,11 +360,14 @@ export class FramePipelineService {
         const response = await firstValueFrom(
           this.backend.getVideoMaskData(frameIdx).pipe(takeUntil(abort)),
         );
-        if (cancelled || generation !== this.maskGeneration) return null;
-        const masks = response.objects || {};
-        this.state.maskDataCache.set(frameIdx, masks);
-        evictWithLimit(this.state.maskDataCache, this.state.maxFrameCacheSize);
-        return masks;
+        if (
+          cancelled ||
+          generation !== this.maskGeneration ||
+          context !== this.context() ||
+          !this.acceptMaskData(response, frameIdx)
+        )
+          return null;
+        return response.objects;
       } catch (error) {
         if (!cancelled && generation === this.maskGeneration) console.error(error);
         return null;

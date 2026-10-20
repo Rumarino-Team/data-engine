@@ -26,7 +26,7 @@ from sessions.metadata import current_masks_dir, current_session_path, interacti
 from sessions.paths import path_is_relative_to, resolve_input_path, resolve_saved_session_layout, validate_video_input_path
 from utils import load_mask_manifest
 from video.io import copy_frames_directory_to_session, create_active_session, extract_video_to_session_frames
-from video.masks import mask_logits_to_2d_bool
+from video.masks import mask_logits_to_2d_bool, accepted_mask, retain_interactive_masks, effective_mask_data
 from video.manifest_cache import load_cached_mask_manifest
 from video.mask_encoding import encode_live_mask_payload
 from video.prompts import record_prompt_event, replay_annotation_prompts, prompt_runtime_edit
@@ -82,7 +82,7 @@ def initialize_video_state_from_resolved_input(
             if not isinstance(session_id, str) or not session_id.strip():
                 raise ValueError("Session identity must be a nonempty string.")
             annotations = SessionAnnotations.model_validate(session_metadata["annotations"])
-            if any(event.frame_idx >= len(indexed_frame_files) for event in annotations.prompts):
+            if any(event.frame_idx >= len(indexed_frame_files) for event in [*annotations.prompts, *annotations.mask_overrides]):
                 raise ValueError("Prompt frame is outside the video.")
             interactive_state = InteractiveState.model_validate(
                 session_metadata.get("interactive_state") or {}
@@ -91,6 +91,7 @@ def initialize_video_state_from_resolved_input(
             raise HTTPException(status_code=400, detail=f"Invalid session annotations or editor state: {error}") from error
         state.active_session_id = session_id
         state.annotations = annotations
+        state.interactive_masks = session_metadata.get("interactive_masks", {})
         restored_session_payload = {
             "annotations": state.annotations.snapshot(),
             "interactive_state": interactive_state_projection(interactive_state),
@@ -397,6 +398,9 @@ async def add_new_points_or_box(request: VideoAddPointsOrBoxRequest, preconditio
             raise HTTPException(status_code=404, detail="Prompt object does not exist.")
 
         with prompt_runtime_edit():
+            if any(mask.frame_idx == request.frame_idx and mask.obj_id == request.obj_id
+                   for mask in state.annotations.mask_overrides):
+                state.video_masker.clear_all_prompts_in_frame(request.frame_idx, request.obj_id)
             out_frame_idx, out_obj_ids, out_mask_logits = state.video_masker.add_new_points_or_box(
                 frame_idx=request.frame_idx,
                 obj_id=request.obj_id,
@@ -416,7 +420,10 @@ async def add_new_points_or_box(request: VideoAddPointsOrBoxRequest, preconditio
                 )
 
             normalized_obj_ids = [int(obj_id) for obj_id in out_obj_ids]
-            if len(normalized_obj_ids) != len(out_mask_logits):
+            if (len(normalized_obj_ids) != len(out_mask_logits)
+                    or len(set(normalized_obj_ids)) != len(normalized_obj_ids)
+                    or request.obj_id not in normalized_obj_ids
+                    or any(obj_id not in state.annotations.objects for obj_id in normalized_obj_ids)):
                 raise HTTPException(
                     status_code=500,
                     detail=(
@@ -474,6 +481,9 @@ async def add_new_points_or_box(request: VideoAddPointsOrBoxRequest, preconditio
 
             encoded_masks = [encode_live_mask_payload(mask) for mask in masks_list]
             record_prompt_event(request)
+            retain_interactive_masks(request.frame_idx, normalized_obj_ids, encoded_masks)
+            mask_data = effective_mask_data(request.frame_idx)
+            write_session_metadata()
             logger.info(
                 "Interactive mask response frame=%s obj=%s pixels=%s fallback=%s",
                 int(request.frame_idx),
@@ -484,39 +494,34 @@ async def add_new_points_or_box(request: VideoAddPointsOrBoxRequest, preconditio
 
             return {
                 **annotation_snapshot(),
+                "mask_data": mask_data,
                 "request_frame_idx": int(request.frame_idx),
                 "frame_idx": returned_frame_idx,
                 "frame_file": state.video_frame_files[returned_frame_idx],
-                "out_obj_ids": normalized_obj_ids,
-                "out_masks": encoded_masks,
-                "mask_encoding": "mixed",
                 "mask_pixel_counts": mask_pixel_counts,
                 "mask_shapes": mask_shapes,
                 "single_frame_fallback_used": used_single_frame_fallback,
                 "state_epoch": int(state.video_state_epoch),
             }
 
-async def add_new_mask(request: VideoAddMaskRequest):
+async def add_new_mask(request: VideoAddMaskRequest, precondition: AnnotationPrecondition):
     with foreground_operation():
+        validate_annotation_precondition(precondition)
         if state.video_masker is None:
             raise HTTPException(status_code=400, detail="Video masker not active.")
-
-        # Convert mask from list to numpy array
-        mask = np.array(request.mask, dtype=bool)
-
-        frame_idx, out_obj_ids, out_mask_logits = state.video_masker.add_new_mask(
-            frame_idx=request.frame_idx,
-            obj_id=request.obj_id,
-            mask=mask
-        )
-
-        masks_list = [encode_live_mask_payload(mask_logits_to_2d_bool(out_mask_logits[i])) for i in range(len(out_obj_ids))]
-        return {
-            "frame_idx": frame_idx,
-            "out_obj_ids": [int(obj_id) for obj_id in out_obj_ids],
-            "out_masks": masks_list,
-            "mask_encoding": "mixed",
-        }
+        if request.obj_id not in state.annotations.objects or request.frame_idx >= len(state.video_frame_files):
+            raise HTTPException(status_code=404, detail="Mask object or frame does not exist.")
+        mask = np.asarray(request.mask, dtype=bool)
+        image = cv2.imread(str(Path(state.video_dir) / state.video_frame_files[request.frame_idx]))
+        if image is None or mask.shape != image.shape[:2]:
+            raise HTTPException(status_code=400, detail="Mask dimensions must match the video frame.")
+        with prompt_runtime_edit():
+            state.video_masker.clear_all_prompts_in_frame(request.frame_idx, request.obj_id)
+            state.video_masker.add_new_mask(frame_idx=request.frame_idx, obj_id=request.obj_id, mask=mask)
+            state.annotations.set_mask(accepted_mask(request.frame_idx, request.obj_id, mask))
+            mask_data = effective_mask_data(request.frame_idx)
+            write_session_metadata()
+            return {**annotation_snapshot(), "mask_data": mask_data}
 
 async def save_video_session(request: VideoSaveRequest):
     with foreground_operation():
@@ -568,8 +573,10 @@ async def clear_all_prompts_in_frame(frame_idx: int, obj_id: int, precondition: 
         with prompt_runtime_edit():
             state.video_masker.clear_all_prompts_in_frame(frame_idx, obj_id)
             state.annotations.clear_prompts(frame_idx, obj_id)
+            mask_data = effective_mask_data(frame_idx)
             write_session_metadata()
-            return {**annotation_snapshot(), "message": "Cleared all prompts in frame successfully"}
+            return {**annotation_snapshot(), "mask_data": mask_data,
+                    "message": "Cleared all prompts in frame successfully"}
 
 async def remove_object(obj_id: int, precondition: AnnotationPrecondition):
     with foreground_operation():
@@ -645,29 +652,12 @@ async def get_mask_manifest():
     }
 
 async def get_mask_data(frame_idx: int):
-    if state.video_dir is None:
-        raise HTTPException(status_code=400, detail="Video not initialized")
-    if frame_idx < 0:
-        raise HTTPException(status_code=404, detail="Frame index out of bounds")
-
-    masks_dir = current_masks_dir()
-    manifest_path = Path(state.mask_manifest_path) if state.mask_manifest_path else (masks_dir / "manifest.json" if masks_dir is not None else Path(state.video_dir) / "masks" / "manifest.json")
-    if not manifest_path.exists():
-        return {"frame_idx": frame_idx, "objects": {}}
-
-    manifest = load_cached_mask_manifest(manifest_path)
-    num_frames = int(manifest.get("num_frames", 0))
-    if frame_idx >= num_frames:
-        raise HTTPException(status_code=404, detail="Frame index out of bounds")
-
-    frame_payload = manifest.get("frames", {}).get(str(frame_idx), {"objects": {}})
-    active_object_ids = {str(key) for key in state.annotations.objects}
-    objects_payload = {obj_id: mask for obj_id, mask in frame_payload.get("objects", {}).items()
-                       if str(obj_id) in active_object_ids}
-    return {
-        "frame_idx": int(frame_idx),
-        "objects": objects_payload,
-    }
+    with foreground_lock:
+        if state.video_dir is None:
+            raise HTTPException(status_code=400, detail="Video not initialized")
+        if not 0 <= frame_idx < len(state.video_frame_files):
+            raise HTTPException(status_code=404, detail="Frame index out of bounds")
+        return effective_mask_data(frame_idx)
 
 async def get_video_frame(frame_idx: int):
     if state.video_dir is None or not state.video_frame_files:
@@ -682,14 +672,19 @@ async def get_video_frame(frame_idx: int):
     return FileResponse(str(file_path))
 
 async def get_video_mask_frame(frame_idx: int):
-    if state.video_dir is None:
-        raise HTTPException(status_code=400, detail="Video not initialized")
-
-    if frame_idx < 0:
-        raise HTTPException(status_code=404, detail="Frame index out of bounds")
-
-    masks_dir = current_masks_dir() or Path(state.video_dir) / "masks"
-    file_path = masks_dir / f"frame_{frame_idx:05d}_masks.png"
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail=f"Mask frame not found: {file_path}")
-    return FileResponse(str(file_path))
+    with foreground_lock:
+        if state.video_dir is None or not 0 <= frame_idx < len(state.video_frame_files):
+            raise HTTPException(status_code=404, detail="Frame index out of bounds")
+        masks_dir = current_masks_dir()
+        manifest_path = masks_dir / "manifest.json" if masks_dir else None
+        if not manifest_path or not manifest_path.exists():
+            raise HTTPException(status_code=404, detail="Mask frame not available")
+        frame = load_cached_mask_manifest(manifest_path).get("frames", {}).get(str(frame_idx), {})
+        effective = effective_mask_data(frame_idx)
+        if (not frame.get("overlay_path") or effective["objects"] != frame.get("objects") or
+                any(source != "manifest" for source in effective["sources"].values())):
+            raise HTTPException(status_code=404, detail="Mask overlay is obsolete")
+        file_path = (masks_dir / frame["overlay_path"]).resolve()
+        if not path_is_relative_to(file_path, masks_dir.resolve()) or not file_path.is_file():
+            raise HTTPException(status_code=404, detail="Mask frame not available")
+        return FileResponse(str(file_path))

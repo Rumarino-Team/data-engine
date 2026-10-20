@@ -3,6 +3,8 @@ import cv2
 from pathlib import Path
 import shutil
 import json
+import os
+import tempfile
 from typing import Any
 
 
@@ -114,7 +116,8 @@ def save_single_video_mask_frame(frame_files, masks_dir, frame_idx, obj_masks):
 
     output_filename = f"frame_{frame_idx:05d}_masks.png"
     output_path = masks_dir / output_filename
-    cv2.imwrite(str(output_path), output_frame)
+    if not cv2.imwrite(str(output_path), output_frame):
+        raise OSError(f"Unable to write mask overlay: {output_path}")
     return str(output_path)
 
 
@@ -138,9 +141,20 @@ def build_empty_mask_manifest(
 
 
 def write_mask_manifest(manifest_path: Path, manifest: dict[str, Any]) -> None:
+    # Readers must see either complete generation, never a partially overwritten manifest.
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    with manifest_path.open("w", encoding="utf-8") as handle:
-        json.dump(manifest, handle, ensure_ascii=True, separators=(",", ":"))
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=manifest_path.parent,
+                                         prefix=".manifest-", suffix=".json", delete=False) as handle:
+            temporary_path = Path(handle.name)
+            json.dump(manifest, handle, ensure_ascii=True, separators=(",", ":"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, manifest_path)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def load_mask_manifest(manifest_path: Path) -> dict[str, Any]:

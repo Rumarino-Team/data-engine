@@ -3,7 +3,6 @@ import {
   ApiHealthStatus,
   BackendJob,
   TrackPromptPointMetadata,
-  LiveMask,
   VideoAnnotations,
   AnnotationSnapshot,
 } from '../../services/backend.service';
@@ -121,7 +120,6 @@ export class VideoMaskerStateStore {
   selectedObjectId = signal<number | null>(null);
   interactionMode = signal<'positive' | 'negative'>('positive');
 
-  masks = signal<Map<number, Map<number, LiveMask>>>(new Map());
   readonly points = this.acceptedPoints;
   pendingPointEdit = signal<{ frameIdx: number; objId: number; points: Point[] } | null>(null);
   previewPoints = computed(() => {
@@ -148,7 +146,6 @@ export class VideoMaskerStateStore {
       ),
     }));
   });
-  liveEditedObjectFrames = signal<Map<number, Set<number>>>(new Map());
   hasManifestMasks = signal<boolean>(false);
   saveName = signal<string>('');
 
@@ -186,19 +183,15 @@ export class VideoMaskerStateStore {
       return;
     }
     if (resolution.shouldClearLiveState) {
-      this.masks.set(new Map());
-      this.liveEditedObjectFrames.set(new Map());
       this.lastDiscardReason.set(
-        `State epoch changed (${this.stateEpoch()} -> ${resolution.normalizedEpoch}) during ${source}; cleared live masks.`,
+        `State epoch changed (${this.stateEpoch()} -> ${resolution.normalizedEpoch}) during ${source}; invalidated mask cache.`,
       );
     }
     this.stateEpoch.set(resolution.normalizedEpoch);
   }
 
   resetInteractiveMaps(): void {
-    this.masks.set(new Map());
     this.pendingPointEdit.set(null);
-    this.liveEditedObjectFrames.set(new Map());
   }
 
   resetDebugState(): void {

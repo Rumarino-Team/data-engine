@@ -20,17 +20,11 @@ def current_masks_dir() -> Optional[Path]:
     return session_path / "masks" if session_path is not None else None
 
 def interactive_state_projection(raw_state: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-    """Project the accepted annotations into editor points and validate generated-mask caches."""
+    """Project accepted points and editor preferences; never trust client mask caches."""
     interactive = dict(raw_state or {})
-    accepted_points = state.annotations.interactive_points()
-    def point_keys(points):
-        return sorted((point["frame_idx"], point["obj_id"], point["x"], point["y"], point["label"])
-                      for point in points)
-    masks_match_prompts = point_keys(interactive.get("points", [])) == point_keys(accepted_points)
     interactive["version"] = 1
-    interactive["points"] = accepted_points
-    interactive["live_masks"] = [mask for mask in interactive.get("live_masks", [])
-                                 if masks_match_prompts and mask.get("obj_id") in state.annotations.objects]
+    interactive["points"] = state.annotations.interactive_points()
+    interactive["live_masks"] = []
     if interactive.get("selected_object_id") not in state.annotations.objects:
         interactive["selected_object_id"] = None
     return interactive
@@ -83,11 +77,9 @@ def write_session_metadata(extra: Optional[dict[str, Any]] = None) -> None:
     if extra:
         metadata.update(extra)
     # Editor caches cannot replace accepted annotation inputs.
+    metadata["interactive_masks"] = state.interactive_masks
     metadata["annotations"] = state.annotations.snapshot()
     metadata["interactive_state"] = interactive_state_projection(metadata.get("interactive_state"))
-    previous_annotations = existing_metadata.get("annotations")
-    if isinstance(previous_annotations, dict) and previous_annotations.get("prompts") != metadata["annotations"]["prompts"]:
-        metadata["interactive_state"]["live_masks"] = []
     metadata["schema_version"] = 3
     # A failed write must leave the last complete annotations readable.
     temporary_path = None

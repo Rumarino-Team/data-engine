@@ -3,7 +3,7 @@ import type { BackendJob } from '../../services/backend.service';
 export type ToastSeverity = 'error' | 'warning' | 'info' | 'success';
 export type LoadSourceMode = 'frames_dir' | 'video_file' | 'saved_session_dir';
 export type TrackingOverlayStyle = 'point' | 'short' | 'full';
-export type DebugMaskSource = 'live' | 'manifest' | 'none';
+export type DebugMaskSource = 'live' | 'manifest' | 'override' | 'none';
 
 export interface AppToast {
   id: number;

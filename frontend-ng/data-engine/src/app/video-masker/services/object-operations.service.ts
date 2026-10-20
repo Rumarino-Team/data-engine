@@ -127,7 +127,7 @@ export class ObjectOperationsService {
             const removed = previousIds.filter(
               (id) => !this.store.objects().some((object) => object.id === id),
             );
-            if (removed.length) this.clearRemovedRenderCaches(removed);
+            if (removed.length) this.clearRemovedRenderCaches();
             const selectId = selectCreated?.(snapshot);
             if (
               selectId !== undefined &&
@@ -136,6 +136,7 @@ export class ObjectOperationsService {
               this.store.selectedObjectId.set(selectId);
             }
             this.framePipeline.redraw();
+            this.framePipeline.scheduleFrameLoad(this.store.targetFrameIdx());
             resolve(true);
           },
           error: (error) => {
@@ -157,23 +158,9 @@ export class ObjectOperationsService {
   }
 
   /** Generated masks and textures are view caches; accepted prompts came from the snapshot. */
-  private clearRemovedRenderCaches(ids: number[]): void {
-    const masks = new Map(this.store.masks());
-    for (const [frame, objects] of masks) {
-      const retained = new Map([...objects].filter(([id]) => !ids.includes(id)));
-      if (retained.size) masks.set(frame, retained);
-      else masks.delete(frame);
-    }
-    this.store.masks.set(masks);
-    const edited = new Map(this.store.liveEditedObjectFrames());
-    for (const [frame, objects] of edited) {
-      const retained = new Set([...objects].filter((id) => !ids.includes(id)));
-      if (retained.size) edited.set(frame, retained);
-      else edited.delete(frame);
-    }
-    this.store.liveEditedObjectFrames.set(edited);
+  private clearRemovedRenderCaches(): void {
     this.store.invalidateTracking();
-    ids.forEach((id) => this.framePipeline.removeObject(id));
+    this.framePipeline.clearMaskDataCache();
     this.framePipeline.scheduleFrameLoad(this.store.targetFrameIdx());
   }
 }

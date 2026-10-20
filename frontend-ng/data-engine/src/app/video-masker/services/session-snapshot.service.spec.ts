@@ -1,3 +1,4 @@
+import { cachedMasks, seedMasks } from '../testing/workflow-test-helpers';
 import { setAcceptedPoints } from '../testing/workflow-test-helpers';
 import { TestBed } from '@angular/core/testing';
 import { Subject, of, throwError } from 'rxjs';
@@ -264,27 +265,27 @@ describe('session annotation snapshots', () => {
     expect(editor.store.toasts()[0].title).toBe('Annotation refresh failed');
   });
 
-  it('retains live masks when recovery only changes an object label', async () => {
+  it('refetches backend masks when recovery changes an object label', async () => {
     const { editor, backendMock } = fixture;
     connect();
     const masks = new Map([[2, new Map([[1, [[true]]]])]]);
-    editor.store.masks.set(masks);
+    seedMasks(editor, masks);
     const renamed = snapshot(2);
     renamed.annotations!.objects['1'].label = 'Renamed hand';
     backendMock.getVideoInfo.mockReturnValue(of(renamed));
     expect(await editor.sessions.refreshAnnotations()).toBe(true);
-    expect(editor.store.masks()).toBe(masks);
+    expect(cachedMasks(editor.framePipeline).size).toBe(0);
   });
 
   it('invalidates live masks when accepted box inputs change without changing points', async () => {
     const { editor, backendMock } = fixture;
     connect();
-    editor.store.masks.set(new Map([[2, new Map([[1, [[true]]]])]]));
+    seedMasks(editor, new Map([[2, new Map([[1, [[true]]]])]]));
     const boxed = snapshot(2);
     boxed.annotations!.prompts[0].box = [0, 0, 30, 30];
     backendMock.getVideoInfo.mockReturnValue(of(boxed));
     expect(await editor.sessions.refreshAnnotations()).toBe(true);
-    expect(editor.store.masks().size).toBe(0);
+    expect(cachedMasks(editor.framePipeline).size).toBe(0);
   });
 
   it('refreshes once on reconnect and defers that recovery while editing', async () => {

@@ -1,6 +1,7 @@
 from typing import Optional
 from contextlib import contextmanager
 import logging
+from video.masks import decode_override
 from fastapi import HTTPException
 import sam2_video_masker as svm
 from core.jobs import update_job
@@ -19,7 +20,6 @@ def record_prompt_event(request: "VideoAddPointsOrBoxRequest"):
         "clear_old_points": bool(request.clear_old_points),
     })
     state.annotations.set_prompt(event)
-    write_session_metadata()
 
 
 def replay_annotation_prompts() -> None:
@@ -29,6 +29,10 @@ def replay_annotation_prompts() -> None:
             points=event["points"] or None, labels=event["labels"] or None,
             clear_old_points=event["clear_old_points"], box=event["box"],
         )
+    for mask in state.annotations.mask_overrides:
+        state.video_masker.add_new_mask(frame_idx=mask.frame_idx, obj_id=mask.obj_id,
+                                       mask=decode_override(mask))
+
 
 def restore_video_masker_from_prompt_events(
     *,
@@ -80,12 +84,16 @@ def prompt_runtime_edit():
     Caller holds foreground_operation. Encode results before persisting acceptance.
     This does not make mask artifact deletion a filesystem transaction.
     """
+    # Frame entries are replaced, never mutated by foreground edits.
+    previous_masks = state.interactive_masks
+    state.interactive_masks = dict(previous_masks)
     previous = state.annotations
     state.annotations = previous.model_copy(deep=True)
     try:
         yield
     except Exception:
         state.annotations = previous
+        state.interactive_masks = previous_masks
         try:
             state.video_masker.reset_state()
             replay_annotation_prompts()

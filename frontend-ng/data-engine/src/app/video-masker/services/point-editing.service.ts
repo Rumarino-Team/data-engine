@@ -1,17 +1,11 @@
 import { DestroyRef, Injectable, inject } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { firstValueFrom } from 'rxjs';
-import { BackendService, LiveMask, VideoAddPointsResponse } from '../../services/backend.service';
+import { BackendService, VideoAddPointsResponse } from '../../services/backend.service';
 import { VideoMaskerStateStore, Point } from './video-masker-state.store';
 import { FramePipelineService } from './frame-pipeline.service';
 import { ToastService } from './toast.service';
-import {
-  getErrorMessage,
-  getMaskPixelCount,
-  encodedMaskPixelCount,
-  markObjectLiveEdited,
-  unmarkObjectLiveEdited,
-} from '../video-masker.util';
+import { getErrorMessage, getMaskPixelCount } from '../video-masker.util';
 
 /** Keeps pending previews separate from backend-accepted prompts. */
 @Injectable()
@@ -108,15 +102,10 @@ export class PointEditingService {
           this.store.annotationRecoveryRequested.set(true);
           return;
         }
-        const masks = new Map(this.store.masks());
-        const frame = new Map(masks.get(frameIdx));
-        frame.delete(objId);
-        if (frame.size) masks.set(frameIdx, frame);
-        else masks.delete(frameIdx);
-        this.store.masks.set(masks);
-        this.store.liveEditedObjectFrames.set(
-          unmarkObjectLiveEdited(this.store.liveEditedObjectFrames(), frameIdx, objId),
-        );
+        if (!this.framePipeline.acceptMaskData(result.mask_data, frameIdx))
+          throw new Error('Invalid effective mask response.');
+        if (frameIdx !== this.store.displayedFrameIdx())
+          this.framePipeline.scheduleFrameLoad(this.store.targetFrameIdx());
         this.store.invalidateTracking();
         return;
       }
@@ -126,8 +115,6 @@ export class PointEditingService {
         typeof (response as any)?.frame_idx !== 'number' ||
         typeof (response as any)?.frame_file !== 'string' ||
         !Number.isInteger(response?.state_epoch) ||
-        !Array.isArray((response as any)?.out_obj_ids) ||
-        !Array.isArray((response as any)?.out_masks) ||
         typeof (response as any)?.mask_pixel_counts !== 'object'
       ) {
         throw new Error('Invalid mask response');
@@ -157,31 +144,6 @@ export class PointEditingService {
         throw new Error(reason);
       }
 
-      if (
-        response.out_masks.length !== response.out_obj_ids.length ||
-        new Set(response.out_obj_ids).size !== response.out_obj_ids.length
-      ) {
-        throw new Error('Object IDs and masks do not match.');
-      }
-      response.out_obj_ids.forEach((id, index) => {
-        const mask = response.out_masks[index];
-        if (!Number.isSafeInteger(id) || id <= 0) throw new Error('Invalid mask object ID.');
-        if (Array.isArray(mask)) {
-          if (response.mask_encoding) throw new Error('Expected encoded mask.');
-          return;
-        }
-        const shape = response.mask_shapes?.[id];
-        const pixels = encodedMaskPixelCount(mask);
-        if (
-          !shape ||
-          shape[0] !== mask.size[0] ||
-          shape[1] !== mask.size[1] ||
-          response.mask_pixel_counts[id] !== pixels
-        ) {
-          throw new Error('Encoded mask metadata does not match its pixels.');
-        }
-      });
-
       if (!this.store.applyAnnotationSnapshot(response, backendUrl)) {
         this.store.annotationRecoveryRequested.set(true);
         return;
@@ -191,16 +153,10 @@ export class PointEditingService {
       this.store.lastMaskPixelCount.set(maskPixelCount);
       this.store.lastFallbackUsed.set(Boolean(response.single_frame_fallback_used));
 
-      const masksMap = new Map(this.store.masks());
-      const frameMasksMap = new Map(masksMap.get(requestFrameIdx) || new Map<number, LiveMask>());
-      response.out_obj_ids.forEach((id, index) => {
-        frameMasksMap.set(id, response.out_masks[index]);
-      });
-      masksMap.set(requestFrameIdx, frameMasksMap);
-      this.store.liveEditedObjectFrames.set(
-        markObjectLiveEdited(this.store.liveEditedObjectFrames(), requestFrameIdx, objId),
-      );
-      this.store.masks.set(masksMap);
+      if (!this.framePipeline.acceptMaskData(response.mask_data, requestFrameIdx))
+        throw new Error('Invalid effective mask response.');
+      if (requestFrameIdx !== this.store.displayedFrameIdx())
+        this.framePipeline.scheduleFrameLoad(this.store.targetFrameIdx());
       this.store.invalidateTracking();
       this.framePipeline.redraw();
     } catch (error) {

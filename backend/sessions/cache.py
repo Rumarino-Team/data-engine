@@ -36,6 +36,7 @@ def release_active_session(*, clear_video_masker: bool = True, clear_tracker: bo
         state.active_session_id = None
         state.active_session_saved_name = None
         state.annotations = SessionAnnotations()
+        state.interactive_masks = {}
     if clear_prompts:
         state.annotations.clear_prompts()
     cleanup_cuda_memory()
@@ -45,7 +46,10 @@ def bump_video_state_epoch() -> int:
     return state.video_state_epoch
 
 def reset_video_session_state():
+    state.interactive_masks = {}
     state.annotations.clear_prompts()
+    state.annotations.revision += 1
+    state.annotations.input_revisions = {obj_id: state.annotations.revision for obj_id in state.annotations.objects}
     state.mask_manifest_path = None
 
 def prepare_video_masker_for_video_init():
