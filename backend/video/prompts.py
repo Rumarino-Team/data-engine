@@ -2,7 +2,7 @@ from typing import Optional
 from contextlib import contextmanager
 import logging
 from video.masks import override_pixels, discard_override_artifacts
-from fastapi import HTTPException
+from core.errors import OperationError
 import sam2_video_masker as svm
 from core.jobs import update_job
 from core.state import state
@@ -104,7 +104,8 @@ def prompt_runtime_edit():
             state.video_masker = None
             bump_video_state_epoch()
             logging.getLogger(__name__).exception("Prompt runtime recovery failed")
-            raise HTTPException(status_code=503, detail=
-                "The edit was rejected and the predictor could not be restored. Reload the video.") from recovery_error
+            raise OperationError(
+                503, "The edit was rejected and the predictor could not be restored. Reload the video."
+            ) from recovery_error
         bump_video_state_epoch()
         raise

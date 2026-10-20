@@ -3,10 +3,9 @@ import unittest
 from pathlib import Path
 import sys
 
-from fastapi import HTTPException
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from core.errors import OperationError
 from core.state import state
 from core.annotations import SessionAnnotations
 from sessions.metadata import write_session_metadata
@@ -242,12 +241,12 @@ class TrackingResultTests(unittest.TestCase):
         self.assertIn("No CoTracker result", guidance.skipped_reason)
 
     def test_invalid_result_id_returns_400(self):
-        with self.assertRaises(HTTPException) as context:
+        with self.assertRaises(OperationError) as context:
             load_prompt_tracking_result("../bad")
         self.assertEqual(context.exception.status_code, 400)
 
     def test_missing_result_returns_404(self):
-        with self.assertRaises(HTTPException) as context:
+        with self.assertRaises(OperationError) as context:
             load_prompt_tracking_result("missing")
         self.assertEqual(context.exception.status_code, 404)
 

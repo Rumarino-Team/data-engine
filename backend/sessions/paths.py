@@ -2,8 +2,8 @@ import os
 from pathlib import Path
 from typing import Optional
 from urllib.parse import unquote, urlparse
-from fastapi import HTTPException
 from core.config import IMAGE_EXTENSIONS, PROJECT_ROOT, VIDEO_EXTENSIONS
+from core.errors import OperationError
 
 def path_is_relative_to(path: Path, parent: Path) -> bool:
     try:
@@ -34,7 +34,7 @@ def normalize_input_path(path_value: str) -> str:
 def resolve_input_path(path_value: str, expect_dir: Optional[bool] = None) -> Path:
     normalized = normalize_input_path(path_value)
     if not normalized:
-        raise HTTPException(status_code=400, detail="Path cannot be empty.")
+        raise OperationError(400, "Path cannot be empty.")
 
     expanded = Path(os.path.expandvars(os.path.expanduser(normalized)))
 
@@ -51,16 +51,13 @@ def resolve_input_path(path_value: str, expect_dir: Optional[bool] = None) -> Pa
 
     if not resolved_path.exists():
         tried_paths = ", ".join(str(path) for path in candidate_paths)
-        raise HTTPException(
-            status_code=404,
-            detail=f"Path not found: '{normalized}'. Tried: {tried_paths}"
-        )
+        raise OperationError(404, f"Path not found: '{normalized}'. Tried: {tried_paths}")
 
     if expect_dir is True and not resolved_path.is_dir():
-        raise HTTPException(status_code=400, detail=f"Expected a directory path, got file: {resolved_path}")
+        raise OperationError(400, f"Expected a directory path, got file: {resolved_path}")
 
     if expect_dir is False and not resolved_path.is_file():
-        raise HTTPException(status_code=400, detail=f"Expected a file path, got directory: {resolved_path}")
+        raise OperationError(400, f"Expected a file path, got directory: {resolved_path}")
 
     return resolved_path
 
@@ -80,7 +77,7 @@ def validate_video_input_path(resolved_input_path: Path) -> None:
             f"Unsupported input file type: {resolved_input_path.suffix or '<none>'}. "
             "Provide a directory of image frames or a video file (.mp4, .mov, .avi, .mkv, .webm, .m4v)."
         )
-    raise HTTPException(status_code=400, detail=detail)
+    raise OperationError(400, detail)
 
 def resolve_saved_session_layout(resolved_input_path: Path) -> Optional[tuple[Path, Path, Path]]:
     if not resolved_input_path.is_dir():
@@ -91,14 +88,8 @@ def resolve_saved_session_layout(resolved_input_path: Path) -> Optional[tuple[Pa
     frames_dir = resolved_input_path / "frames"
     masks_dir = resolved_input_path / "masks"
     if not frames_dir.is_dir():
-        raise HTTPException(
-            status_code=400,
-            detail=f"Saved session directory is missing required frames/ folder: {frames_dir}",
-        )
+        raise OperationError(400, f"Saved session directory is missing required frames/ folder: {frames_dir}")
     if not masks_dir.is_dir():
-        raise HTTPException(
-            status_code=400,
-            detail=f"Saved session directory is missing required masks/ folder: {masks_dir}",
-        )
+        raise OperationError(400, f"Saved session directory is missing required masks/ folder: {masks_dir}")
     return resolved_input_path.resolve(), frames_dir.resolve(), masks_dir.resolve()
 

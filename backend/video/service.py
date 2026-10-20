@@ -2,11 +2,11 @@ import logging, shutil
 from pathlib import Path
 from typing import Any, Optional
 import cv2
-from fastapi import HTTPException
 from fastapi.responses import FileResponse
 import numpy as np
 import sam2_video_masker as svm
 from core.config import IMAGE_EXTENSIONS, SAVED_ROOT, VIDEO_EXTENSIONS
+from core.errors import OperationError
 from core.jobs import queue_long_job, foreground_operation, foreground_lock, update_job, utc_now_iso
 from core.state import state
 from core.annotations import SessionAnnotations
@@ -90,7 +90,7 @@ def initialize_video_state_from_resolved_input(
             for mask in annotations.mask_overrides:
                 override_pixels(mask)
         except (KeyError, ValidationError, ValueError) as error:
-            raise HTTPException(status_code=400, detail=f"Invalid session annotations or editor state: {error}") from error
+            raise OperationError(400, f"Invalid session annotations or editor state: {error}") from error
         state.active_session_id = session_id
         state.annotations = annotations
         state.interactive_mask_files = session_metadata.get("interactive_mask_files", {})
@@ -139,9 +139,9 @@ def initialize_video_state_from_resolved_input(
                         progress_callback=_on_extract_progress,
                     )
                 except ValueError as error:
-                    raise HTTPException(status_code=400, detail=str(error)) from error
+                    raise OperationError(400, str(error)) from error
                 except Exception as error:
-                    raise HTTPException(status_code=500, detail=str(error)) from error
+                    raise OperationError(500, str(error)) from error
                 source_video_path = str(resolved_input_path)
             else:
                 if suffix in IMAGE_EXTENSIONS:
@@ -154,7 +154,7 @@ def initialize_video_state_from_resolved_input(
                         f"Unsupported input file type: {resolved_input_path.suffix or '<none>'}. "
                         "Provide a directory of image frames or a video file (.mp4, .mov, .avi, .mkv, .webm, .m4v)."
                     )
-                raise HTTPException(status_code=400, detail=detail)
+                raise OperationError(400, detail)
         else:
             source_type = "frames_dir"
             candidate_count = len([
@@ -196,14 +196,8 @@ def initialize_video_state_from_resolved_input(
 
     if not state.video_frame_files:
         if source_type == "saved_session":
-            raise HTTPException(
-                status_code=400,
-                detail=f"No image frames found under saved session frames directory: {frames_dir}",
-            )
-        raise HTTPException(
-            status_code=400,
-            detail=f"No image frames found in directory: {resolved_input_path}"
-        )
+            raise OperationError(400, f"No image frames found under saved session frames directory: {frames_dir}")
+        raise OperationError(400, f"No image frames found in directory: {resolved_input_path}")
 
     if source_type != "saved_session":
         state.mask_manifest_path = None
@@ -240,7 +234,7 @@ def initialize_video_state_from_resolved_input(
         )
         replay_annotation_prompts()
     except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
+        raise OperationError(400, str(error)) from error
 
     update_job(
         stage="indexing_frames",
@@ -369,7 +363,7 @@ async def reset_video_state(precondition: AnnotationPrecondition):
     with foreground_operation():
         validate_annotation_precondition(precondition)
         if state.video_masker is None:
-            raise HTTPException(status_code=400, detail="Video masker not active.")
+            raise OperationError(400, "Video masker not active.")
         with prompt_runtime_edit():
             state.video_masker.reset_state()
             reset_video_session_state()
@@ -388,18 +382,18 @@ async def add_new_points_or_box(request: VideoAddPointsOrBoxRequest, preconditio
     with foreground_operation():
         validate_annotation_precondition(precondition)
         if state.video_masker is None:
-            raise HTTPException(status_code=400, detail="Video masker not active.")
+            raise OperationError(400, "Video masker not active.")
 
         if not state.video_frame_files:
-            raise HTTPException(status_code=400, detail="No video frames available. Call /video/init_state first.")
+            raise OperationError(400, "No video frames available. Call /video/init_state first.")
         if request.frame_idx < 0 or request.frame_idx >= len(state.video_frame_files):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Frame index out of bounds: {request.frame_idx}. Expected 0..{len(state.video_frame_files) - 1}.",
+            raise OperationError(
+                400,
+                f"Frame index out of bounds: {request.frame_idx}. Expected 0..{len(state.video_frame_files) - 1}.",
             )
 
         if request.obj_id not in state.annotations.objects:
-            raise HTTPException(status_code=404, detail="Prompt object does not exist.")
+            raise OperationError(404, "Prompt object does not exist.")
 
         with prompt_runtime_edit():
             if any(mask.frame_idx == request.frame_idx and mask.obj_id == request.obj_id
@@ -415,12 +409,10 @@ async def add_new_points_or_box(request: VideoAddPointsOrBoxRequest, preconditio
             )
             returned_frame_idx = int(out_frame_idx)
             if returned_frame_idx != int(request.frame_idx):
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        "Frame mismatch in SAM2 response: "
-                        f"request_frame_idx={int(request.frame_idx)} response_frame_idx={returned_frame_idx}"
-                    ),
+                raise OperationError(
+                    409,
+                    "Frame mismatch in SAM2 response: "
+                    f"request_frame_idx={int(request.frame_idx)} response_frame_idx={returned_frame_idx}",
                 )
 
             normalized_obj_ids = [int(obj_id) for obj_id in out_obj_ids]
@@ -428,12 +420,10 @@ async def add_new_points_or_box(request: VideoAddPointsOrBoxRequest, preconditio
                     or len(set(normalized_obj_ids)) != len(normalized_obj_ids)
                     or request.obj_id not in normalized_obj_ids
                     or any(obj_id not in state.annotations.objects for obj_id in normalized_obj_ids)):
-                raise HTTPException(
-                    status_code=500,
-                    detail=(
-                        "Invalid SAM2 response: "
-                        f"{len(normalized_obj_ids)} object IDs but {len(out_mask_logits)} mask tensors."
-                    ),
+                raise OperationError(
+                    500,
+                    "Invalid SAM2 response: "
+                    f"{len(normalized_obj_ids)} object IDs but {len(out_mask_logits)} mask tensors.",
                 )
 
             masks_list: list[np.ndarray] = []
@@ -512,13 +502,13 @@ async def add_new_mask(request: VideoAddMaskRequest, precondition: AnnotationPre
     with foreground_operation():
         validate_annotation_precondition(precondition)
         if state.video_masker is None:
-            raise HTTPException(status_code=400, detail="Video masker not active.")
+            raise OperationError(400, "Video masker not active.")
         if request.obj_id not in state.annotations.objects or request.frame_idx >= len(state.video_frame_files):
-            raise HTTPException(status_code=404, detail="Mask object or frame does not exist.")
+            raise OperationError(404, "Mask object or frame does not exist.")
         mask = np.asarray(request.mask, dtype=bool)
         image = cv2.imread(str(Path(state.video_dir) / state.video_frame_files[request.frame_idx]))
         if image is None or mask.shape != image.shape[:2]:
-            raise HTTPException(status_code=400, detail="Mask dimensions must match the video frame.")
+            raise OperationError(400, "Mask dimensions must match the video frame.")
         with prompt_runtime_edit():
             state.video_masker.clear_all_prompts_in_frame(request.frame_idx, request.obj_id)
             state.video_masker.add_new_mask(frame_idx=request.frame_idx, obj_id=request.obj_id, mask=mask)
@@ -532,16 +522,16 @@ async def save_video_session(request: VideoSaveRequest):
 
         session_path = current_session_path()
         if session_path is None or state.video_dir is None or not state.video_frame_files:
-            raise HTTPException(status_code=400, detail="Video session is not initialized.")
+            raise OperationError(400, "Video session is not initialized.")
 
         save_name = sanitize_save_name(request.name)
         SAVED_ROOT.mkdir(parents=True, exist_ok=True)
         saved_path = (SAVED_ROOT / save_name).resolve()
         if saved_path.exists():
-            raise HTTPException(status_code=409, detail=f"Saved session already exists: {save_name}")
+            raise OperationError(409, f"Saved session already exists: {save_name}")
 
         if path_is_relative_to(session_path, SAVED_ROOT):
-            raise HTTPException(status_code=409, detail="Current session is already saved.")
+            raise OperationError(409, "Current session is already saved.")
 
         interactive_state_payload = request.interactive_state.model_dump() if request.interactive_state else None
         saved_at = utc_now_iso()
@@ -571,9 +561,9 @@ async def clear_all_prompts_in_frame(frame_idx: int, obj_id: int, precondition: 
     with foreground_operation():
         validate_annotation_precondition(precondition)
         if state.video_masker is None:
-            raise HTTPException(status_code=400, detail="Video masker not active.")
+            raise OperationError(400, "Video masker not active.")
         if obj_id not in state.annotations.objects or not 0 <= frame_idx < len(state.video_frame_files):
-            raise HTTPException(status_code=404, detail="Prompt object or frame does not exist.")
+            raise OperationError(404, "Prompt object or frame does not exist.")
         with prompt_runtime_edit():
             state.video_masker.clear_all_prompts_in_frame(frame_idx, obj_id)
             state.annotations.clear_prompts(frame_idx, obj_id)
@@ -586,7 +576,7 @@ async def remove_object(obj_id: int, precondition: AnnotationPrecondition):
     with foreground_operation():
         validate_annotation_precondition(precondition)
         if state.video_masker is None:
-            raise HTTPException(status_code=400, detail="Video masker not active.")
+            raise OperationError(400, "Video masker not active.")
         state.video_masker.remove_object(obj_id)
         state.annotations.remove_object(obj_id)
         write_session_metadata()
@@ -604,7 +594,7 @@ async def update_object(obj_id: int, request: VideoObjectUpdate, precondition: A
     with foreground_operation():
         validate_annotation_precondition(precondition)
         if obj_id not in state.annotations.objects:
-            raise HTTPException(status_code=404, detail="Object does not exist.")
+            raise OperationError(404, "Object does not exist.")
         obj = VideoObject(id=obj_id, **request.model_dump()).model_dump()
         state.annotations.upsert_object(obj)
         write_session_metadata()
@@ -613,9 +603,9 @@ async def update_object(obj_id: int, request: VideoObjectUpdate, precondition: A
 
 def validate_annotation_precondition(precondition: AnnotationPrecondition):
     if current_session_path() is None or precondition.session_id != state.active_session_id:
-        raise HTTPException(status_code=409, detail="The target session is no longer active. Refresh annotations.")
+        raise OperationError(409, "The target session is no longer active. Refresh annotations.")
     if precondition.expected_revision != state.annotations.revision:
-        raise HTTPException(status_code=409, detail="Annotations changed. Refresh before editing again.")
+        raise OperationError(409, "Annotations changed. Refresh before editing again.")
 
 
 def annotation_update(precondition: AnnotationPrecondition):
@@ -646,12 +636,12 @@ async def get_video_info():
 
 async def get_mask_manifest():
     if state.video_dir is None:
-        raise HTTPException(status_code=400, detail="Video not initialized")
+        raise OperationError(400, "Video not initialized")
 
     masks_dir = current_masks_dir()
     manifest_path = Path(state.mask_manifest_path) if state.mask_manifest_path else (masks_dir / "manifest.json" if masks_dir is not None else Path(state.video_dir) / "masks" / "manifest.json")
     if not manifest_path.exists():
-        raise HTTPException(status_code=404, detail="Mask manifest not found. Run /video/propagate_in_video first.")
+        raise OperationError(404, "Mask manifest not found. Run /video/propagate_in_video first.")
 
     manifest = load_cached_mask_manifest(manifest_path)
     return {
@@ -667,37 +657,37 @@ async def get_mask_manifest():
 async def get_mask_data(frame_idx: int):
     with foreground_lock:
         if state.video_dir is None:
-            raise HTTPException(status_code=400, detail="Video not initialized")
+            raise OperationError(400, "Video not initialized")
         if not 0 <= frame_idx < len(state.video_frame_files):
-            raise HTTPException(status_code=404, detail="Frame index out of bounds")
+            raise OperationError(404, "Frame index out of bounds")
         return effective_mask_data(frame_idx)
 
 async def get_video_frame(frame_idx: int):
     if state.video_dir is None or not state.video_frame_files:
-        raise HTTPException(status_code=400, detail="Video not initialized")
+        raise OperationError(400, "Video not initialized")
 
     if frame_idx < 0 or frame_idx >= len(state.video_frame_files):
-        raise HTTPException(status_code=404, detail="Frame index out of bounds")
+        raise OperationError(404, "Frame index out of bounds")
 
     file_path = Path(state.video_dir) / state.video_frame_files[frame_idx]
     if not file_path.exists():
-        raise HTTPException(status_code=404, detail=f"Frame file not found: {file_path}")
+        raise OperationError(404, f"Frame file not found: {file_path}")
     return FileResponse(str(file_path))
 
 async def get_video_mask_frame(frame_idx: int):
     with foreground_lock:
         if state.video_dir is None or not 0 <= frame_idx < len(state.video_frame_files):
-            raise HTTPException(status_code=404, detail="Frame index out of bounds")
+            raise OperationError(404, "Frame index out of bounds")
         masks_dir = current_masks_dir()
         manifest_path = masks_dir / "manifest.json" if masks_dir else None
         if not manifest_path or not manifest_path.exists():
-            raise HTTPException(status_code=404, detail="Mask frame not available")
+            raise OperationError(404, "Mask frame not available")
         frame = load_cached_mask_manifest(manifest_path).get("frames", {}).get(str(frame_idx), {})
         effective = effective_mask_data(frame_idx)
         if (not frame.get("overlay_path") or effective["objects"] != frame.get("objects") or
                 any(source != "manifest" for source in effective["sources"].values())):
-            raise HTTPException(status_code=404, detail="Mask overlay is obsolete")
+            raise OperationError(404, "Mask overlay is obsolete")
         file_path = (masks_dir / frame["overlay_path"]).resolve()
         if not path_is_relative_to(file_path, masks_dir.resolve()) or not file_path.is_file():
-            raise HTTPException(status_code=404, detail="Mask frame not available")
+            raise OperationError(404, "Mask frame not available")
         return FileResponse(str(file_path))

@@ -2,10 +2,10 @@ import logging, shutil, uuid
 from pathlib import Path
 from typing import Any, Optional
 import cv2
-from fastapi import HTTPException
 import numpy as np
 import torch
 from core.config import WINDOW_FRAMES_ROOT
+from core.errors import OperationError
 from core.jobs import queue_long_job, update_job, foreground_lock
 from core.runtime import cleanup_cuda_memory
 from core.state import state
@@ -66,28 +66,25 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
         message="Validating mask propagation inputs",
     )
     if state.video_masker is None:
-        raise HTTPException(status_code=400, detail="Video masker not active.")
+        raise OperationError(400, "Video masker not active.")
     if state.video_dir is None:
-        raise HTTPException(status_code=400, detail="Video directory not set. Call /video/init_state first.")
+        raise OperationError(400, "Video directory not set. Call /video/init_state first.")
 
     if request.reverse:
-        raise HTTPException(
-            status_code=400,
-            detail="Reverse propagation is not supported in half-window mode.",
-        )
+        raise OperationError(400, "Reverse propagation is not supported in half-window mode.")
 
     if not state.video_frame_files:
-        raise HTTPException(status_code=400, detail="No video frames available. Call /video/init_state first.")
+        raise OperationError(400, "No video frames available. Call /video/init_state first.")
 
     if not state.annotations.prompts and not state.annotations.mask_overrides:
-        raise HTTPException(status_code=400, detail="No prompts available for propagation.")
+        raise OperationError(400, "No prompts available for propagation.")
 
     effective_online_mode = state.video_masker.online_mode if request.online_mode is None else bool(request.online_mode)
     effective_batch_size = state.video_masker.default_batch_size if request.batch_size is None else int(request.batch_size)
     effective_offload_video_to_cpu = state.video_masker.offload_video_to_cpu
     effective_offload_state_to_cpu = state.video_masker.offload_state_to_cpu
     if effective_batch_size <= 0:
-        raise HTTPException(status_code=400, detail="batch_size must be a positive integer.")
+        raise OperationError(400, "batch_size must be a positive integer.")
 
     num_frames = len(state.video_frame_files)
     if request.start_frame_idx is not None:
@@ -122,12 +119,12 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
         end_frame_idx = min(num_frames - 1, start_frame_idx + requested - 1)
 
     if end_frame_idx < start_frame_idx:
-        raise HTTPException(status_code=400, detail="Invalid propagation frame range.")
+        raise OperationError(400, "Invalid propagation frame range.")
 
     expected_total_frames = end_frame_idx - start_frame_idx + 1
     masks_root = current_masks_dir()
     if masks_root is None:
-        raise HTTPException(status_code=400, detail="Video session cache is not initialized.")
+        raise OperationError(400, "Video session cache is not initialized.")
     clear_window_cache()
     update_job(
         stage="preparing_masks",
@@ -147,7 +144,7 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
 
     first_frame = cv2.imread(str(Path(state.video_dir) / state.video_frame_files[start_frame_idx]))
     if first_frame is None:
-        raise HTTPException(status_code=500, detail="Unable to read first frame for manifest metadata.")
+        raise OperationError(500, "Unable to read first frame for manifest metadata.")
 
     manifest = build_empty_mask_manifest(
         source_video_path=state.video_source_path,
@@ -474,23 +471,21 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
                 message=f"Finished window {window_number} of {window_count}",
             )
     except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
+        raise OperationError(400, str(error)) from error
     except torch.OutOfMemoryError as error:
         cleanup_cuda_memory()
-        raise HTTPException(
-            status_code=507,
-            detail="CUDA out of memory during propagation. Try lowering batch_size or enabling CPU offload.",
+        raise OperationError(
+            507, "CUDA out of memory during propagation. Try lowering batch_size or enabling CPU offload."
         ) from error
     except RuntimeError as error:
         if "out of memory" in str(error).lower():
             cleanup_cuda_memory()
-            raise HTTPException(
-                status_code=507,
-                detail="CUDA out of memory during propagation. Try lowering batch_size or enabling CPU offload.",
+            raise OperationError(
+                507, "CUDA out of memory during propagation. Try lowering batch_size or enabling CPU offload."
             ) from error
-        raise HTTPException(status_code=500, detail=f"Failed to propagate video masks: {error}") from error
+        raise OperationError(500, f"Failed to propagate video masks: {error}") from error
     except Exception as error:
-        raise HTTPException(status_code=500, detail=f"Failed to propagate video masks: {error}") from error
+        raise OperationError(500, f"Failed to propagate video masks: {error}") from error
     finally:
         shutil.rmtree(run_root, ignore_errors=True)
 
@@ -540,9 +535,8 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
             offload_state_to_cpu=effective_offload_state_to_cpu,
         )
     except Exception as error:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Propagation completed but failed to restore interactive masking state: {error}",
+        raise OperationError(
+            500, f"Propagation completed but failed to restore interactive masking state: {error}"
         ) from error
 
     return {

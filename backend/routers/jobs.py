@@ -1,5 +1,6 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
+from core.errors import OperationError
 from core.jobs import clear_current_job_result, serialize_job
 
 
@@ -15,7 +16,7 @@ async def get_current_job():
 async def get_job(job_id: str):
     job = serialize_job()
     if job is None or job.get("job_id") != job_id:
-        raise HTTPException(status_code=404, detail="Job not found.")
+        raise OperationError(404, "Job not found.")
     return {"job": job}
 
 

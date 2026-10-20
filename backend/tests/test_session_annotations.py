@@ -7,12 +7,12 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 from fastapi.testclient import TestClient
-from fastapi import HTTPException
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.factory import create_app
 from core.annotations import SessionAnnotations
+from core.errors import OperationError
 from core.state import BackendState, state
 from schemas.video import VideoPrompt
 from sessions.cache import release_active_session
@@ -374,12 +374,12 @@ class SessionAnnotationsTests(unittest.TestCase):
         (self.session / "session.json").write_text(json.dumps({"session_id": "annotations-session", "objects": [], "interactive_state": {
             "points": [{"frame_idx": 0, "obj_id": 7, "x": 1, "y": 2, "label": 1}],
         }}))
-        with self.assertRaisesRegex(HTTPException, "Invalid session annotations or editor state"):
+        with self.assertRaisesRegex(OperationError, "Invalid session annotations or editor state"):
             self.reopen()
 
     def test_corrupt_annotations_is_rejected(self):
         (self.session / "session.json").write_text(json.dumps({"session_id": "annotations-session", "annotations": {"version": 999}}))
-        with self.assertRaisesRegex(HTTPException, "Invalid session annotations or editor state"):
+        with self.assertRaisesRegex(OperationError, "Invalid session annotations or editor state"):
             self.reopen()
 
     def test_invalid_editor_state_is_rejected_without_partial_restore(self):
@@ -387,7 +387,7 @@ class SessionAnnotationsTests(unittest.TestCase):
         metadata = self.metadata()
         metadata["interactive_state"] = {"points": [{"invalid": True}]}
         (self.session / "session.json").write_text(json.dumps(metadata))
-        with self.assertRaisesRegex(HTTPException, "Invalid session annotations or editor state"):
+        with self.assertRaisesRegex(OperationError, "Invalid session annotations or editor state"):
             self.reopen()
 
     def test_failed_metadata_replacement_keeps_previous_complete_annotations(self):
@@ -499,7 +499,7 @@ class SessionAnnotationsTests(unittest.TestCase):
         self.reopen()
         self.assertEqual(self.override_files(), accepted)
         self.override_file(accepted[0]).unlink()
-        with self.assertRaisesRegex(HTTPException, "Mask override artifact is unavailable"):
+        with self.assertRaisesRegex(OperationError, "Mask override artifact is unavailable"):
             self.reopen()
 
     def test_metadata_writes_never_reread_session_json(self):

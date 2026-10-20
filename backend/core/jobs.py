@@ -2,8 +2,9 @@ from typing import Any, Callable, Optional
 from contextlib import contextmanager
 from datetime import datetime
 import logging, threading, uuid
-from fastapi import HTTPException
 import torch
+
+from core.errors import OperationError
 
 logger = logging.getLogger(__name__)
 current_job: Optional[dict[str, Any]] = None
@@ -39,7 +40,7 @@ def is_job_active() -> bool:
 
 def require_no_active_job(operation_label: str = "operation") -> None:
     if is_job_active():
-        raise HTTPException(status_code=409, detail="Another operation is already running.")
+        raise OperationError(409, "Another operation is already running.")
 
 def clear_current_job_result(job_id: str) -> bool:
     with current_job_lock:
@@ -70,7 +71,7 @@ def _start_job(operation: str, *, stage: str, stage_label: str, message: str) ->
     global current_job
     with foreground_lock, current_job_lock:
         if _active_job_exists():
-            raise HTTPException(status_code=409, detail="Another operation is already running.")
+            raise OperationError(409, "Another operation is already running.")
 
         now = utc_now_iso()
         current_job = {
@@ -206,13 +207,8 @@ def _fail_job(job_id: str, error_code: str, message: str, detail: Optional[str] 
         )
 
 def _job_error_from_exception(error: Exception) -> tuple[str, str, Optional[str]]:
-    if isinstance(error, HTTPException):
-        message = str(error.detail)
-        if error.status_code == 507:
-            return "cuda_out_of_memory", message, None
-        if error.status_code in {400, 404, 409}:
-            return "validation_error", message, None
-        return "backend_error", message, None
+    if isinstance(error, OperationError):
+        return error.code, error.message, error.detail
     if isinstance(error, torch.OutOfMemoryError):
         return "cuda_out_of_memory", "CUDA out of memory during operation.", str(error)
     if isinstance(error, RuntimeError) and "out of memory" in str(error).lower():

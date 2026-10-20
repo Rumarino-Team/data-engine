@@ -1,6 +1,8 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exception_handlers import http_exception_handler as _default_http_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
 
+from core.errors import OperationError
 from core.runtime import cleanup_backend_cache_on_shutdown
 from routers import jobs, root, tracking, video
 
@@ -15,6 +17,12 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.exception_handler(OperationError)
+    async def operation_error_handler(request: Request, exc: OperationError):
+        return await _default_http_exception_handler(
+            request, HTTPException(status_code=exc.status_code, detail=exc.message)
+        )
 
     app.include_router(root.router)
     app.include_router(jobs.router)

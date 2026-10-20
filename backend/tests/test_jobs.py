@@ -4,11 +4,10 @@ import time
 import unittest
 from pathlib import Path
 
-from fastapi import HTTPException
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import core.jobs as jobs
+from core.errors import OperationError
 
 
 class JobTests(unittest.TestCase):
@@ -56,7 +55,7 @@ class JobTests(unittest.TestCase):
         while time.time() < deadline and not jobs.is_job_active():
             time.sleep(0.01)
 
-        with self.assertRaises(HTTPException) as context:
+        with self.assertRaises(OperationError) as context:
             jobs.queue_long_job(
                 operation="mask_propagation",
                 stage="queued",

@@ -1,11 +1,11 @@
 import logging
 from pathlib import Path
 from typing import Any
-from fastapi import HTTPException
 import numpy as np
 import torch
 import co_tracker as cot
 from core.config import DEFAULT_PROMPT_TRACK_BATCH_SIZE, DEFAULT_STREAMING_TRACK_FRAME_THRESHOLD
+from core.errors import OperationError
 from core.jobs import queue_long_job, update_job
 from core.runtime import cleanup_cuda_memory
 from core.state import state
@@ -36,7 +36,7 @@ def run_prompt_tracking_job(request: TrackingPromptPointsRequest) -> dict[str, A
     )
 
     if not state.annotations.prompt_events():
-        raise HTTPException(status_code=400, detail="No annotation prompts available for tracking.")
+        raise OperationError(400, "No annotation prompts available for tracking.")
 
     positive_queries: list[list[float]] = []
     point_metadata: list[dict[str, Any]] = []
@@ -65,7 +65,7 @@ def run_prompt_tracking_job(request: TrackingPromptPointsRequest) -> dict[str, A
             )
 
     if not positive_queries:
-        raise HTTPException(status_code=400, detail="No positive prompt points available for tracking.")
+        raise OperationError(400, "No positive prompt points available for tracking.")
     total_queries = len(positive_queries)
     update_job(
         stage="loading_tracker",
@@ -98,9 +98,8 @@ def run_prompt_tracking_job(request: TrackingPromptPointsRequest) -> dict[str, A
         except Exception as error:
             logger.exception("Failed to restore interactive video masker state after prompt tracking")
             if raise_on_error:
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Prompt-point tracking finished but failed to restore interactive masking state: {error}",
+                raise OperationError(
+                    500, f"Prompt-point tracking finished but failed to restore interactive masking state: {error}"
                 ) from error
 
     if state.video_masker is not None:
@@ -112,7 +111,7 @@ def run_prompt_tracking_job(request: TrackingPromptPointsRequest) -> dict[str, A
         ensure_tracker_model(cot.DEFAULT_COTRACKER_MODEL)
     except ValueError as error:
         _restore_masker_state(raise_on_error=False)
-        raise HTTPException(status_code=400, detail=str(error)) from error
+        raise OperationError(400, str(error)) from error
     update_job(
         stage="loading_frames",
         stage_label="Preparing tracking frames",
@@ -318,31 +317,29 @@ def run_prompt_tracking_job(request: TrackingPromptPointsRequest) -> dict[str, A
     except ValueError as error:
         _clear_tracking_video_if_loaded_for_operation()
         _restore_masker_state(raise_on_error=False)
-        raise HTTPException(status_code=400, detail=str(error)) from error
+        raise OperationError(400, str(error)) from error
     except torch.OutOfMemoryError as error:
         cleanup_cuda_memory()
         _clear_tracking_video_if_loaded_for_operation()
         _restore_masker_state(raise_on_error=False)
-        raise HTTPException(
-            status_code=507,
-            detail="CUDA out of memory during tracking. Try fewer prompt points or disable support grid.",
+        raise OperationError(
+            507, "CUDA out of memory during tracking. Try fewer prompt points or disable support grid."
         ) from error
     except RuntimeError as error:
         if "out of memory" in str(error).lower():
             cleanup_cuda_memory()
             _clear_tracking_video_if_loaded_for_operation()
             _restore_masker_state(raise_on_error=False)
-            raise HTTPException(
-                status_code=507,
-                detail="CUDA out of memory during tracking. Try fewer prompt points or disable support grid.",
+            raise OperationError(
+                507, "CUDA out of memory during tracking. Try fewer prompt points or disable support grid."
             ) from error
         _clear_tracking_video_if_loaded_for_operation()
         _restore_masker_state(raise_on_error=False)
-        raise HTTPException(status_code=500, detail=f"Prompt-point tracking failed: {error}") from error
+        raise OperationError(500, f"Prompt-point tracking failed: {error}") from error
     except Exception as error:
         _clear_tracking_video_if_loaded_for_operation()
         _restore_masker_state(raise_on_error=False)
-        raise HTTPException(status_code=500, detail=f"Prompt-point tracking failed: {error}") from error
+        raise OperationError(500, f"Prompt-point tracking failed: {error}") from error
 
     cleanup_cuda_memory()
     update_job(

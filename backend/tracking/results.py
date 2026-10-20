@@ -3,8 +3,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import HTTPException
-
+from core.errors import OperationError
 from core.state import state
 from core.jobs import utc_now_iso
 from sessions.metadata import current_session_path, write_session_metadata
@@ -17,7 +16,7 @@ _RESULT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 def _validate_result_id(result_id: str) -> str:
     normalized = str(result_id).strip()
     if not normalized or not _RESULT_ID_PATTERN.fullmatch(normalized):
-        raise HTTPException(status_code=400, detail="Invalid tracking result id.")
+        raise OperationError(400, "Invalid tracking result id.")
     return normalized
 
 
@@ -43,7 +42,7 @@ def save_prompt_tracking_result(
 ) -> dict[str, Any]:
     session_path = current_session_path()
     if session_path is None:
-        raise HTTPException(status_code=400, detail="Video session cache is not initialized.")
+        raise OperationError(400, "Video session cache is not initialized.")
 
     result_id = uuid.uuid4().hex
     created_at = utc_now_iso()
@@ -90,7 +89,7 @@ def load_prompt_tracking_result(result_id: str) -> dict[str, Any]:
     normalized_result_id = _validate_result_id(result_id)
     session_path = current_session_path()
     if session_path is None:
-        raise HTTPException(status_code=404, detail="No active session.")
+        raise OperationError(404, "No active session.")
 
     result_path = _tracking_result_path(session_path, normalized_result_id)
     try:
@@ -98,13 +97,13 @@ def load_prompt_tracking_result(result_id: str) -> dict[str, Any]:
         resolved_tracking_dir = _tracking_dir(session_path).resolve()
         resolved_result_path.relative_to(resolved_tracking_dir)
     except ValueError as error:
-        raise HTTPException(status_code=400, detail="Invalid tracking result id.") from error
+        raise OperationError(400, "Invalid tracking result id.") from error
 
     if not result_path.exists():
-        raise HTTPException(status_code=404, detail="Tracking result not found.")
+        raise OperationError(404, "Tracking result not found.")
     result = load_mask_manifest(result_path)
     if not isinstance(result, dict):
-        raise HTTPException(status_code=500, detail="Tracking result payload is invalid.")
+        raise OperationError(500, "Tracking result payload is invalid.")
     return result
 
 
@@ -115,7 +114,7 @@ def restored_tracking_result_payload(session_path: Path, session_metadata: dict[
         return None
     try:
         normalized_result_id = _validate_result_id(str(result_id))
-    except HTTPException:
+    except OperationError:
         return None
 
     result_path = (session_path / str(relative_path)).resolve()

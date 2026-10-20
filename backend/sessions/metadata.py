@@ -1,7 +1,7 @@
 import json, logging, os, re, tempfile
 from pathlib import Path
 from typing import Any, Optional
-from fastapi import HTTPException
+from core.errors import OperationError
 from core.jobs import utc_now_iso
 from core.state import state
 from utils import load_mask_manifest
@@ -100,19 +100,19 @@ def load_session_metadata(session_root: Path) -> dict[str, Any]:
     try:
         metadata = load_mask_manifest(session_json_path)
     except FileNotFoundError as error:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Saved session directory is missing session.json: {session_json_path}",
+        raise OperationError(
+            400,
+            f"Saved session directory is missing session.json: {session_json_path}",
         ) from error
     except Exception as error:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unable to parse saved session metadata: {session_json_path}",
+        raise OperationError(
+            400,
+            f"Unable to parse saved session metadata: {session_json_path}",
         ) from error
     if not isinstance(metadata, dict):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Saved session metadata must be a JSON object: {session_json_path}",
+        raise OperationError(
+            400,
+            f"Saved session metadata must be a JSON object: {session_json_path}",
         )
     return metadata
 
@@ -120,5 +120,5 @@ def sanitize_save_name(name: str) -> str:
     sanitized = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", name.strip())
     sanitized = re.sub(r"_+", "_", sanitized).strip(" ._")
     if not sanitized or sanitized in {".", ".."}:
-        raise HTTPException(status_code=400, detail="Save name cannot be empty.")
+        raise OperationError(400, "Save name cannot be empty.")
     return sanitized

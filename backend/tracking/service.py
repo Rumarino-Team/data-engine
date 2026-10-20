@@ -1,10 +1,10 @@
 from datetime import datetime
 from pathlib import Path
 import numpy as np
-from fastapi import HTTPException
 import torch
 import co_tracker as cot
 from core.config import DEFAULT_STREAMING_TRACK_FRAME_THRESHOLD
+from core.errors import OperationError
 from core.jobs import foreground_operation
 from core.runtime import cleanup_cuda_memory
 from core.state import state
@@ -51,7 +51,7 @@ async def load_tracking_video(request: TrackingLoadVideoRequest):
         try:
             ensure_tracker_model(requested_model)
         except ValueError as error:
-            raise HTTPException(status_code=400, detail=str(error)) from error
+            raise OperationError(400, str(error)) from error
 
         resolved_video_path = resolve_input_path(request.video_path, expect_dir=False)
         state.tracking_video_path = str(resolved_video_path)
@@ -71,10 +71,10 @@ async def track_grid(request: TrackingGridRequest):
 
     with foreground_operation():
         if state.tracker is None:
-            raise HTTPException(status_code=400, detail="Tracker not active. Call /tracking/load_video first.")
+            raise OperationError(400, "Tracker not active. Call /tracking/load_video first.")
 
         if state.tracking_video is None:
-            raise HTTPException(status_code=400, detail="No video loaded. Call /tracking/load_video first.")
+            raise OperationError(400, "No video loaded. Call /tracking/load_video first.")
 
         # Run tracking
         try:
@@ -86,16 +86,14 @@ async def track_grid(request: TrackingGridRequest):
             )
         except torch.OutOfMemoryError as error:
             cleanup_cuda_memory()
-            raise HTTPException(
-                status_code=507,
-                detail="CUDA out of memory during tracking. Try a smaller tracking workload and rerun.",
+            raise OperationError(
+                507, "CUDA out of memory during tracking. Try a smaller tracking workload and rerun."
             ) from error
         except RuntimeError as error:
             if "out of memory" in str(error).lower():
                 cleanup_cuda_memory()
-                raise HTTPException(
-                    status_code=507,
-                    detail="CUDA out of memory during tracking. Try a smaller tracking workload and rerun.",
+                raise OperationError(
+                    507, "CUDA out of memory during tracking. Try a smaller tracking workload and rerun."
                 ) from error
             raise
 
@@ -129,10 +127,10 @@ async def track_points(request: TrackingPointsRequest):
 
     with foreground_operation():
         if state.tracker is None:
-            raise HTTPException(status_code=400, detail="Tracker not active. Call /tracking/load_video first.")
+            raise OperationError(400, "Tracker not active. Call /tracking/load_video first.")
 
         if state.tracking_video is None:
-            raise HTTPException(status_code=400, detail="No video loaded. Call /tracking/load_video first.")
+            raise OperationError(400, "No video loaded. Call /tracking/load_video first.")
 
         # Convert queries to numpy array
         queries = np.array(request.queries)
@@ -146,16 +144,14 @@ async def track_points(request: TrackingPointsRequest):
             )
         except torch.OutOfMemoryError as error:
             cleanup_cuda_memory()
-            raise HTTPException(
-                status_code=507,
-                detail="CUDA out of memory during tracking. Try a smaller tracking workload and rerun.",
+            raise OperationError(
+                507, "CUDA out of memory during tracking. Try a smaller tracking workload and rerun."
             ) from error
         except RuntimeError as error:
             if "out of memory" in str(error).lower():
                 cleanup_cuda_memory()
-                raise HTTPException(
-                    status_code=507,
-                    detail="CUDA out of memory during tracking. Try a smaller tracking workload and rerun.",
+                raise OperationError(
+                    507, "CUDA out of memory during tracking. Try a smaller tracking workload and rerun."
                 ) from error
             raise
 
