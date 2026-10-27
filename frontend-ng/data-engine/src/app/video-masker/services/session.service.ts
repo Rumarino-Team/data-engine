@@ -8,7 +8,7 @@ import {
   VideoSaveInteractiveState,
   VideoSaveResponse,
 } from '../../services/backend.service';
-import { Point, VideoMaskerStateStore } from './video-masker-state.store';
+import { VideoMaskerStateStore } from './video-masker-state.store';
 import { FramePipelineService } from './frame-pipeline.service';
 import { ToastService } from './toast.service';
 import { EditorJobService } from './editor-job.service';
@@ -60,7 +60,6 @@ export class SessionService {
     const epoch = this.store.stateEpoch();
     const objects = this.store.objects();
     const points = this.store.points();
-    const boxes = this.store.annotations()?.prompts.filter((prompt) => prompt.box);
     const request = ++this.snapshotRequest;
     if (blockEdits) this.store.isRecoveringAnnotations.set(true);
     try {
@@ -92,18 +91,6 @@ export class SessionService {
         this.store.isInitialized.set(false);
         throw new Error('The predictor is unavailable. Reload the video to continue.');
       }
-      if (
-        objects.map((object) => object.id).join() !==
-          this.store
-            .objects()
-            .map((object) => object.id)
-            .join() ||
-        this.pointSignature(points) !== this.pointSignature(this.store.points()) ||
-        JSON.stringify(boxes) !==
-          JSON.stringify(this.store.annotations()?.prompts.filter((prompt) => prompt.box))
-      ) {
-        this.store.invalidateTracking();
-      }
       this.framePipeline.clearMaskDataCache();
       this.framePipeline.redraw();
       this.framePipeline.scheduleFrameLoad(this.store.targetFrameIdx());
@@ -124,14 +111,6 @@ export class SessionService {
     } finally {
       if (blockEdits) this.store.isRecoveringAnnotations.set(false);
     }
-  }
-
-  private pointSignature(points: Map<number, Map<number, Point[]>>): string {
-    return JSON.stringify(
-      [...points]
-        .sort(([a], [b]) => a - b)
-        .map(([frame, objects]) => [frame, [...objects].sort(([a], [b]) => a - b)]),
-    );
   }
 
   async initVideo(): Promise<boolean> {

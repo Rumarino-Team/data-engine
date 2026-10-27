@@ -161,7 +161,12 @@ describe('BackendService', () => {
     } as unknown as HttpClient;
     const service = new BackendService(http);
 
-    service.trackPromptPoints({ add_support_grid: true }).subscribe();
+    service
+      .trackPromptPoints(
+        { add_support_grid: true },
+        { session_id: 'session-1', expected_revision: 0 },
+      )
+      .subscribe();
 
     expect((http.post as any).mock.calls[0][0]).toBe(
       'http://127.0.0.1:8000/tracking/track_prompt_points',

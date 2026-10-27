@@ -118,6 +118,25 @@ class PromptTrackingStatusTests(unittest.TestCase):
         )
         self.assertEqual(result["tracking_result_id"], "track-1")
 
+    def test_failed_restore_disables_predictor_without_publishing(self):
+        from core.errors import OperationError
+        with (
+            patch("tracking.prompt_tracking.update_job"),
+            patch("tracking.prompt_tracking.ensure_tracker_model"),
+            patch("tracking.prompt_tracking.should_stream_tracking", return_value=False),
+            patch("tracking.prompt_tracking.load_tracking_video_from_current_video_state",
+                  return_value=(np.zeros((2, 2, 2, 3), dtype=np.uint8), self.tmp.name)),
+            patch("tracking.prompt_tracking.cleanup_cuda_memory"),
+            patch("tracking.prompt_tracking.restore_video_masker_from_prompt_events", side_effect=RuntimeError("restore failed")),
+            patch("tracking.prompt_tracking.save_prompt_tracking_result") as publish,
+        ):
+            with self.assertRaises(OperationError) as failure:
+                run_prompt_tracking_job(type("Request", (), {"add_support_grid": False})())
+        self.assertEqual(failure.exception.status_code, 503)
+        publish.assert_not_called()
+        self.assertIsNone(state.video_masker)
+        self.assertIsNone(state.tracking_video)
+
     def test_restore_progress_override_hides_sam2_labels(self):
         updates = []
 

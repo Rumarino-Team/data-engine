@@ -83,7 +83,10 @@ describe('tracking workflows', () => {
     backendMock.getTrackingResult.mockReturnValue(
       of({
         result: {
-          version: 1,
+          version: 3,
+          session_id: 'session-1',
+          annotation_revision: editor.store.annotationRevision(),
+          state_epoch: 3,
           result_id: 'track-1',
           message: 'Prompt-point tracking completed',
           model_name: 'cotracker3_online',
@@ -115,7 +118,10 @@ describe('tracking workflows', () => {
 
     await editor.tracking.runTracking();
 
-    expect(backendMock.trackPromptPoints).toHaveBeenCalledWith({ add_support_grid: true });
+    expect(backendMock.trackPromptPoints).toHaveBeenCalledWith(
+      { add_support_grid: true },
+      { session_id: 'session-1', expected_revision: editor.store.annotationRevision() },
+    );
     expect(backendMock.trackPromptPoints.mock.calls[0][0]).not.toHaveProperty('model_name');
     expect(backendMock.getTrackingResult).toHaveBeenCalledWith('track-1');
     expect(backendMock.clearJobResult).toHaveBeenCalledWith('job-track');
@@ -123,5 +129,58 @@ describe('tracking workflows', () => {
       [10, 20],
       [11, 21],
     ]);
+  });
+  it('retains only backend-selected tracks after annotation recovery', () => {
+    const point = {
+      point_id: 'keep',
+      obj_id: 1,
+      source_frame_idx: 0,
+      source_x: 1,
+      source_y: 2,
+      tracks: [[1, 2]],
+      visibility: [true],
+    };
+    editor.store.trackingResultId = 'tracks';
+    editor.store.trackedPoints.set([point, { ...point, point_id: 'remove' }]);
+    editor.store.applyAnnotationSnapshot(
+      {
+        session_id: editor.store.sessionId(),
+        state_epoch: editor.store.stateEpoch(),
+        annotations: editor.store.annotations(),
+        tracking_validity: { result_id: 'tracks', point_ids: ['keep'] },
+      },
+      backendMock.getApiUrl(),
+    );
+    expect(editor.store.trackedPoints()).toEqual([point]);
+    editor.store.applyAnnotationSnapshot(
+      {
+        session_id: editor.store.sessionId(),
+        state_epoch: editor.store.stateEpoch(),
+        annotations: editor.store.annotations(),
+        tracking_validity: null,
+      },
+      backendMock.getApiUrl(),
+    );
+    expect(editor.store.trackedPoints()).toEqual([]);
+  });
+
+  it('rejects a tracking response after switching backend', async () => {
+    const result$ = new Subject<unknown>();
+    backendMock.getTrackingResult.mockReturnValue(result$);
+    const pending = editor.tracking.loadTrackingResult('tracks', 'Tracking');
+    backendMock.getApiUrl.mockReturnValue('http://another-backend');
+    result$.next({
+      result: {
+        session_id: 'session-1',
+        annotation_revision: 0,
+        state_epoch: 3,
+        points: [],
+        tracks: [],
+        visibility: [],
+      },
+    });
+    result$.complete();
+    expect(await pending).toBe(false);
+    expect(editor.store.trackingResultId).toBeNull();
   });
 });

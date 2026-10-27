@@ -53,6 +53,8 @@ class AnnotationPreconditionTests(unittest.TestCase):
                 ("POST", "/video/add_new_points_or_box", {"frame_idx": 0, "obj_id": 1, "points": [[1, 2]], "labels": [1]}),
                 ("POST", "/video/clear_all_prompts_in_frame?frame_idx=0&obj_id=1", None),
                 ("POST", "/video/reset_state", None),
+                ("POST", "/video/propagate_in_video", {}),
+                ("POST", "/tracking/track_prompt_points", {}),
             ]:
                 with self.subTest(url=url, headers=headers):
                     response = self.client.request(method, url, headers=headers, json=body)
@@ -68,6 +70,25 @@ class AnnotationPreconditionTests(unittest.TestCase):
         for headers in [{}, self.headers(revision=-1), self.headers(revision="bad")]:
             self.assertEqual(self.client.post("/video/objects", headers=headers).status_code, 422)
         self.assertEqual(state.annotations.revision, 1)
+
+    def test_job_admission_captures_inputs_and_rejects_stale_worker(self):
+        from schemas.video import VideoPrompt
+        from core.errors import OperationError
+        state.annotations.set_prompt(VideoPrompt(frame_idx=0, obj_id=1, points=[[1, 2]], labels=[1]))
+        for route, module in [("/video/propagate_in_video", "video.propagation"),
+                              ("/tracking/track_prompt_points", "tracking.prompt_tracking")]:
+            with patch(f"{module}.queue_long_job", return_value={"job_id": "test"}) as queue:
+                response = self.client.post(route, json={}, headers=self.headers(revision=state.annotations.revision))
+                self.assertEqual(response.status_code, 200)
+                inputs = queue.call_args.kwargs["inputs"]
+                self.assertEqual(inputs["session_id"], "current")
+                self.assertEqual(inputs["input_revision"], state.annotations.revision)
+                state.active_session_id = "replacement"
+                with self.assertRaises(OperationError) as stale:
+                    queue.call_args.kwargs["worker"]()
+                self.assertEqual(stale.exception.status_code, 409)
+                state.active_session_id = "current"
+        state.video_masker.init_state.assert_not_called()
 
     def test_two_concurrent_commands_from_same_revision_accept_only_one(self):
         barrier = threading.Barrier(2)

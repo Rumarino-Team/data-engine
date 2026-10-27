@@ -66,8 +66,9 @@ async def save_video_session_route(request: VideoSaveRequest):
 
 
 @router.post("/video/propagate_in_video")
-async def propagate_in_video(request: VideoPropagateRequest):
-    return await start_propagation(request)
+async def propagate_in_video(request: VideoPropagateRequest,
+                             precondition: AnnotationPrecondition = Depends(annotation_precondition)):
+    return await start_propagation(request, precondition)
 
 
 @router.post("/video/clear_all_prompts_in_frame")

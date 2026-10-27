@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from core.errors import OperationError
 from core.state import BackendState
 from core.annotations import SessionAnnotations
 from schemas.video import VideoPropagateRequest
@@ -61,13 +62,14 @@ class PartialPropagationTests(unittest.TestCase):
                         "restore_video_masker_from_prompt_events": Mock(),
                     }.items():
                         patches.enter_context(patch.object(propagation, name, value))
+                    patches.enter_context(patch("core.state.state", state))
                     # Repeat the shorter range: neither run may remove the earlier/later data.
                     for _ in range(2):
                         response = propagation.run_propagation_job(VideoPropagateRequest(
                             start_frame_idx=1, max_frame_num_to_track=2, use_tracked_points=False,
                             export_overlay_frames=export_overlay_frames,
                         ))
-                        updated = load_mask_manifest(masks / "manifest.json")
+                        updated = load_mask_manifest(Path(state.mask_manifest_path))
                         self.assertEqual(set(updated["frames"]), {"0", "1", "2", "3", "4"})
                         for i in [0, 3, 4]:
                             self.assertEqual(updated["frames"][str(i)], old_frame)
@@ -87,6 +89,30 @@ class PartialPropagationTests(unittest.TestCase):
                         self.assertEqual(set(state.interactive_mask_files), {"0", "3", "4"})
                         if explicit_override:
                             self.assertTrue(any(call.kwargs["mask"].all() for call in masker.add_new_mask.call_args_list))
+
+                    previous_path = state.mask_manifest_path
+                    previous_masks = dict(state.interactive_mask_files)
+                    previous_manifest = Path(previous_path).read_bytes()
+                    request = VideoPropagateRequest(start_frame_idx=1, max_frame_num_to_track=2,
+                                                    use_tracked_points=False, export_overlay_frames=False)
+                    with patch.object(propagation, "write_session_metadata", side_effect=OSError("disk full")):
+                        with self.assertRaises(OSError):
+                            propagation.run_propagation_job(request)
+                    self.assertEqual(state.mask_manifest_path, previous_path)
+                    self.assertEqual(state.interactive_mask_files, previous_masks)
+                    self.assertEqual(Path(previous_path).read_bytes(), previous_manifest)
+                    with patch.object(masker, "propagate_in_video", side_effect=RuntimeError("inference failed")):
+                        with self.assertRaises(OperationError):
+                            propagation.run_propagation_job(request)
+                    self.assertEqual(state.mask_manifest_path, previous_path)
+                    propagation.restore_video_masker_from_prompt_events.assert_called()
+                    with patch.object(propagation, "restore_video_masker_from_prompt_events", side_effect=RuntimeError("restore failed")):
+                        with self.assertRaises(OperationError) as failure:
+                            propagation.run_propagation_job(request)
+                    self.assertEqual(failure.exception.status_code, 503)
+                    self.assertIsNone(state.video_masker)
+                    self.assertEqual(state.mask_manifest_path, previous_path)
+                    self.assertEqual(state.interactive_mask_files, previous_masks)
 
 
 if __name__ == "__main__":

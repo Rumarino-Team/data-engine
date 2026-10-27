@@ -106,7 +106,6 @@ export class PointEditingService {
           throw new Error('Invalid effective mask response.');
         if (frameIdx !== this.store.displayedFrameIdx())
           this.framePipeline.scheduleFrameLoad(this.store.targetFrameIdx());
-        this.store.invalidateTracking();
         return;
       }
       const response = result as VideoAddPointsResponse;
@@ -157,7 +156,6 @@ export class PointEditingService {
         throw new Error('Invalid effective mask response.');
       if (requestFrameIdx !== this.store.displayedFrameIdx())
         this.framePipeline.scheduleFrameLoad(this.store.targetFrameIdx());
-      this.store.invalidateTracking();
       this.framePipeline.redraw();
     } catch (error) {
       if (!ownsContext()) return;

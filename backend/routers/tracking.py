@@ -1,4 +1,7 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from routers.video import annotation_precondition
+from schemas.video import AnnotationPrecondition
+from core.jobs import foreground_lock
 
 from schemas.tracking import (
     TrackingGridRequest,
@@ -20,8 +23,9 @@ async def load_tracking_video_route(request: TrackingLoadVideoRequest):
 
 
 @router.post("/tracking/track_prompt_points")
-async def track_prompt_points(request: TrackingPromptPointsRequest):
-    return await start_prompt_tracking(request)
+async def track_prompt_points(request: TrackingPromptPointsRequest,
+                              precondition: AnnotationPrecondition = Depends(annotation_precondition)):
+    return await start_prompt_tracking(request, precondition)
 
 
 @router.post("/tracking/track_grid")
@@ -36,4 +40,5 @@ async def track_points_route(request: TrackingPointsRequest):
 
 @router.get("/tracking/results/{result_id}")
 async def get_tracking_result(result_id: str):
-    return {"result": load_prompt_tracking_result(result_id)}
+    with foreground_lock:
+        return {"result": load_prompt_tracking_result(result_id)}

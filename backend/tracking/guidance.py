@@ -179,38 +179,17 @@ def load_latest_tracking_guidance(*, num_frames: int) -> TrackingGuidance:
     if len(result_points) != len(result_tracks) or len(result_points) != len(result_visibility):
         return TrackingGuidance(points=[], skipped_reason="Latest CoTracker result has inconsistent tracked point data.", should_warn=True)
 
-    current_keys = positive_prompt_keys(state.annotations.prompt_events())
-    matched_points: list[TrackedGuidancePoint] = []
-
-    for index, point in enumerate(result_points):
-        if not isinstance(point, dict):
-            continue
-        try:
-            source_key = prompt_point_key(
-                obj_id=int(point["obj_id"]),
-                frame_idx=int(point["source_frame_idx"]),
-                x=float(point["source_x"]),
-                y=float(point["source_y"]),
-            )
-        except (KeyError, TypeError, ValueError):
-            continue
-        if source_key not in current_keys:
-            continue
-
-        tracks = result_tracks[index]
-        visibility = result_visibility[index]
-        if not isinstance(tracks, list) or not isinstance(visibility, list):
-            continue
-        if len(tracks) < num_frames or len(visibility) < num_frames:
-            continue
-        matched_points.append(
-            TrackedGuidancePoint(
-                obj_id=int(point["obj_id"]),
-                source_frame_idx=int(point["source_frame_idx"]),
-                tracks=tracks,
-                visibility=visibility,
-            )
-        )
+    from tracking.results import current_tracking_result
+    try:
+        result = current_tracking_result(result)
+    except Exception:
+        return TrackingGuidance(points=[], skipped_reason="Latest CoTracker result does not match the current session.", should_warn=True)
+    matched_points = [TrackedGuidancePoint(
+        obj_id=int(point["obj_id"]), source_frame_idx=int(point["source_frame_idx"]),
+        tracks=tracks, visibility=visibility,
+    ) for point, tracks, visibility in zip(result["points"], result["tracks"], result["visibility"])
+        if isinstance(tracks, list) and isinstance(visibility, list)
+        and len(tracks) >= num_frames and len(visibility) >= num_frames]
 
     if not matched_points:
         return TrackingGuidance(

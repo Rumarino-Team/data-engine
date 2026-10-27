@@ -67,7 +67,24 @@ def clear_current_job_result(job_id: str) -> bool:
         current_job["updated_at"] = utc_now_iso()
         return True
 
-def _start_job(operation: str, *, stage: str, stage_label: str, message: str) -> dict[str, Any]:
+def capture_job_inputs(operation: str) -> dict[str, Any]:
+    from core.state import state
+    from tracking.guidance import positive_prompt_keys
+    return {
+        "session_id": state.active_session_id,
+        "input_revision": state.annotations.revision,
+        "dependencies": (sorted(positive_prompt_keys(state.annotations.prompt_events()))
+                         if operation == "prompt_tracking" else dict(state.annotations.input_revisions)),
+    }
+
+
+def validate_job_inputs(inputs: dict[str, Any], operation: str) -> None:
+    current = capture_job_inputs(operation)
+    if inputs["session_id"] != current["session_id"] or inputs["dependencies"] != current["dependencies"]:
+        raise OperationError(409, "Job inputs are no longer current.")
+
+
+def _start_job(operation: str, *, stage: str, stage_label: str, message: str, inputs=None) -> dict[str, Any]:
     global current_job
     with foreground_lock, current_job_lock:
         if _active_job_exists():
@@ -76,6 +93,7 @@ def _start_job(operation: str, *, stage: str, stage_label: str, message: str) ->
         now = utc_now_iso()
         current_job = {
             "job_id": uuid.uuid4().hex,
+            "inputs": inputs,
             "operation": operation,
             "status": "queued",
             "stage": stage,
@@ -237,8 +255,9 @@ def queue_long_job(
     stage_label: str,
     message: str,
     worker: Callable[[], dict[str, Any]],
+    inputs: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    job = _start_job(operation, stage=stage, stage_label=stage_label, message=message)
+    job = _start_job(operation, stage=stage, stage_label=stage_label, message=message, inputs=inputs)
     thread = threading.Thread(target=_run_job, args=(job["job_id"], worker), daemon=True)
     thread.start()
     return {

@@ -30,7 +30,7 @@ from video.masks import mask_logits_to_2d_bool, store_mask_override, override_pi
 from video.manifest_cache import load_cached_mask_manifest
 from video.mask_encoding import encode_live_mask_payload
 from video.prompts import record_prompt_event, replay_annotation_prompts, prompt_runtime_edit
-from tracking.results import restored_tracking_result_payload
+from tracking.results import restored_tracking_result_payload, tracking_validity
 
 logger = logging.getLogger(__name__)
 
@@ -59,8 +59,9 @@ def initialize_video_state_from_resolved_input(
             if session_metadata.get("saved_name")
             else session_dir.name
         )
-        manifest_path = masks_dir / "manifest.json"
-        state.mask_manifest_path = str(manifest_path) if manifest_path.exists() else None
+        manifest_name = session_metadata.get("mask_manifest_file")
+        manifest_path = masks_dir / Path(manifest_name).name if manifest_name else None
+        state.mask_manifest_path = str(manifest_path) if manifest_path and manifest_path.exists() else None
         source_video_path = session_metadata.get("source_video_path")
         state.video_source_path = source_video_path
         indexed_frame_files = sorted(
@@ -103,6 +104,7 @@ def initialize_video_state_from_resolved_input(
             "interactive_state": interactive_state_projection(interactive_state),
             "has_mask_manifest": bool(state.mask_manifest_path),
         }
+        state.video_frame_files = indexed_frame_files
         tracking_result = restored_tracking_result_payload(session_dir, session_metadata)
         if tracking_result is not None:
             restored_session_payload["tracking_result"] = tracking_result
@@ -546,8 +548,8 @@ async def save_video_session(request: VideoSaveRequest):
         state.active_session_dir = saved_path
         state.active_session_saved_name = save_name
         state.video_dir = str(saved_path / "frames")
-        manifest_path = saved_path / "masks" / "manifest.json"
-        state.mask_manifest_path = str(manifest_path) if manifest_path.exists() else None
+        manifest_path = saved_path / "masks" / Path(state.mask_manifest_path).name if state.mask_manifest_path else None
+        state.mask_manifest_path = str(manifest_path) if manifest_path and manifest_path.exists() else None
         write_session_metadata(metadata_extra)
 
         return {
@@ -614,6 +616,7 @@ def annotation_update(precondition: AnnotationPrecondition):
         "session_id": state.active_session_id,
         "state_epoch": int(state.video_state_epoch),
         "annotation_delta": state.annotations.take_delta(precondition.expected_revision),
+        "tracking_validity": tracking_validity(),
     }
 
 
@@ -622,6 +625,7 @@ def annotation_snapshot():
         "session_id": state.active_session_id,
         "state_epoch": int(state.video_state_epoch),
         "annotations": state.annotations.snapshot() if current_session_path() is not None else None,
+        "tracking_validity": tracking_validity(),
     }
 
 
@@ -635,24 +639,24 @@ async def get_video_info():
         }
 
 async def get_mask_manifest():
-    if state.video_dir is None:
-        raise OperationError(400, "Video not initialized")
+    with foreground_lock:
+        if state.video_dir is None:
+            raise OperationError(400, "Video not initialized")
 
-    masks_dir = current_masks_dir()
-    manifest_path = Path(state.mask_manifest_path) if state.mask_manifest_path else (masks_dir / "manifest.json" if masks_dir is not None else Path(state.video_dir) / "masks" / "manifest.json")
-    if not manifest_path.exists():
-        raise OperationError(404, "Mask manifest not found. Run /video/propagate_in_video first.")
+        manifest_path = Path(state.mask_manifest_path) if state.mask_manifest_path else None
+        if not manifest_path or not manifest_path.exists():
+            raise OperationError(404, "Mask manifest not found. Run /video/propagate_in_video first.")
 
-    manifest = load_cached_mask_manifest(manifest_path)
-    return {
-        "version": manifest.get("version"),
-        "source_video_path": manifest.get("source_video_path"),
-        "resolved_video_frames_dir": manifest.get("resolved_video_frames_dir"),
-        "num_frames": manifest.get("num_frames", 0),
-        "frame_height": manifest.get("frame_height"),
-        "frame_width": manifest.get("frame_width"),
-        "state.mask_manifest_path": str(manifest_path),
-    }
+        manifest = load_cached_mask_manifest(manifest_path)
+        return {
+            "version": manifest.get("version"),
+            "source_video_path": manifest.get("source_video_path"),
+            "resolved_video_frames_dir": manifest.get("resolved_video_frames_dir"),
+            "num_frames": manifest.get("num_frames", 0),
+            "frame_height": manifest.get("frame_height"),
+            "frame_width": manifest.get("frame_width"),
+            "state.mask_manifest_path": str(manifest_path),
+        }
 
 async def get_mask_data(frame_idx: int):
     with foreground_lock:
@@ -679,7 +683,7 @@ async def get_video_mask_frame(frame_idx: int):
         if state.video_dir is None or not 0 <= frame_idx < len(state.video_frame_files):
             raise OperationError(404, "Frame index out of bounds")
         masks_dir = current_masks_dir()
-        manifest_path = masks_dir / "manifest.json" if masks_dir else None
+        manifest_path = Path(state.mask_manifest_path) if state.mask_manifest_path else None
         if not manifest_path or not manifest_path.exists():
             raise OperationError(404, "Mask frame not available")
         frame = load_cached_mask_manifest(manifest_path).get("frames", {}).get(str(frame_idx), {})

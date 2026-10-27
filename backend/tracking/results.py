@@ -7,7 +7,7 @@ from core.errors import OperationError
 from core.state import state
 from core.jobs import utc_now_iso
 from sessions.metadata import current_session_path, write_session_metadata
-from tracking.guidance import tracked_prompt_keys
+from tracking.guidance import tracked_prompt_keys, positive_prompt_keys
 from utils import load_mask_manifest, write_mask_manifest
 
 _RESULT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -47,7 +47,9 @@ def save_prompt_tracking_result(
     result_id = uuid.uuid4().hex
     created_at = utc_now_iso()
     payload = {
-        "version": 2,
+        "version": 3,
+        "session_id": state.active_session_id,
+        "input_revision": state.annotations.revision,
         "result_id": result_id,
         "created_at": created_at,
         "state_epoch": int(state.video_state_epoch),
@@ -67,6 +69,8 @@ def save_prompt_tracking_result(
     write_mask_manifest(result_path, payload)
 
     summary = {
+        "points": points,
+        "session_id": state.active_session_id,
         "model_name": model_name,
         "num_points": int(num_points),
         "num_frames": int(num_frames),
@@ -74,14 +78,17 @@ def save_prompt_tracking_result(
         "tracking_mode": tracking_mode,
         "streaming_frame_threshold": int(streaming_frame_threshold),
     }
-    write_session_metadata(
-        {
+    previous_metadata = dict(state.session_metadata)
+    try:
+        write_session_metadata({
             "latest_tracking_result_id": result_id,
             "latest_tracking_result_path": f"tracking/{result_id}.json",
             "latest_tracking_result_updated_at": created_at,
             "latest_tracking_result_summary": summary,
-        }
-    )
+        })
+    except Exception:
+        state.session_metadata = previous_metadata
+        raise
     return {"result_id": result_id, "path": str(result_path), "summary": summary}
 
 
@@ -91,6 +98,8 @@ def load_prompt_tracking_result(result_id: str) -> dict[str, Any]:
     if session_path is None:
         raise OperationError(404, "No active session.")
 
+    if normalized_result_id != state.session_metadata.get("latest_tracking_result_id"):
+        raise OperationError(404, "Tracking result is not published for this session.")
     result_path = _tracking_result_path(session_path, normalized_result_id)
     try:
         resolved_result_path = result_path.resolve()
@@ -104,7 +113,35 @@ def load_prompt_tracking_result(result_id: str) -> dict[str, Any]:
     result = load_mask_manifest(result_path)
     if not isinstance(result, dict):
         raise OperationError(500, "Tracking result payload is invalid.")
-    return result
+    return current_tracking_result(result)
+
+
+def current_tracking_result(result: dict[str, Any]) -> dict[str, Any]:
+    """One validity projection for display, guidance and session restoration."""
+    if (result.get("session_id") != state.active_session_id or
+            result.get("num_frames") != len(state.video_frame_files)):
+        raise OperationError(409, "Tracking result does not match the current video session.")
+    keys = positive_prompt_keys(state.annotations.prompt_events())
+    points, tracks, visibility = result.get("points", []), result.get("tracks", []), result.get("visibility", [])
+    if len(points) != len(tracks) or len(points) != len(visibility):
+        raise OperationError(500, "Tracking result payload is invalid.")
+    indices = [i for i, point in enumerate(points)
+               if point["obj_id"] in state.annotations.objects and tracked_prompt_keys([point])[0] in keys]
+    return {**result, "annotation_revision": state.annotations.revision,
+            "state_epoch": state.video_state_epoch, "num_points": len(indices),
+            "points": [points[i] for i in indices], "tracks": [tracks[i] for i in indices],
+            "visibility": [visibility[i] for i in indices]}
+
+
+def tracking_validity() -> dict[str, Any] | None:
+    result_id = state.session_metadata.get("latest_tracking_result_id")
+    summary = state.session_metadata.get("latest_tracking_result_summary", {})
+    if (not result_id or summary.get("session_id") != state.active_session_id or
+            summary.get("num_frames") != len(state.video_frame_files)):
+        return None
+    keys = positive_prompt_keys(state.annotations.prompt_events())
+    return {"result_id": result_id, "point_ids": [point["point_id"] for point in summary.get("points", [])
+            if point["obj_id"] in state.annotations.objects and tracked_prompt_keys([point])[0] in keys]}
 
 
 def restored_tracking_result_payload(session_path: Path, session_metadata: dict[str, Any]) -> dict[str, Any] | None:
@@ -123,6 +160,13 @@ def restored_tracking_result_payload(session_path: Path, session_metadata: dict[
     except ValueError:
         return None
     if not result_path.exists():
+        return None
+
+    try:
+        result = current_tracking_result(load_mask_manifest(result_path))
+        if not result["points"]:
+            return None
+    except (OperationError, OSError, ValueError, KeyError):
         return None
 
     summary = session_metadata.get("latest_tracking_result_summary")

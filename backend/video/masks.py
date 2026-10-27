@@ -202,7 +202,7 @@ def effective_mask_data(frame_idx: int) -> dict[str, Any]:
     from video.manifest_cache import load_cached_mask_manifest
     objects, sources = {}, {}
     masks_dir = current_masks_dir()
-    manifest_path = masks_dir / "manifest.json" if masks_dir else None
+    manifest_path = Path(state.mask_manifest_path) if state.mask_manifest_path else None
     frame = {}
     if manifest_path and manifest_path.exists():
         frame = load_cached_mask_manifest(manifest_path).get("frames", {}).get(str(frame_idx), {})

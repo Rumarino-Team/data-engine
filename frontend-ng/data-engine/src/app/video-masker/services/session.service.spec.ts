@@ -290,6 +290,9 @@ describe('session workflows', () => {
         result: {
           version: 1,
           result_id: 'track-restored',
+          session_id: 'session-1',
+          annotation_revision: 0,
+          state_epoch: 12,
           model_name: 'cotracker3_online',
           num_points: 1,
           num_frames: 2,

@@ -113,8 +113,13 @@ export class BackendService {
     );
   }
 
-  propagateInVideo(request: VideoPropagateRequest): Observable<JobStartResponse> {
-    return this.http.post<JobStartResponse>(this.endpoint('/video/propagate_in_video'), request);
+  propagateInVideo(
+    request: VideoPropagateRequest,
+    precondition: AnnotationPrecondition,
+  ): Observable<JobStartResponse> {
+    return this.http.post<JobStartResponse>(this.endpoint('/video/propagate_in_video'), request, {
+      headers: this.annotationHeaders(precondition),
+    });
   }
 
   saveVideoSession(
@@ -163,10 +168,7 @@ export class BackendService {
     );
   }
 
-  removeObject(
-    objId: number,
-    precondition: AnnotationPrecondition,
-  ): Observable<AnnotationUpdate> {
+  removeObject(objId: number, precondition: AnnotationPrecondition): Observable<AnnotationUpdate> {
     return this.http.post<AnnotationUpdate>(this.endpoint('/video/remove_object'), null, {
       headers: this.annotationHeaders(precondition),
       params: { obj_id: objId.toString() },
@@ -196,10 +198,14 @@ export class BackendService {
     return this.http.get<VideoMaskDataResponse>(this.endpoint(`/video/mask_data/${frameIdx}`));
   }
 
-  trackPromptPoints(request: TrackPromptPointsRequest): Observable<JobStartResponse> {
+  trackPromptPoints(
+    request: TrackPromptPointsRequest,
+    precondition: AnnotationPrecondition,
+  ): Observable<JobStartResponse> {
     return this.http.post<JobStartResponse>(
       this.endpoint('/tracking/track_prompt_points'),
       request,
+      { headers: this.annotationHeaders(precondition) },
     );
   }
 

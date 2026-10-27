@@ -57,6 +57,7 @@ def write_session_metadata(extra: Optional[dict[str, Any]] = None) -> None:
         "source_video_path": state.video_source_path,
         "resolved_video_frames_dir": state.video_dir,
         "state.mask_manifest_path": state.mask_manifest_path,
+        "mask_manifest_file": Path(state.mask_manifest_path).name if state.mask_manifest_path else None,
         "num_frames": len(state.video_frame_files),
         "state_epoch": int(state.video_state_epoch),
         "updated_at": utc_now_iso(),

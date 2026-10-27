@@ -129,7 +129,13 @@ export interface AnnotationDelta {
   removed_input_revisions: number[];
 }
 
+export interface TrackingValidity {
+  result_id: string;
+  point_ids: string[];
+}
+
 export interface AnnotationSnapshot {
+  tracking_validity?: TrackingValidity | null;
   mask_data?: VideoMaskDataResponse;
   session_id: string | null;
   state_epoch: number;
@@ -138,6 +144,7 @@ export interface AnnotationSnapshot {
 
 /** Mutation response; full snapshots come only from /video/info and initialization. */
 export interface AnnotationUpdate {
+  tracking_validity?: TrackingValidity | null;
   mask_data?: VideoMaskDataResponse;
   session_id: string | null;
   state_epoch: number;
@@ -231,6 +238,9 @@ export interface TrackPromptPointsJobResponse {
 }
 
 export interface TrackPromptPointsResult {
+  session_id: string;
+  annotation_revision: number;
+  state_epoch: number;
   version: number;
   result_id: string;
   model_name: string;

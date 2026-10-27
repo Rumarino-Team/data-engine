@@ -1,3 +1,4 @@
+from core.errors import OperationError
 import logging, shutil, uuid
 from pathlib import Path
 from typing import Any, Optional
@@ -5,12 +6,11 @@ import cv2
 import numpy as np
 import torch
 from core.config import WINDOW_FRAMES_ROOT
-from core.errors import OperationError
-from core.jobs import queue_long_job, update_job, foreground_lock
+from core.jobs import capture_job_inputs, validate_job_inputs, foreground_operation, queue_long_job, update_job, foreground_lock
 from core.runtime import cleanup_cuda_memory
 from core.state import state
 from schemas.video import VideoPropagateRequest
-from sessions.cache import clear_window_cache
+from sessions.cache import clear_window_cache, bump_video_state_epoch
 from sessions.metadata import current_masks_dir, write_session_metadata
 from utils import build_empty_mask_manifest, load_mask_manifest, prepare_video_masks_output, save_single_video_mask_frame, write_mask_manifest
 from video.io import build_window_dir
@@ -41,16 +41,24 @@ def propagation_batch_progress(
         "batch_count": batch_count,
     }
 
-async def start_propagation(request: VideoPropagateRequest):
-    return queue_long_job(
-        operation="mask_propagation",
-        stage="validating_prompts",
-        stage_label="Validating prompts",
-        message="Mask propagation queued",
-        worker=lambda: run_propagation_job(request),
-    )
+async def start_propagation(request: VideoPropagateRequest, precondition):
+    from video.service import validate_annotation_precondition
+    with foreground_operation():
+        validate_annotation_precondition(precondition)
+        inputs = capture_job_inputs("mask_propagation")
+        inputs["parameters"] = request.model_dump()
+        return queue_long_job(
+            operation="mask_propagation",
+            stage="validating_prompts",
+            stage_label="Validating prompts",
+            message="Mask propagation queued",
+            worker=lambda: run_propagation_job(request, inputs),
+            inputs=inputs,
+        )
 
-def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
+def run_propagation_job(request: VideoPropagateRequest, inputs=None) -> dict[str, Any]:
+    inputs = inputs or capture_job_inputs("mask_propagation")
+    validate_job_inputs(inputs, "mask_propagation")
     def _propagation_progress(processed_frames_count: int, expected_frames_count: int) -> float:
         return (processed_frames_count / expected_frames_count) if expected_frames_count else 0.0
 
@@ -140,7 +148,8 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
     )
 
     frame_files, masks_dir = prepare_video_masks_output(state.video_dir, masks_root, clear_existing=False)
-    manifest_file_path = masks_dir / "manifest.json"
+    previous_manifest_path = Path(state.mask_manifest_path) if state.mask_manifest_path else None
+    manifest_file_path = masks_dir / f"manifest-{uuid.uuid4().hex}.json"
 
     first_frame = cv2.imread(str(Path(state.video_dir) / state.video_frame_files[start_frame_idx]))
     if first_frame is None:
@@ -153,10 +162,12 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
         frame_height=int(first_frame.shape[0]),
         frame_width=int(first_frame.shape[1]),
     )
+    manifest["session_id"] = inputs["session_id"]
+    manifest["input_revision"] = inputs["input_revision"]
     manifest_frames: dict[str, Any] = manifest["frames"]
-    if manifest_file_path.exists():
+    if previous_manifest_path and previous_manifest_path.exists():
         # Each processed frame replaces its previous result; other ranges survive.
-        manifest_frames.update(load_mask_manifest(manifest_file_path).get("frames", {}))
+        manifest_frames.update(load_mask_manifest(previous_manifest_path).get("frames", {}))
     frame_height = int(first_frame.shape[0])
     frame_width = int(first_frame.shape[1])
 
@@ -487,14 +498,22 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
     except Exception as error:
         raise OperationError(500, f"Failed to propagate video masks: {error}") from error
     finally:
-        shutil.rmtree(run_root, ignore_errors=True)
+        try:
+            validate_job_inputs(inputs, "mask_propagation")
+            restore_video_masker_from_prompt_events(
+                online_mode=effective_online_mode, batch_size=effective_batch_size,
+                offload_video_to_cpu=effective_offload_video_to_cpu,
+                offload_state_to_cpu=effective_offload_state_to_cpu,
+                progress_stage_override="restoring_interactive_state",
+                progress_label_override="Restoring interactive state",
+            )
+        except Exception as error:
+            state.video_masker = None
+            bump_video_state_epoch()
+            raise OperationError(503, "Predictor restoration failed. Reload the video; no results were published.") from error
+        finally:
+            shutil.rmtree(run_root, ignore_errors=True)
 
-    with foreground_lock:
-        write_mask_manifest(manifest_file_path, manifest)
-        for frame_idx in processed_frames:
-            state.interactive_mask_files.pop(str(frame_idx), None)
-        state.mask_manifest_path = str(manifest_file_path)
-        write_session_metadata()
     update_job(
         stage="saving_manifest",
         stage_label="Saving manifest",
@@ -511,35 +530,24 @@ def run_propagation_job(request: VideoPropagateRequest) -> dict[str, Any]:
         batch_count=None,
     )
 
-    try:
-        # Rebind interactive state to the original full video frame index space.
-        update_job(
-            stage="restoring_interactive_state",
-            stage_label="Restoring interactive state",
-            progress=None,
-            current=len(processed_frames),
-            total=expected_total_frames,
-            window_index=None,
-            window_count=None,
-            frame_idx=None,
-            message="Restoring interactive masking state",
-            batch_current=None,
-            batch_total=None,
-            batch_index=None,
-            batch_count=None,
-        )
-        restore_video_masker_from_prompt_events(
-            online_mode=effective_online_mode,
-            batch_size=effective_batch_size,
-            offload_video_to_cpu=effective_offload_video_to_cpu,
-            offload_state_to_cpu=effective_offload_state_to_cpu,
-        )
-    except Exception as error:
-        raise OperationError(
-            500, f"Propagation completed but failed to restore interactive masking state: {error}"
-        ) from error
+    with foreground_lock:
+        validate_job_inputs(inputs, "mask_propagation")
+        write_mask_manifest(manifest_file_path, manifest)
+        previous_masks = state.interactive_mask_files
+        previous_path = state.mask_manifest_path
+        state.interactive_mask_files = {key: value for key, value in previous_masks.items()
+                                        if int(key) not in processed_frames}
+        state.mask_manifest_path = str(manifest_file_path)
+        try:
+            write_session_metadata()
+        except Exception:
+            state.interactive_mask_files = previous_masks
+            state.mask_manifest_path = previous_path
+            raise
 
     return {
+        "session_id": inputs["session_id"],
+        "input_revision": inputs["input_revision"],
         "video_segments": video_segments_serializable if request.include_masks_in_response else {},
         "video_segments_total_frames": len(processed_frames),
         "video_segments_returned_frames": len(video_segments_serializable),

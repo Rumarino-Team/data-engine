@@ -66,11 +66,14 @@ describe('mask-propagation workflows', () => {
     expect(editor.store.hasManifestMasks()).toBe(true);
     expect(editor.store.stateEpoch()).toBe(3);
     expect([...cachedMasks(editor.framePipeline).keys()]).toEqual([]);
-    expect(backendMock.propagateInVideo).toHaveBeenCalledWith({
-      start_frame_idx: 1,
-      max_frame_num_to_track: 2,
-      include_masks_in_response: false,
-      include_saved_mask_paths: false,
-    });
+    expect(backendMock.propagateInVideo).toHaveBeenCalledWith(
+      {
+        start_frame_idx: 1,
+        max_frame_num_to_track: 2,
+        include_masks_in_response: false,
+        include_saved_mask_paths: false,
+      },
+      { session_id: 'session-1', expected_revision: editor.store.annotationRevision() },
+    );
   });
 });

@@ -107,6 +107,7 @@ class SessionAnnotationsTests(unittest.TestCase):
         self.assertEqual(state.annotations.prompts[0].points, [[1, 2]])
 
     def seed_manifest(self):
+        state.mask_manifest_path = str(self.session / "masks" / "manifest.json")
         from video.masks import manifest_frame_payload
         from utils import write_mask_manifest
         payload = manifest_frame_payload({1: np.ones((3, 3), dtype=bool)})
@@ -115,6 +116,21 @@ class SessionAnnotationsTests(unittest.TestCase):
         write_mask_manifest(self.session / "masks" / "manifest.json",
                             {"num_frames": 1, "frames": {"0": payload}})
         (self.session / "masks" / "frame_00000_masks.png").write_bytes(b"overlay")
+
+    def test_selected_manifest_survives_save_move_and_reopen(self):
+        self.seed_manifest()
+        original = Path(state.mask_manifest_path)
+        selected = original.with_name("manifest-run.json")
+        selected.write_bytes(original.read_bytes())
+        state.mask_manifest_path = str(selected)
+        write_session_metadata()
+        with patch.object(service, "SAVED_ROOT", self.root / "saved"):
+            response = self.client.post("/video/save", json={"name": "result"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Path(state.mask_manifest_path).name, "manifest-run.json")
+        self.reopen()
+        self.assertEqual(Path(state.mask_manifest_path).name, "manifest-run.json")
+        self.assertEqual(self.client.get("/video/mask_data/0").json()["sources"], {"1": "manifest"})
 
     def add_override(self, foreground=False):
         with patch.object(service.cv2, "imread", return_value=np.zeros((3, 3, 3))):

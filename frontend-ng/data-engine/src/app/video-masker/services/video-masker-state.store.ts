@@ -6,6 +6,7 @@ import {
   VideoAnnotations,
   AnnotationSnapshot,
   AnnotationUpdate,
+  TrackingValidity,
 } from '../../services/backend.service';
 import {
   DebugMaskSource,
@@ -98,6 +99,7 @@ export class VideoMaskerStateStore {
       structuredClone(info.annotations),
       info.state_epoch,
     );
+    this.applyTrackingValidity(info.tracking_validity);
     return true;
   }
 
@@ -149,6 +151,7 @@ export class VideoMaskerStateStore {
       },
       update.state_epoch,
     );
+    this.applyTrackingValidity(update.tracking_validity);
     return true;
   }
 
@@ -169,11 +172,19 @@ export class VideoMaskerStateStore {
     }
   }
 
-  // Session-scoped bookkeeping shared by object and tracking workflows.
-  trackingRevision = 0;
+  trackingResultId: string | null = null;
+
+  private applyTrackingValidity(validity?: TrackingValidity | null): void {
+    const ids = new Set(validity?.point_ids ?? []);
+    this.trackedPoints.update((points) =>
+      validity?.result_id === this.trackingResultId
+        ? points.filter((point) => ids.has(point.point_id))
+        : [],
+    );
+  }
 
   invalidateTracking(): void {
-    this.trackingRevision++;
+    this.trackingResultId = null;
     this.trackedPoints.set([]);
   }
 

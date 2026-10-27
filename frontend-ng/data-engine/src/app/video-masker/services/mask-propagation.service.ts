@@ -23,6 +23,12 @@ export class MaskPropagationService {
 
   async propagate(): Promise<void> {
     if (this.isBusy) return;
+    const backendUrl = this.backend.getApiUrl();
+    const sessionId = this.store.sessionId();
+    const revision = this.store.annotationRevision();
+    if (!sessionId || revision === null || backendUrl !== this.store.annotationsBackendUrl())
+      return;
+    const precondition = { session_id: sessionId, expected_revision: revision };
     const startFrameIdx = this.store.propagationStartFrameIdx();
     const endFrameIdx = this.store.propagationEndFrameIdx();
     if (startFrameIdx > endFrameIdx) {
@@ -37,15 +43,25 @@ export class MaskPropagationService {
       'Propagating masks',
       () =>
         firstValueFrom(
-          this.backend.propagateInVideo({
-            start_frame_idx: startFrameIdx,
-            max_frame_num_to_track: endFrameIdx - startFrameIdx + 1,
-            include_masks_in_response: false,
-            include_saved_mask_paths: false,
-          }),
+          this.backend.propagateInVideo(
+            {
+              start_frame_idx: startFrameIdx,
+              max_frame_num_to_track: endFrameIdx - startFrameIdx + 1,
+              include_masks_in_response: false,
+              include_saved_mask_paths: false,
+            },
+            precondition,
+          ),
         ),
     );
+    if (
+      this.destroyRef.destroyed ||
+      backendUrl !== this.backend.getApiUrl() ||
+      sessionId !== this.store.sessionId()
+    )
+      return;
     if (!response) {
+      this.store.annotationRecoveryRequested.set(true);
       return;
     }
     this.store.updateStateEpoch(response.state_epoch, 'propagation');
@@ -89,7 +105,6 @@ export class MaskPropagationService {
             return;
           }
           this.store.hasManifestMasks.set(false);
-          this.store.invalidateTracking();
           this.store.resetInteractiveMaps();
           this.framePipeline.clearMaskDataCache();
           this.framePipeline.scheduleFrameLoad(this.store.targetFrameIdx());

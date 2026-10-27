@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 import sys
 
@@ -27,6 +28,9 @@ class TrackingResultTests(unittest.TestCase):
         state.active_session_saved_name = None
         state.video_frame_files = ["00000.jpg", "00001.jpg"]
         state.video_state_epoch = 1
+        state.session_metadata = {}
+        state.annotations = SessionAnnotations(objects={1: {"id": 1, "label": "Object 1", "color": "#ff0000"}},
+            prompts=[{"frame_idx": 0, "obj_id": 1, "points": [[10, 20]], "labels": [1]}])
 
     def tearDown(self):
         state.active_session_dir = None
@@ -52,11 +56,49 @@ class TrackingResultTests(unittest.TestCase):
         result_path = self.session_path / "tracking" / f"{saved['result_id']}.json"
         self.assertTrue(result_path.exists())
         loaded = load_prompt_tracking_result(saved["result_id"])
-        self.assertEqual(loaded["version"], 2)
+        self.assertEqual(loaded["version"], 3)
         self.assertEqual(loaded["state_epoch"], 1)
         self.assertEqual(loaded["tracked_prompt_keys"], ["obj:1|frame:0|x:10.000|y:20.000"])
         self.assertEqual(loaded["tracks"], [[[10, 20], [11, 21]]])
         self.assertEqual(loaded["visibility"], [[True, True]])
+
+    def test_failed_publication_keeps_previous_reference_and_hides_orphan(self):
+        kwargs = dict(model_name="cotracker3_online", num_points=1, num_frames=2,
+            add_support_grid_used=False, tracking_mode="streaming", streaming_frame_threshold=256,
+            points=[{"point_id": "p0", "obj_id": 1, "source_frame_idx": 0, "source_x": 10, "source_y": 20}],
+            tracks=[[[10, 20], [11, 21]]], visibility=[[True, True]])
+        old = save_prompt_tracking_result(**kwargs)
+        old_metadata = dict(state.session_metadata)
+        def fail(extra):
+            state.session_metadata.update(extra)
+            raise OSError("disk full")
+        with patch("tracking.results.write_session_metadata", side_effect=fail):
+            with self.assertRaises(OSError):
+                save_prompt_tracking_result(**kwargs)
+        self.assertEqual(state.session_metadata, old_metadata)
+        self.assertEqual(load_prompt_tracking_result(old["result_id"])["num_points"], 1)
+        orphan = next(path.stem for path in (self.session_path / "tracking").glob("*.json")
+                      if path.stem != old["result_id"])
+        with self.assertRaises(OperationError) as failure:
+            load_prompt_tracking_result(orphan)
+        self.assertEqual(failure.exception.status_code, 404)
+
+    def test_same_validity_for_retrieval_guidance_and_restore(self):
+        saved = save_prompt_tracking_result(model_name="cotracker3_online", num_points=1, num_frames=2,
+            add_support_grid_used=False, tracking_mode="streaming", streaming_frame_threshold=256,
+            points=[{"point_id": "p0", "obj_id": 1, "source_frame_idx": 0, "source_x": 10, "source_y": 20}],
+            tracks=[[[10, 20], [11, 21]]], visibility=[[True, True]])
+        state.annotations.objects[1].label = "Renamed"
+        self.assertEqual(load_prompt_tracking_result(saved["result_id"])["num_points"], 1)
+        self.assertIsNotNone(restored_tracking_result_payload(self.session_path, state.session_metadata))
+        state.annotations.clear_prompts(0, 1)
+        self.assertEqual(load_prompt_tracking_result(saved["result_id"])["points"], [])
+        self.assertEqual(load_latest_tracking_guidance(num_frames=2).points, [])
+        self.assertIsNone(restored_tracking_result_payload(self.session_path, state.session_metadata))
+        state.active_session_id = "another-session"
+        with self.assertRaises(OperationError) as mismatch:
+            load_prompt_tracking_result(saved["result_id"])
+        self.assertEqual(mismatch.exception.status_code, 409)
 
     def test_latest_guidance_uses_matching_tracks_with_post_tracking_prompts(self):
         state.annotations = SessionAnnotations(objects={1: {"id": 1, "label": "Object 1", "color": "#ff0000"}}, prompts=[
@@ -277,8 +319,7 @@ class TrackingResultTests(unittest.TestCase):
 
         restored = restored_tracking_result_payload(self.session_path, metadata)
 
-        self.assertEqual(restored["result_id"], "abc")
-        self.assertEqual(restored["summary"], {"num_points": 1})
+        self.assertIsNone(restored)
 
 
 if __name__ == "__main__":

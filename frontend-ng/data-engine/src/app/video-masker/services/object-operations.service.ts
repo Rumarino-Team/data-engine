@@ -159,7 +159,6 @@ export class ObjectOperationsService {
 
   /** Generated masks and textures are view caches; accepted prompts came from the snapshot. */
   private clearRemovedRenderCaches(): void {
-    this.store.invalidateTracking();
     this.framePipeline.clearMaskDataCache();
     this.framePipeline.scheduleFrameLoad(this.store.targetFrameIdx());
   }
