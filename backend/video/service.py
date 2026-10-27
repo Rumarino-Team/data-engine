@@ -8,7 +8,7 @@ import sam2_video_masker as svm
 from core.config import IMAGE_EXTENSIONS, SAVED_ROOT, VIDEO_EXTENSIONS
 from core.errors import OperationError
 from core.jobs import queue_long_job, foreground_operation, foreground_lock, update_job, utc_now_iso
-from core.state import state
+from core.state import BackendState, state
 from core.annotations import SessionAnnotations
 from pydantic import ValidationError
 from schemas.video import (
@@ -20,7 +20,7 @@ from schemas.video import (
     AnnotationPrecondition,
     VideoSaveRequest,
 )
-from sessions.cache import bump_video_state_epoch, prepare_video_masker_for_video_init, reset_video_session_state
+from sessions.cache import bump_video_state_epoch, reset_video_session_state
 from schemas.video import InteractiveState
 from sessions.metadata import current_masks_dir, current_session_path, interactive_state_projection, load_session_metadata, persisted_session_fields, sanitize_save_name, write_session_metadata
 from sessions.paths import path_is_relative_to, resolve_input_path, resolve_saved_session_layout, validate_video_input_path
@@ -29,7 +29,7 @@ from video.io import copy_frames_directory_to_session, create_active_session, ex
 from video.masks import mask_logits_to_2d_bool, store_mask_override, override_pixels, reclaim_override_artifacts, retain_interactive_masks, effective_mask_data
 from video.manifest_cache import load_cached_mask_manifest
 from video.mask_encoding import encode_live_mask_payload
-from video.prompts import record_prompt_event, replay_annotation_prompts, prompt_runtime_edit
+from video.prompts import record_prompt_event, replay_annotation_prompts, annotation_edit
 from tracking.results import restored_tracking_result_payload, tracking_validity
 
 logger = logging.getLogger(__name__)
@@ -42,7 +42,9 @@ def initialize_video_state_from_resolved_input(
     offload_video_to_cpu: Optional[bool],
     offload_state_to_cpu: Optional[bool],
     async_loading_frames: bool,
+    session: BackendState,
 ):
+    # Preparation may target a detached session; helpers must use that same session.
 
     source_video_path = None
     source_type = "frames_dir"
@@ -53,17 +55,17 @@ def initialize_video_state_from_resolved_input(
         session_dir, frames_dir, masks_dir = saved_session_layout
         session_metadata = load_session_metadata(session_dir)
         source_type = "saved_session"
-        state.active_session_dir = session_dir
-        state.active_session_saved_name = (
+        session.active_session_dir = session_dir
+        session.active_session_saved_name = (
             str(session_metadata.get("saved_name")).strip()
             if session_metadata.get("saved_name")
             else session_dir.name
         )
         manifest_name = session_metadata.get("mask_manifest_file")
         manifest_path = masks_dir / Path(manifest_name).name if manifest_name else None
-        state.mask_manifest_path = str(manifest_path) if manifest_path and manifest_path.exists() else None
+        session.mask_manifest_path = str(manifest_path) if manifest_path and manifest_path.exists() else None
         source_video_path = session_metadata.get("source_video_path")
-        state.video_source_path = source_video_path
+        session.video_source_path = source_video_path
         indexed_frame_files = sorted(
             frame_path.name
             for frame_path in frames_dir.iterdir()
@@ -89,27 +91,25 @@ def initialize_video_state_from_resolved_input(
                 session_metadata.get("interactive_state") or {}
             ).model_dump()
             for mask in annotations.mask_overrides:
-                override_pixels(mask)
+                override_pixels(mask, session_path=session.active_session_dir)
         except (KeyError, ValidationError, ValueError) as error:
             raise OperationError(400, f"Invalid session annotations or editor state: {error}") from error
-        state.active_session_id = session_id
-        state.annotations = annotations
-        state.interactive_mask_files = session_metadata.get("interactive_mask_files", {})
-        state.session_metadata = persisted_session_fields(session_metadata)
-        state.committed_override_artifacts = {mask.artifact for mask in annotations.mask_overrides}
-        # Orphans are artifacts from edits interrupted before or after their metadata commit.
-        reclaim_override_artifacts(state.committed_override_artifacts)
+        session.active_session_id = session_id
+        session.annotations = annotations
+        session.interactive_mask_files = session_metadata.get("interactive_mask_files", {})
+        session.session_metadata = persisted_session_fields(session_metadata)
+        session.committed_override_artifacts = {mask.artifact for mask in annotations.mask_overrides}
         restored_session_payload = {
-            "annotations": state.annotations.snapshot(),
-            "interactive_state": interactive_state_projection(interactive_state),
-            "has_mask_manifest": bool(state.mask_manifest_path),
+            "annotations": session.annotations.snapshot(),
+            "interactive_state": interactive_state_projection(interactive_state, session=session),
+            "has_mask_manifest": bool(session.mask_manifest_path),
         }
-        state.video_frame_files = indexed_frame_files
-        tracking_result = restored_tracking_result_payload(session_dir, session_metadata)
+        session.video_frame_files = indexed_frame_files
+        tracking_result = restored_tracking_result_payload(session_dir, session_metadata, session=session)
         if tracking_result is not None:
             restored_session_payload["tracking_result"] = tracking_result
     else:
-        session_dir = create_active_session(resolved_input_path)
+        session_dir = create_active_session(resolved_input_path, session=session)
         frames_dir = session_dir / "frames"
 
         if resolved_input_path.is_file():
@@ -193,17 +193,17 @@ def initialize_video_state_from_resolved_input(
                 progress_callback=_on_link_progress,
             )
 
-    state.video_dir = str(frames_dir)
-    state.video_frame_files = indexed_frame_files
+    session.video_dir = str(frames_dir)
+    session.video_frame_files = indexed_frame_files
 
-    if not state.video_frame_files:
+    if not session.video_frame_files:
         if source_type == "saved_session":
             raise OperationError(400, f"No image frames found under saved session frames directory: {frames_dir}")
         raise OperationError(400, f"No image frames found in directory: {resolved_input_path}")
 
     if source_type != "saved_session":
-        state.mask_manifest_path = None
-        state.video_source_path = source_video_path
+        session.mask_manifest_path = None
+        session.video_source_path = source_video_path
 
     if resolved_input_path.is_file():
         suffix = resolved_input_path.suffix.lower()
@@ -221,12 +221,12 @@ def initialize_video_state_from_resolved_input(
             message=message,
         )
 
-    if state.video_masker is None:
-        state.video_masker = svm.SAM2VideoMasker(progress_callback=_on_sam2_progress)
+    if session.video_masker is None:
+        session.video_masker = svm.SAM2VideoMasker(progress_callback=_on_sam2_progress)
 
     try:
-        state.video_masker.init_state(
-            state.video_dir,
+        session.video_masker.init_state(
+            session.video_dir,
             online_mode=online_mode,
             batch_size=batch_size,
             offload_video_to_cpu=offload_video_to_cpu,
@@ -234,7 +234,7 @@ def initialize_video_state_from_resolved_input(
             async_loading_frames=async_loading_frames,
             progress_callback=_on_sam2_progress,
         )
-        replay_annotation_prompts()
+        replay_annotation_prompts(session)
     except ValueError as error:
         raise OperationError(400, str(error)) from error
 
@@ -272,31 +272,33 @@ def initialize_video_state_from_resolved_input(
                 message=f"Indexed {len(indexed_frame_files)} of {total_candidates} frame files",
                 append_history=candidate_idx == 1 or candidate_idx == total_candidates,
             )
-    state_epoch = bump_video_state_epoch()
+    session.video_state_epoch += 1
+    state_epoch = session.video_state_epoch
     metadata_updates = {
         "source_input_path": str(resolved_input_path),
     }
     if source_type != "saved_session":
-        state.annotations.create_object()
+        session.annotations.create_object()
         metadata_updates["created_at"] = utc_now_iso()
     else:
         metadata_updates["interactive_state"] = restored_session_payload["interactive_state"]
-    write_session_metadata(metadata_updates)
 
     response_payload: dict[str, Any] = {
         "message": "Video state initialized successfully",
-        "num_frames": len(state.video_frame_files),
-        "resolved_video_frames_dir": state.video_dir,
+        "num_frames": len(session.video_frame_files),
+        "resolved_video_frames_dir": session.video_dir,
         "source_video_path": source_video_path,
-        "online_mode": state.video_masker.online_mode,
-        "batch_size": state.video_masker.default_batch_size,
-        "offload_video_to_cpu": state.video_masker.offload_video_to_cpu,
-        "offload_state_to_cpu": state.video_masker.offload_state_to_cpu,
+        "online_mode": session.video_masker.online_mode,
+        "batch_size": session.video_masker.default_batch_size,
+        "offload_video_to_cpu": session.video_masker.offload_video_to_cpu,
+        "offload_state_to_cpu": session.video_masker.offload_state_to_cpu,
         "state_epoch": state_epoch,
         "source_type": source_type,
     }
     if restored_session_payload is not None:
         response_payload["restored_session"] = restored_session_payload
+    write_session_metadata(metadata_updates, session=session)
+    reclaim_override_artifacts(session.committed_override_artifacts, session_path=session.active_session_dir)
     return response_payload
 
 async def start_video_init(request: VideoInitStateRequest):
@@ -316,33 +318,11 @@ def run_video_init_job(request: VideoInitStateRequest) -> dict[str, Any]:
         progress=0.05,
         message="Resolving video path",
     )
-    prepare_video_masker_for_video_init()
     resolved_input_path = resolve_input_path(request.video_frames_dir)
     validate_video_input_path(resolved_input_path)
-    update_job(
-        stage="preparing_session_cache",
-        stage_label="Preparing session cache",
-        progress=0.10,
-        message="Creating active session cache",
-    )
-
-    def _on_sam2_progress(stage: str, label: str, progress: Optional[float], message: str) -> None:
-        update_job(stage=stage, stage_label=label, progress=progress, message=message)
-
-    state.video_masker = svm.SAM2VideoMasker(progress_callback=_on_sam2_progress)
-    update_job(
-        stage="model_ready",
-        stage_label="SAM2 model ready",
-        progress=0.35,
-        message="SAM2 model loaded",
-    )
-    if resolved_input_path.is_file() and resolved_input_path.suffix.lower() in VIDEO_EXTENSIONS:
-        update_job(
-            stage="extracting_frames",
-            stage_label="Extracting video frames",
-            progress=0.35,
-            message="Extracting video frames",
-        )
+    # Keep accepted state and its runtime readable until the replacement is ready.
+    previous_session_id = state.active_session_id
+    candidate = BackendState(video_state_epoch=state.video_state_epoch)
     result = initialize_video_state_from_resolved_input(
         resolved_input_path,
         online_mode=request.online_mode,
@@ -350,23 +330,22 @@ def run_video_init_job(request: VideoInitStateRequest) -> dict[str, Any]:
         offload_video_to_cpu=request.offload_video_to_cpu,
         offload_state_to_cpu=request.offload_state_to_cpu,
         async_loading_frames=request.async_loading_frames,
+        session=candidate,
     )
-    update_job(
-        stage="indexing_frames",
-        stage_label="Indexing video frames",
-        progress=0.95,
-        current=int(result.get("num_frames", 0)),
-        total=int(result.get("num_frames", 0)),
-        message=f"Indexed {int(result.get('num_frames', 0))} frames",
-    )
+    with foreground_lock:
+        if state.active_session_id != previous_session_id:
+            raise OperationError(409, "The active session changed while preparing its replacement.")
+        state.__dict__.update(candidate.__dict__)
+    # Previous working files remain recoverable; reclamation is a separate operation.
     return result
+
 
 async def reset_video_state(precondition: AnnotationPrecondition):
     with foreground_operation():
         validate_annotation_precondition(precondition)
         if state.video_masker is None:
             raise OperationError(400, "Video masker not active.")
-        with prompt_runtime_edit():
+        with annotation_edit():
             state.video_masker.reset_state()
             reset_video_session_state()
             # Reset publishes empty references and invalidates input revisions.
@@ -397,7 +376,7 @@ async def add_new_points_or_box(request: VideoAddPointsOrBoxRequest, preconditio
         if request.obj_id not in state.annotations.objects:
             raise OperationError(404, "Prompt object does not exist.")
 
-        with prompt_runtime_edit():
+        with annotation_edit():
             if any(mask.frame_idx == request.frame_idx and mask.obj_id == request.obj_id
                    for mask in state.annotations.mask_overrides):
                 state.video_masker.clear_all_prompts_in_frame(request.frame_idx, request.obj_id)
@@ -511,7 +490,7 @@ async def add_new_mask(request: VideoAddMaskRequest, precondition: AnnotationPre
         image = cv2.imread(str(Path(state.video_dir) / state.video_frame_files[request.frame_idx]))
         if image is None or mask.shape != image.shape[:2]:
             raise OperationError(400, "Mask dimensions must match the video frame.")
-        with prompt_runtime_edit():
+        with annotation_edit():
             state.video_masker.clear_all_prompts_in_frame(request.frame_idx, request.obj_id)
             state.video_masker.add_new_mask(frame_idx=request.frame_idx, obj_id=request.obj_id, mask=mask)
             state.annotations.set_mask(store_mask_override(request.frame_idx, request.obj_id, mask))
@@ -566,7 +545,7 @@ async def clear_all_prompts_in_frame(frame_idx: int, obj_id: int, precondition: 
             raise OperationError(400, "Video masker not active.")
         if obj_id not in state.annotations.objects or not 0 <= frame_idx < len(state.video_frame_files):
             raise OperationError(404, "Prompt object or frame does not exist.")
-        with prompt_runtime_edit():
+        with annotation_edit():
             state.video_masker.clear_all_prompts_in_frame(frame_idx, obj_id)
             state.annotations.clear_prompts(frame_idx, obj_id)
             mask_data = effective_mask_data(frame_idx)
@@ -579,16 +558,20 @@ async def remove_object(obj_id: int, precondition: AnnotationPrecondition):
         validate_annotation_precondition(precondition)
         if state.video_masker is None:
             raise OperationError(400, "Video masker not active.")
-        state.video_masker.remove_object(obj_id)
-        state.annotations.remove_object(obj_id)
-        write_session_metadata()
+        if obj_id not in state.annotations.objects:
+            raise OperationError(404, "Object does not exist.")
+        with annotation_edit():
+            state.video_masker.remove_object(obj_id)
+            state.annotations.remove_object(obj_id)
+            write_session_metadata()
         return annotation_update(precondition)
 
 async def create_object(precondition: AnnotationPrecondition):
     with foreground_operation():
         validate_annotation_precondition(precondition)
-        obj = state.annotations.create_object()
-        write_session_metadata()
+        with annotation_edit(restore_runtime=False):
+            obj = state.annotations.create_object()
+            write_session_metadata()
         return {**annotation_update(precondition), "created_object_id": obj.id}
 
 
@@ -598,8 +581,9 @@ async def update_object(obj_id: int, request: VideoObjectUpdate, precondition: A
         if obj_id not in state.annotations.objects:
             raise OperationError(404, "Object does not exist.")
         obj = VideoObject(id=obj_id, **request.model_dump()).model_dump()
-        state.annotations.upsert_object(obj)
-        write_session_metadata()
+        with annotation_edit(restore_runtime=False):
+            state.annotations.upsert_object(obj)
+            write_session_metadata()
         return annotation_update(precondition)
 
 
@@ -667,16 +651,17 @@ async def get_mask_data(frame_idx: int):
         return effective_mask_data(frame_idx)
 
 async def get_video_frame(frame_idx: int):
-    if state.video_dir is None or not state.video_frame_files:
-        raise OperationError(400, "Video not initialized")
+    with foreground_lock:
+        if state.video_dir is None or not state.video_frame_files:
+            raise OperationError(400, "Video not initialized")
 
-    if frame_idx < 0 or frame_idx >= len(state.video_frame_files):
-        raise OperationError(404, "Frame index out of bounds")
+        if frame_idx < 0 or frame_idx >= len(state.video_frame_files):
+            raise OperationError(404, "Frame index out of bounds")
 
-    file_path = Path(state.video_dir) / state.video_frame_files[frame_idx]
-    if not file_path.exists():
-        raise OperationError(404, f"Frame file not found: {file_path}")
-    return FileResponse(str(file_path))
+        file_path = Path(state.video_dir) / state.video_frame_files[frame_idx]
+        if not file_path.exists():
+            raise OperationError(404, f"Frame file not found: {file_path}")
+        return FileResponse(str(file_path))
 
 async def get_video_mask_frame(frame_idx: int):
     with foreground_lock:

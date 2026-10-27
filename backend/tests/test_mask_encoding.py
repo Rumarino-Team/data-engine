@@ -93,7 +93,7 @@ class LiveMaskResponseTests(unittest.TestCase):
                      "write_session_metadata": Mock(),
                      "effective_mask_data": lambda frame: {"objects": self.frame_masks},
                      "mask_logits_to_2d_bool": lambda mask: np.asarray(mask, dtype=bool),
-                     "foreground_operation": nullcontext, "prompt_runtime_edit": nullcontext,
+                     "foreground_operation": nullcontext, "annotation_edit": nullcontext,
                      "AnnotationPrecondition": object, "validate_annotation_precondition": Mock(), "annotation_update": lambda precondition: {}, "record_prompt_event": self.record,
                      "VideoAddPointsOrBoxRequest": object, "VideoAddMaskRequest": object}
         exec(compile(ast.Module(body=[function], type_ignores=[]), str(source), "exec"), namespace)

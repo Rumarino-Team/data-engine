@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from core.errors import OperationError
-from core.state import state
+from core.state import BackendState, state
 from core.jobs import utc_now_iso
 from sessions.metadata import current_session_path, write_session_metadata
 from tracking.guidance import tracked_prompt_keys, positive_prompt_keys
@@ -116,19 +116,19 @@ def load_prompt_tracking_result(result_id: str) -> dict[str, Any]:
     return current_tracking_result(result)
 
 
-def current_tracking_result(result: dict[str, Any]) -> dict[str, Any]:
+def current_tracking_result(result: dict[str, Any], *, session: BackendState = state) -> dict[str, Any]:
     """One validity projection for display, guidance and session restoration."""
-    if (result.get("session_id") != state.active_session_id or
-            result.get("num_frames") != len(state.video_frame_files)):
+    if (result.get("session_id") != session.active_session_id or
+            result.get("num_frames") != len(session.video_frame_files)):
         raise OperationError(409, "Tracking result does not match the current video session.")
-    keys = positive_prompt_keys(state.annotations.prompt_events())
+    keys = positive_prompt_keys(session.annotations.prompt_events())
     points, tracks, visibility = result.get("points", []), result.get("tracks", []), result.get("visibility", [])
     if len(points) != len(tracks) or len(points) != len(visibility):
         raise OperationError(500, "Tracking result payload is invalid.")
     indices = [i for i, point in enumerate(points)
-               if point["obj_id"] in state.annotations.objects and tracked_prompt_keys([point])[0] in keys]
-    return {**result, "annotation_revision": state.annotations.revision,
-            "state_epoch": state.video_state_epoch, "num_points": len(indices),
+               if point["obj_id"] in session.annotations.objects and tracked_prompt_keys([point])[0] in keys]
+    return {**result, "annotation_revision": session.annotations.revision,
+            "state_epoch": session.video_state_epoch, "num_points": len(indices),
             "points": [points[i] for i in indices], "tracks": [tracks[i] for i in indices],
             "visibility": [visibility[i] for i in indices]}
 
@@ -144,7 +144,7 @@ def tracking_validity() -> dict[str, Any] | None:
             if point["obj_id"] in state.annotations.objects and tracked_prompt_keys([point])[0] in keys]}
 
 
-def restored_tracking_result_payload(session_path: Path, session_metadata: dict[str, Any]) -> dict[str, Any] | None:
+def restored_tracking_result_payload(session_path: Path, session_metadata: dict[str, Any], *, session: BackendState = state) -> dict[str, Any] | None:
     result_id = session_metadata.get("latest_tracking_result_id")
     relative_path = session_metadata.get("latest_tracking_result_path")
     if not result_id or not relative_path:
@@ -163,7 +163,7 @@ def restored_tracking_result_payload(session_path: Path, session_metadata: dict[
         return None
 
     try:
-        result = current_tracking_result(load_mask_manifest(result_path))
+        result = current_tracking_result(load_mask_manifest(result_path), session=session)
         if not result["points"]:
             return None
     except (OperationError, OSError, ValueError, KeyError):

@@ -1,5 +1,7 @@
+import { TestBed } from '@angular/core/testing';
+import { VideoJobsService } from './video-jobs.service';
 import { cachedMasks } from '../testing/workflow-test-helpers';
-import { describe, beforeEach, expect, it } from 'vitest';
+import { describe, beforeEach, expect, it, vi } from 'vitest';
 import { of, throwError } from 'rxjs';
 import { createWorkflowFixture } from '../testing/workflow-test-helpers';
 
@@ -469,5 +471,22 @@ describe('session workflows', () => {
     );
     expect(interactiveState).not.toHaveProperty('objects');
     expect(editor.store.toasts()[0].title).toBe('Session saved');
+  });
+  it('retains the current session after rejected replacement and requests reconciliation', async () => {
+    editor.store.isInitialized.set(true);
+    editor.store.videoDir.set('invalid-replacement');
+    editor.store.displayedFrameIdx.set(5);
+    const previous = editor.store.annotations();
+    vi.spyOn(TestBed.inject(VideoJobsService), 'run').mockResolvedValue({
+      result: null,
+      completedJobId: null,
+    });
+    const clear = vi.spyOn(editor.framePipeline, 'clearFrameCaches');
+    expect(await editor.sessions.initVideo()).toBe(false);
+    expect(editor.store.isInitialized()).toBe(true);
+    expect(editor.store.annotations()).toBe(previous);
+    expect(editor.store.displayedFrameIdx()).toBe(5);
+    expect(editor.store.annotationRecoveryRequested()).toBe(true);
+    expect(clear).not.toHaveBeenCalled();
   });
 });

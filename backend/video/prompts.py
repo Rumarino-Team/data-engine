@@ -5,7 +5,7 @@ from video.masks import override_pixels, discard_override_artifacts
 from core.errors import OperationError
 import sam2_video_masker as svm
 from core.jobs import update_job
-from core.state import state
+from core.state import BackendState, state
 from sessions.cache import bump_video_state_epoch
 from sessions.metadata import write_session_metadata
 from schemas.video import VideoPrompt
@@ -21,16 +21,16 @@ def record_prompt_event(request: "VideoAddPointsOrBoxRequest"):
     state.annotations.set_prompt(event, clear_old_points=request.clear_old_points)
 
 
-def replay_annotation_prompts() -> None:
-    for event in state.annotations.prompt_events():
-        state.video_masker.add_new_points_or_box(
+def replay_annotation_prompts(session: BackendState = state) -> None:
+    for event in session.annotations.prompt_events():
+        session.video_masker.add_new_points_or_box(
             frame_idx=event["frame_idx"], obj_id=event["obj_id"],
             points=event["points"] or None, labels=event["labels"] or None,
             clear_old_points=True, box=event["box"],
         )
-    for mask in state.annotations.mask_overrides:
-        state.video_masker.add_new_mask(frame_idx=mask.frame_idx, obj_id=mask.obj_id,
-                                       mask=override_pixels(mask))
+    for mask in session.annotations.mask_overrides:
+        session.video_masker.add_new_mask(frame_idx=mask.frame_idx, obj_id=mask.obj_id,
+                                       mask=override_pixels(mask, session_path=session.active_session_dir))
 
 
 def restore_video_masker_from_prompt_events(
@@ -77,13 +77,14 @@ def restore_video_masker_from_prompt_events(
 
 
 @contextmanager
-def prompt_runtime_edit():
-    """Reject failed prompt edits and restore runtime from accepted inputs.
+def annotation_edit(*, restore_runtime: bool = True):
+    """Stage accepted inputs and restore them when an edit fails.
 
     Caller holds foreground_operation. Encode results before persisting acceptance.
-    This does not make mask artifact deletion a filesystem transaction.
+    Set restore_runtime=False for changes that never touch the predictor.
     """
     # Frame entries are replaced, never mutated by foreground edits.
+    previous_manifest = state.mask_manifest_path
     previous_masks = state.interactive_mask_files
     state.interactive_mask_files = dict(previous_masks)
     previous = state.annotations
@@ -97,6 +98,9 @@ def prompt_runtime_edit():
                                    - state.committed_override_artifacts)
         state.annotations = previous
         state.interactive_mask_files = previous_masks
+        state.mask_manifest_path = previous_manifest
+        if not restore_runtime:
+            raise
         try:
             state.video_masker.reset_state()
             replay_annotation_prompts()

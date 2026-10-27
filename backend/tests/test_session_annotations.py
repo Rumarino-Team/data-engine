@@ -66,8 +66,40 @@ class SessionAnnotationsTests(unittest.TestCase):
         return service.initialize_video_state_from_resolved_input(
             saved_path, online_mode=True, batch_size=1,
             offload_video_to_cpu=True, offload_state_to_cpu=True,
-            async_loading_frames=False,
+            async_loading_frames=False, session=state,
         )
+
+    def test_rejected_object_mutations_preserve_inputs_artifacts_and_metadata(self):
+        self.add_override(True)
+        before = state.annotations.snapshot()
+        metadata = (self.session / "session.json").read_bytes()
+        artifacts = self.override_files()
+        for method, path, body in [
+            ("post", "/video/objects", None),
+            ("put", "/video/objects/1", {"label": "Rejected", "color": "#00ff00"}),
+            ("post", "/video/remove_object?obj_id=1", None),
+        ]:
+            with self.subTest(path=path), patch.object(service, "write_session_metadata", side_effect=OSError("disk full")):
+                with self.assertRaises(OSError):
+                    getattr(self.client, method)(path, json=body)
+            self.assertEqual(state.annotations.snapshot(), before)
+            self.assertEqual((self.session / "session.json").read_bytes(), metadata)
+            self.assertEqual(self.override_files(), artifacts)
+        self.masker.reset_state.assert_called_once()
+        self.assertTrue(self.masker.add_new_mask.call_args.kwargs["mask"].all())
+
+    def test_rejected_deletion_disables_failed_runtime_but_preserves_accepted_state(self):
+        self.add_override(True)
+        before = state.annotations.snapshot()
+        metadata = (self.session / "session.json").read_bytes()
+        self.masker.remove_object.side_effect = RuntimeError("partial deletion")
+        self.masker.reset_state.side_effect = RuntimeError("recovery failed")
+        response = self.client.post("/video/remove_object?obj_id=1")
+        self.assertEqual(response.status_code, 503)
+        self.assertIsNone(state.video_masker)
+        self.assertEqual(state.annotations.snapshot(), before)
+        self.assertEqual((self.session / "session.json").read_bytes(), metadata)
+        self.assertFalse(self.client.get("/video/info").json()["predictor_ready"])
 
     def test_new_session_initializes_and_persists_first_object(self):
         source = self.root / "source"
@@ -78,7 +110,7 @@ class SessionAnnotationsTests(unittest.TestCase):
             result = service.initialize_video_state_from_resolved_input(
                 source, online_mode=True, batch_size=1,
                 offload_video_to_cpu=True, offload_state_to_cpu=True,
-                async_loading_frames=False,
+                async_loading_frames=False, session=state,
             )
         self.assertNotIn("restored_session", result)
         annotations = self.client.get("/video/info").json()["annotations"]

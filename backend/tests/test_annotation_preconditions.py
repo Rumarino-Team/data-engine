@@ -134,10 +134,9 @@ class AnnotationPreconditionTests(unittest.TestCase):
         with patch.object(service, "write_session_metadata", side_effect=OSError("disk error")):
             with self.assertRaises(OSError):
                 self.client.post("/video/objects", headers=self.headers())
-        # Persistence transactions are separate work: recover the actual accepted
-        # in-memory state instead of replaying an uncertain create command.
+        # Rejected creates leave the accepted revision and ID high-water mark intact.
         snapshot = self.client.get("/video/info").json()
-        self.assertEqual(snapshot["annotations"]["revision"], 2)
-        self.assertEqual(self.client.post("/video/objects", headers=self.headers()).status_code, 409)
-        self.assertEqual(self.client.put("/video/objects/2", headers=self.headers(revision=2),
-                         json={"label": "Recovered", "color": "#123456"}).status_code, 200)
+        self.assertEqual(snapshot["annotations"]["revision"], 1)
+        response = self.client.post("/video/objects", headers=self.headers())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["created_object_id"], 2)

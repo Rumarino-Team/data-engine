@@ -7,9 +7,8 @@ from core.config import DEFAULT_STREAMING_TRACK_FRAME_THRESHOLD
 from core.errors import OperationError
 from core.jobs import foreground_operation
 from core.runtime import cleanup_cuda_memory
-from core.state import state
+from core.state import BackendState, state
 from schemas.tracking import TrackingGridRequest, TrackingLoadVideoRequest, TrackingPointsRequest
-from sessions.cache import bump_video_state_epoch, release_active_session
 from sessions.paths import resolve_input_path
 from video.io import load_video_frames_as_numpy
 
@@ -44,27 +43,27 @@ async def load_tracking_video(request: TrackingLoadVideoRequest):
     """Load a video file for tracking."""
 
     with foreground_operation():
-        release_active_session(clear_tracker=False, clear_cache_session=True)
-        bump_video_state_epoch()
-
         requested_model = getattr(request, "model_name", cot.DEFAULT_COTRACKER_MODEL)
-        try:
-            ensure_tracker_model(requested_model)
-        except ValueError as error:
-            raise OperationError(400, str(error)) from error
-
+        if requested_model != cot.DEFAULT_COTRACKER_MODEL:
+            raise OperationError(400, f"Unsupported CoTracker model '{requested_model}'.")
         resolved_video_path = resolve_input_path(request.video_path, expect_dir=False)
-        state.tracking_video_path = str(resolved_video_path)
-
-        state.tracking_video = read_tracking_video(state.tracking_video_path)
-
-        return {
+        video = read_tracking_video(str(resolved_video_path))
+        tracker = state.tracker
+        if tracker is None or tracker.model_name != requested_model:
+            tracker = cot.CoTracker(model_name=requested_model)
+        candidate = BackendState(tracker=tracker, tracking_video=video,
+                                 tracking_video_path=str(resolved_video_path),
+                                 video_state_epoch=state.video_state_epoch + 1)
+        response = {
             "message": "Video loaded successfully",
-            "model_name": state.tracker.model_name,
-            "shape": state.tracking_video.shape,
-            "num_frames": state.tracking_video.shape[0],
-            "resolved_video_path": state.tracking_video_path
+            "model_name": tracker.model_name,
+            "shape": video.shape,
+            "num_frames": video.shape[0],
+            "resolved_video_path": str(resolved_video_path),
         }
+        state.__dict__.update(candidate.__dict__)
+        return response
+
 
 async def track_grid(request: TrackingGridRequest):
     """Track a grid of points across the video."""

@@ -108,8 +108,8 @@ def _read_override(path: Path) -> tuple["InteractiveMaskRLE", dict[str, Any]]:
     return rle, encode_live_mask_payload(decode_override(rle))
 
 
-def _load_override(ref: "MaskOverride") -> tuple["InteractiveMaskRLE", dict[str, Any]]:
-    path = _overrides_dir() / ref.artifact
+def _load_override(ref: "MaskOverride", session_path: Path | None = None) -> tuple["InteractiveMaskRLE", dict[str, Any]]:
+    path = (session_path / "masks" / "overrides" if session_path else _overrides_dir()) / ref.artifact
     try:
         # The cache trusts immutability, not existence; a reclaimed file must not stay readable.
         if not path.is_file():
@@ -122,18 +122,18 @@ def _load_override(ref: "MaskOverride") -> tuple["InteractiveMaskRLE", dict[str,
     return rle, payload
 
 
-def override_pixels(ref: "MaskOverride") -> np.ndarray:
-    return decode_override(_load_override(ref)[0])
+def override_pixels(ref: "MaskOverride", *, session_path: Path | None = None) -> np.ndarray:
+    return decode_override(_load_override(ref, session_path)[0])
 
 
 def override_payload(ref: "MaskOverride") -> dict[str, Any]:
     return _load_override(ref)[1]
 
 
-def reclaim_override_artifacts(keep: set[str]) -> None:
+def reclaim_override_artifacts(keep: set[str], *, session_path: Path | None = None) -> None:
     """Best effort: an unreferenced artifact is garbage once metadata no longer names it."""
     try:
-        overrides_dir = _overrides_dir()
+        overrides_dir = session_path / "masks" / "overrides" if session_path else _overrides_dir()
         if not overrides_dir.is_dir():
             return
         for path in overrides_dir.glob("*.json"):
@@ -143,10 +143,11 @@ def reclaim_override_artifacts(keep: set[str]) -> None:
         logger.warning("Unable to reclaim mask override artifacts", exc_info=True)
 
 
-def discard_override_artifacts(names: set[str]) -> None:
+def discard_override_artifacts(names: set[str], *, session_path: Path | None = None) -> None:
     for name in names:
         try:
-            (_overrides_dir() / name).unlink(missing_ok=True)
+            directory = session_path / "masks" / "overrides" if session_path else _overrides_dir()
+            (directory / name).unlink(missing_ok=True)
         except (OSError, ValueError):
             logger.warning("Unable to remove mask override artifact %s", name, exc_info=True)
 

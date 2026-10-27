@@ -146,15 +146,23 @@ export class SessionService {
 
     const backendUrl = this.backend.getApiUrl();
     const request = ++this.snapshotRequest;
-    this.store.isInitialized.set(false);
     this.store.videoDir.set(enteredPath);
     const { result: res } = await this.jobs.run<VideoInitStateResponse>('Loading video', () =>
       firstValueFrom(this.backend.initVideoState(enteredPath)),
     );
+    if (
+      this.destroyRef.destroyed ||
+      request !== this.snapshotRequest ||
+      backendUrl !== this.backend.getApiUrl()
+    )
+      return false;
     if (!res) {
+      // A failed replacement preserves the old session. Recover uncertain/lost responses.
+      if (this.store.isInitialized()) this.store.annotationRecoveryRequested.set(true);
       return false;
     }
 
+    this.store.isInitialized.set(false);
     this.store.isLoading.set(true);
     try {
       const info = await firstValueFrom(

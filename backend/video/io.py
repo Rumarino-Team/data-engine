@@ -4,9 +4,7 @@ from typing import Callable, Optional
 import cv2
 import numpy as np
 from core.config import IMAGE_EXTENSIONS, SESSION_CACHE_ROOT
-from core.jobs import utc_now_iso
-from core.state import state
-from sessions.metadata import write_session_metadata
+from core.state import BackendState, state
 
 def load_video_frames_as_numpy(video_dir_path: Path, frame_file_names: list[str]) -> np.ndarray:
     frames_rgb: list[np.ndarray] = []
@@ -56,22 +54,16 @@ def link_or_copy_file(source_path: Path, target_path: Path) -> None:
         except OSError:
             shutil.copy2(source_path, target_path)
 
-def create_active_session(source_path: Path) -> Path:
+def create_active_session(source_path: Path, *, session: BackendState = state) -> Path:
 
     SESSION_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
     session_id = uuid.uuid4().hex
     session_dir = SESSION_CACHE_ROOT / session_id
     (session_dir / "frames").mkdir(parents=True, exist_ok=False)
     (session_dir / "masks").mkdir(parents=True, exist_ok=True)
-    state.active_session_dir = session_dir
-    state.active_session_id = session_id
-    state.active_session_saved_name = None
-    write_session_metadata(
-        {
-            "created_at": utc_now_iso(),
-            "source_input_path": str(source_path),
-        }
-    )
+    session.active_session_dir = session_dir
+    session.active_session_id = session_id
+    session.active_session_saved_name = None
     return session_dir
 
 def copy_frames_directory_to_session(

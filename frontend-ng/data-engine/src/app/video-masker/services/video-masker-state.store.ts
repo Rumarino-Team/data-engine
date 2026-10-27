@@ -262,6 +262,28 @@ export class VideoMaskerStateStore {
     this.stateEpoch.set(resolution.normalizedEpoch);
   }
 
+  resetSession(): void {
+    this.isInitialized.set(false);
+    this.sessionId.set(null);
+    this.annotationsBackendUrl.set(null);
+    this.annotations.set(null);
+    this.objects.set([]);
+    this.selectedObjectId.set(null);
+    this.stateEpoch.set(0);
+    this.numFrames.set(0);
+    this.targetFrameIdx.set(0);
+    this.displayedFrameIdx.set(-1);
+    this.propagationStartFrameIdx.set(0);
+    this.propagationEndFrameIdx.set(0);
+    this.videoDir.set('');
+    this.saveName.set('');
+    this.hasManifestMasks.set(false);
+    this.annotationRecoveryRequested.set(false);
+    this.invalidateTracking();
+    this.resetInteractiveMaps();
+    this.resetDebugState();
+  }
+
   resetInteractiveMaps(): void {
     this.pendingPointEdit.set(null);
   }

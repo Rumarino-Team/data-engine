@@ -52,6 +52,3 @@ def reset_video_session_state():
     state.annotations.clear_prompts()
     state.annotations.invalidate_inputs()
     state.mask_manifest_path = None
-
-def prepare_video_masker_for_video_init():
-    release_active_session(clear_cache_session=True)

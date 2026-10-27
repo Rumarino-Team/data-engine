@@ -2,6 +2,7 @@ import { DestroyRef, Injectable, inject } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { Subject, catchError, defer, exhaustMap, map, of, startWith, switchMap, timer } from 'rxjs';
 import { BackendService } from '../../services/backend.service';
+import { FramePipelineService } from './frame-pipeline.service';
 import { VideoMaskerStateStore } from './video-masker-state.store';
 
 /** Owns the backend URL and connectivity status. */
@@ -10,6 +11,7 @@ export class BackendConnectionService {
   private readonly destroyRef = inject(DestroyRef);
   private readonly refreshHealth = new Subject<void>();
   private monitoringHealth = false;
+  private readonly framePipeline = inject(FramePipelineService);
   private readonly store = inject(VideoMaskerStateStore);
   private readonly backend = inject(BackendService);
 
@@ -48,12 +50,24 @@ export class BackendConnectionService {
   }
 
   applyApiUrl(): void {
-    this.store.apiUrlInput.set(this.backend.setApiUrl(this.store.apiUrlInput()));
-    this.checkApiHealth(true);
+    if (this.store.isInteractionBusy()) return;
+    const previous = this.backend.getApiUrl();
+    const next = this.backend.setApiUrl(this.store.apiUrlInput());
+    this.finishBackendSwitch(previous, next);
   }
 
   resetApiUrl(): void {
-    this.store.apiUrlInput.set(this.backend.resetApiUrl());
+    if (this.store.isInteractionBusy()) return;
+    const previous = this.backend.getApiUrl();
+    this.finishBackendSwitch(previous, this.backend.resetApiUrl());
+  }
+
+  private finishBackendSwitch(previous: string, next: string): void {
+    this.store.apiUrlInput.set(next);
+    if (previous !== next) {
+      this.store.resetSession();
+      this.framePipeline.clearFrameCaches();
+    }
     this.checkApiHealth(true);
   }
 
