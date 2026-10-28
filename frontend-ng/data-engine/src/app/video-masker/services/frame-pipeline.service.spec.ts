@@ -339,4 +339,100 @@ describe('FramePipelineService', () => {
     expect(viewport.render.mock.lastCall![0]).toBe(image);
     expect(viewport.render.mock.lastCall![1]).toHaveLength(1);
   });
+
+  it('prefetches neighbor masks after the current pair is ready and promotes the pending request', async () => {
+    store.numFrames.set(3);
+    const responses = new Map(
+      [0, 1, 2].map((frame) => [frame, new Subject<VideoMaskDataResponse>()]),
+    );
+    backend.getVideoMaskData.mockImplementation((frame) => responses.get(frame));
+    const image = await startFrame(1);
+    const loaded = image.onload?.();
+    expect(backend.getVideoMaskData.mock.calls).toEqual([[1]]);
+    responses.get(1)!.next(maskResponse(1));
+    await loaded;
+    expect(backend.getVideoMaskData.mock.calls).toEqual([[1], [2], [0]]);
+    const neighbor = images.find((entry) => entry.src === '/frame/2')!;
+    await service.loadFrame(2);
+    expect(responses.get(2)!.observed).toBe(true);
+    expect(responses.get(0)!.observed).toBe(false);
+    const nextLoaded = neighbor.onload?.();
+    responses.get(2)!.next(maskResponse(2));
+    await nextLoaded;
+    expect(backend.getVideoMaskData.mock.calls.filter(([frame]) => frame === 2)).toHaveLength(1);
+    expect(viewport.render.mock.lastCall![6]).toBe(2);
+    expect(viewport.render.mock.lastCall![1]).toHaveLength(1);
+  });
+
+  it('cancels distant image and mask work immediately and coalesces scheduled navigation', async () => {
+    let animation: FrameRequestCallback | undefined;
+    vi.stubGlobal(
+      'requestAnimationFrame',
+      vi.fn((callback) => {
+        animation = callback;
+        return 1;
+      }),
+    );
+    const masks = new Subject<VideoMaskDataResponse>();
+    backend.getVideoMaskData.mockReturnValueOnce(masks);
+    const image = await startFrame(0);
+    const callback = image.onload;
+    service.scheduleFrameLoad(5);
+    service.scheduleFrameLoad(6);
+    expect(image.src).toBe('');
+    expect(masks.observed).toBe(false);
+    await callback?.();
+    expect(viewport.render).not.toHaveBeenCalled();
+    animation!(0);
+    expect(backend.getVideoFrameUrl).toHaveBeenCalledWith(6);
+    expect(backend.getVideoFrameUrl).not.toHaveBeenCalledWith(5);
+    expect(requestAnimationFrame).toHaveBeenCalledOnce();
+  });
+
+  it('retains useful neighbor work without allowing it to paint before scheduled navigation', async () => {
+    vi.stubGlobal(
+      'requestAnimationFrame',
+      vi.fn(() => 1),
+    );
+    const image = await startFrame(0);
+    service.scheduleFrameLoad(1);
+    expect(image.src).toBe('/frame/0');
+    await image.onload?.();
+    expect(service.currentBaseImage).toBeNull();
+    expect(viewport.render).not.toHaveBeenCalled();
+    await service.loadFrame(0);
+    expect(service.currentBaseImage).toBe(image);
+    expect(backend.getVideoFrameUrl.mock.calls.filter(([frame]) => frame === 0)).toHaveLength(1);
+  });
+
+  it('does not repaint obsolete masks between navigation intent and the next animation tick', async () => {
+    vi.stubGlobal(
+      'requestAnimationFrame',
+      vi.fn(() => 1),
+    );
+    const response = new Subject<VideoMaskDataResponse>();
+    backend.getVideoMaskData.mockReturnValueOnce(response);
+    const image = await startFrame(0);
+    const loaded = image.onload?.();
+    expect(viewport.render).toHaveBeenCalledOnce();
+    service.scheduleFrameLoad(1);
+    response.next(maskResponse(0));
+    await loaded;
+    expect(viewport.render).toHaveBeenCalledOnce();
+  });
+
+  it('keeps compressed masks when decoded images are evicted', async () => {
+    for (const frame of [0, 1, 2]) {
+      const image = await startFrame(frame);
+      image.width = image.height = 4096;
+      await image.onload?.();
+    }
+    expect(backend.getVideoMaskData).toHaveBeenCalledTimes(3);
+    const imageCount = images.length;
+    await service.loadFrame(0);
+    expect(images).toHaveLength(imageCount + 1);
+    await images.at(-1)!.onload?.();
+    expect(backend.getVideoMaskData).toHaveBeenCalledTimes(3);
+    expect(viewport.render.mock.lastCall![1]).toHaveLength(1);
+  });
 });

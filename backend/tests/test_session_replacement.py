@@ -1,4 +1,3 @@
-import asyncio
 import json
 import sys
 import tempfile
@@ -139,5 +138,5 @@ class SessionReplacementTests(unittest.TestCase):
         source.touch()
         with patch.object(tracking, "read_tracking_video", side_effect=ValueError("bad video")):
             with self.assertRaises(ValueError):
-                asyncio.run(tracking.load_tracking_video(TrackingLoadVideoRequest(video_path=str(source))))
+                tracking.load_tracking_video(TrackingLoadVideoRequest(video_path=str(source)))
         self.assert_old_session()

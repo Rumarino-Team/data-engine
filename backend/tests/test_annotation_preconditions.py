@@ -1,4 +1,3 @@
-import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
@@ -117,8 +116,8 @@ class AnnotationPreconditionTests(unittest.TestCase):
             return jobs._start_job("video_init", stage="init", stage_label="Init", message="init")
         with ThreadPoolExecutor(max_workers=2) as pool:
             with patch.object(service, "write_session_metadata", side_effect=persist):
-                edit = pool.submit(asyncio.run, service.create_object(
-                    AnnotationPrecondition(session_id="current", expected_revision=1)))
+                edit = pool.submit(service.create_object,
+                    AnnotationPrecondition(session_id="current", expected_revision=1))
                 self.assertTrue(entered.wait(timeout=5))
                 admission = pool.submit(admit)
                 self.assertTrue(admission_attempted.wait(timeout=5))

@@ -39,7 +39,7 @@ def should_stream_tracking(num_frames: int) -> bool:
 def read_tracking_video(video_path: str | Path) -> np.ndarray:
     return cot.read_video_rgb(video_path)
 
-async def load_tracking_video(request: TrackingLoadVideoRequest):
+def load_tracking_video(request: TrackingLoadVideoRequest):
     """Load a video file for tracking."""
 
     with foreground_operation():
@@ -65,7 +65,7 @@ async def load_tracking_video(request: TrackingLoadVideoRequest):
         return response
 
 
-async def track_grid(request: TrackingGridRequest):
+def track_grid(request: TrackingGridRequest):
     """Track a grid of points across the video."""
 
     with foreground_operation():
@@ -121,7 +121,7 @@ async def track_grid(request: TrackingGridRequest):
             "output_video_path": str(output_path)
         }
 
-async def track_points(request: TrackingPointsRequest):
+def track_points(request: TrackingPointsRequest):
     """Track specific query points across the video."""
 
     with foreground_operation():

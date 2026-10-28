@@ -153,6 +153,9 @@ export class FramePipelineService {
   }
 
   scheduleFrameLoad(frameIdx: number): void {
+    // Invalidate obsolete display callbacks immediately, before the next RAF.
+    this.state.frameLoadToken++;
+    this.retainUsefulRequests(frameIdx);
     this.state.pendingFrameIdx = frameIdx;
     if (this.state.frameLoadAnimationId !== null) {
       return;
@@ -174,17 +177,7 @@ export class FramePipelineService {
 
     this.ensureMaskContext();
     const token = ++this.state.frameLoadToken;
-    // Keep only the requested image and useful immediate neighbors in flight.
-    for (const [index, pending] of this.pendingImages) {
-      if (Math.abs(index - frameIdx) > 1) this.cancelImage(index);
-      else pending.token = null;
-    }
-    for (const [index, pending] of this.pendingMasks) {
-      if (index !== frameIdx) {
-        pending.cancel();
-        this.pendingMasks.delete(index);
-      }
-    }
+    this.retainUsefulRequests(frameIdx);
     const cachedImage = this.state.frameImageCache.get(frameIdx);
     if (cachedImage?.complete) {
       // Map insertion order is the eviction order; refresh it on a cache hit.
@@ -202,6 +195,20 @@ export class FramePipelineService {
     const pending = this.pendingImages.get(frameIdx);
     if (pending) pending.token = token;
     else this.requestImage(frameIdx, token);
+  }
+
+  private retainUsefulRequests(frameIdx: number): void {
+    // Keep the requested frame and immediate neighbors for both resource types.
+    for (const [index, pending] of this.pendingImages) {
+      if (Math.abs(index - frameIdx) > 1) this.cancelImage(index);
+      else pending.token = null;
+    }
+    for (const [index, pending] of this.pendingMasks) {
+      if (Math.abs(index - frameIdx) > 1) {
+        pending.cancel();
+        this.pendingMasks.delete(index);
+      }
+    }
   }
 
   /** Repaint the frame that is currently displayed, if any. */
@@ -252,7 +259,10 @@ export class FramePipelineService {
     this.store.isFrameLoading.set(false);
     this.preloadNeighborFrames(frameIdx);
 
-    if (cachedMasks) return;
+    if (cachedMasks) {
+      this.preloadNeighborMasks(frameIdx);
+      return;
+    }
     const generation = this.maskGeneration;
     const masks = await this.loadMaskDataForFrame(frameIdx);
     if (token !== this.state.frameLoadToken || generation !== this.maskGeneration || !masks) {
@@ -260,6 +270,7 @@ export class FramePipelineService {
     }
     this.state.currentMaskObjects = masks;
     this.renderFrame(image, frameIdx);
+    this.preloadNeighborMasks(frameIdx);
   }
 
   private cacheFrameImage(frameIdx: number, image: HTMLImageElement): void {
@@ -279,7 +290,6 @@ export class FramePipelineService {
       const oldest = this.state.frameImageCache.get(oldestKey)!;
       this.state.frameCacheBytes -= this.imageBytes(oldest);
       this.state.frameImageCache.delete(oldestKey);
-      this.state.maskDataCache.delete(oldestKey);
     }
   }
 
@@ -337,10 +347,24 @@ export class FramePipelineService {
     }
   }
 
+  private preloadNeighborMasks(frameIdx: number): void {
+    // Start speculative mask work only after the displayed frame's image and
+    // masks are ready. Navigation promotes an existing request instead of restarting it.
+    for (const neighborIdx of [frameIdx + 1, frameIdx - 1]) {
+      if (
+        neighborIdx >= 0 &&
+        neighborIdx < this.store.numFrames() &&
+        !this.state.maskDataCache.has(neighborIdx) &&
+        !this.pendingMasks.has(neighborIdx)
+      )
+        void this.loadMaskDataForFrame(neighborIdx);
+    }
+  }
+
   private loadMaskDataForFrame(frameIdx: number): Promise<FrameMasks | null> {
+    this.ensureMaskContext();
     const existing = this.pendingMasks.get(frameIdx);
     if (existing) return existing.promise;
-    this.ensureMaskContext();
     const context = this.context();
     const generation = this.maskGeneration;
     const abort = new Subject<void>();

@@ -18,27 +18,27 @@ router = APIRouter()
 
 
 @router.post("/tracking/load_video")
-async def load_tracking_video_route(request: TrackingLoadVideoRequest):
-    return await load_tracking_video(request)
+def load_tracking_video_route(request: TrackingLoadVideoRequest):
+    return load_tracking_video(request)
 
 
 @router.post("/tracking/track_prompt_points")
-async def track_prompt_points(request: TrackingPromptPointsRequest,
+def track_prompt_points(request: TrackingPromptPointsRequest,
                               precondition: AnnotationPrecondition = Depends(annotation_precondition)):
-    return await start_prompt_tracking(request, precondition)
+    return start_prompt_tracking(request, precondition)
 
 
 @router.post("/tracking/track_grid")
-async def track_grid_route(request: TrackingGridRequest):
-    return await track_grid(request)
+def track_grid_route(request: TrackingGridRequest):
+    return track_grid(request)
 
 
 @router.post("/tracking/track_points")
-async def track_points_route(request: TrackingPointsRequest):
-    return await track_points(request)
+def track_points_route(request: TrackingPointsRequest):
+    return track_points(request)
 
 
 @router.get("/tracking/results/{result_id}")
-async def get_tracking_result(result_id: str):
+def get_tracking_result(result_id: str):
     with foreground_lock:
         return {"result": load_prompt_tracking_result(result_id)}

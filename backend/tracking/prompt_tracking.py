@@ -17,7 +17,7 @@ from video.prompts import restore_video_masker_from_prompt_events
 
 logger = logging.getLogger(__name__)
 
-async def start_prompt_tracking(request: TrackingPromptPointsRequest, precondition):
+def start_prompt_tracking(request: TrackingPromptPointsRequest, precondition):
     from video.service import validate_annotation_precondition
     with foreground_operation():
         validate_annotation_precondition(precondition)

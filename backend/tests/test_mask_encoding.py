@@ -3,7 +3,6 @@ import sys
 from pathlib import Path
 import unittest
 import ast
-import asyncio
 from contextlib import nullcontext
 import logging
 from types import SimpleNamespace
@@ -86,7 +85,7 @@ class LiveMaskResponseTests(unittest.TestCase):
         # Compile the actual endpoint body while substituting only runtime dependencies.
         source = Path(__file__).resolve().parents[1] / "video" / "service.py"
         module = ast.parse(source.read_text())
-        function = next(node for node in module.body if isinstance(node, ast.AsyncFunctionDef) and node.name == name)
+        function = next(node for node in module.body if isinstance(node, ast.FunctionDef) and node.name == name)
         namespace = {"np": np, "state": self.state, "logger": logging.getLogger(__name__),
                      "encode_live_mask_payload": encode_live_mask_payload,
                      "retain_interactive_masks": lambda frame, ids, masks: self.frame_masks.update(dict(zip(map(str, ids), masks))),
@@ -97,7 +96,7 @@ class LiveMaskResponseTests(unittest.TestCase):
                      "AnnotationPrecondition": object, "validate_annotation_precondition": Mock(), "annotation_update": lambda precondition: {}, "record_prompt_event": self.record,
                      "VideoAddPointsOrBoxRequest": object, "VideoAddMaskRequest": object}
         exec(compile(ast.Module(body=[function], type_ignores=[]), str(source), "exec"), namespace)
-        return asyncio.run(namespace[name](request, object()) if name == "add_new_points_or_box" else namespace[name](request))
+        return namespace[name](request, object()) if name == "add_new_points_or_box" else namespace[name](request)
 
     def request(self):
         return SimpleNamespace(frame_idx=0, obj_id=1, points=[[0, 0]], labels=[1],

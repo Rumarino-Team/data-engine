@@ -41,7 +41,7 @@ def propagation_batch_progress(
         "batch_count": batch_count,
     }
 
-async def start_propagation(request: VideoPropagateRequest, precondition):
+def start_propagation(request: VideoPropagateRequest, precondition):
     from video.service import validate_annotation_precondition
     with foreground_operation():
         validate_annotation_precondition(precondition)

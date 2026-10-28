@@ -301,7 +301,7 @@ def initialize_video_state_from_resolved_input(
     reclaim_override_artifacts(session.committed_override_artifacts, session_path=session.active_session_dir)
     return response_payload
 
-async def start_video_init(request: VideoInitStateRequest):
+def start_video_init(request: VideoInitStateRequest):
     return queue_long_job(
         operation="video_init",
         stage="resolving_input",
@@ -340,7 +340,7 @@ def run_video_init_job(request: VideoInitStateRequest) -> dict[str, Any]:
     return result
 
 
-async def reset_video_state(precondition: AnnotationPrecondition):
+def reset_video_state(precondition: AnnotationPrecondition):
     with foreground_operation():
         validate_annotation_precondition(precondition)
         if state.video_masker is None:
@@ -359,7 +359,7 @@ async def reset_video_state(precondition: AnnotationPrecondition):
                 "state_epoch": state_epoch,
             }
 
-async def add_new_points_or_box(request: VideoAddPointsOrBoxRequest, precondition: AnnotationPrecondition):
+def add_new_points_or_box(request: VideoAddPointsOrBoxRequest, precondition: AnnotationPrecondition):
     with foreground_operation():
         validate_annotation_precondition(precondition)
         if state.video_masker is None:
@@ -479,7 +479,7 @@ async def add_new_points_or_box(request: VideoAddPointsOrBoxRequest, preconditio
                 "state_epoch": int(state.video_state_epoch),
             }
 
-async def add_new_mask(request: VideoAddMaskRequest, precondition: AnnotationPrecondition):
+def add_new_mask(request: VideoAddMaskRequest, precondition: AnnotationPrecondition):
     with foreground_operation():
         validate_annotation_precondition(precondition)
         if state.video_masker is None:
@@ -498,7 +498,7 @@ async def add_new_mask(request: VideoAddMaskRequest, precondition: AnnotationPre
             write_session_metadata()
             return {**annotation_update(precondition), "mask_data": mask_data}
 
-async def save_video_session(request: VideoSaveRequest):
+def save_video_session(request: VideoSaveRequest):
     with foreground_operation():
 
         session_path = current_session_path()
@@ -538,7 +538,7 @@ async def save_video_session(request: VideoSaveRequest):
             "state_epoch": int(state.video_state_epoch),
         }
 
-async def clear_all_prompts_in_frame(frame_idx: int, obj_id: int, precondition: AnnotationPrecondition):
+def clear_all_prompts_in_frame(frame_idx: int, obj_id: int, precondition: AnnotationPrecondition):
     with foreground_operation():
         validate_annotation_precondition(precondition)
         if state.video_masker is None:
@@ -553,7 +553,7 @@ async def clear_all_prompts_in_frame(frame_idx: int, obj_id: int, precondition: 
             return {**annotation_update(precondition), "mask_data": mask_data,
                     "message": "Cleared all prompts in frame successfully"}
 
-async def remove_object(obj_id: int, precondition: AnnotationPrecondition):
+def remove_object(obj_id: int, precondition: AnnotationPrecondition):
     with foreground_operation():
         validate_annotation_precondition(precondition)
         if state.video_masker is None:
@@ -566,7 +566,7 @@ async def remove_object(obj_id: int, precondition: AnnotationPrecondition):
             write_session_metadata()
         return annotation_update(precondition)
 
-async def create_object(precondition: AnnotationPrecondition):
+def create_object(precondition: AnnotationPrecondition):
     with foreground_operation():
         validate_annotation_precondition(precondition)
         with annotation_edit(restore_runtime=False):
@@ -575,7 +575,7 @@ async def create_object(precondition: AnnotationPrecondition):
         return {**annotation_update(precondition), "created_object_id": obj.id}
 
 
-async def update_object(obj_id: int, request: VideoObjectUpdate, precondition: AnnotationPrecondition):
+def update_object(obj_id: int, request: VideoObjectUpdate, precondition: AnnotationPrecondition):
     with foreground_operation():
         validate_annotation_precondition(precondition)
         if obj_id not in state.annotations.objects:
@@ -613,7 +613,7 @@ def annotation_snapshot():
     }
 
 
-async def get_video_info():
+def get_video_info():
     with foreground_lock:
         return {
             **annotation_snapshot(),
@@ -622,7 +622,7 @@ async def get_video_info():
             "frame_files": list(state.video_frame_files),
         }
 
-async def get_mask_manifest():
+def get_mask_manifest():
     with foreground_lock:
         if state.video_dir is None:
             raise OperationError(400, "Video not initialized")
@@ -642,7 +642,7 @@ async def get_mask_manifest():
             "state.mask_manifest_path": str(manifest_path),
         }
 
-async def get_mask_data(frame_idx: int):
+def get_mask_data(frame_idx: int):
     with foreground_lock:
         if state.video_dir is None:
             raise OperationError(400, "Video not initialized")
@@ -650,7 +650,7 @@ async def get_mask_data(frame_idx: int):
             raise OperationError(404, "Frame index out of bounds")
         return effective_mask_data(frame_idx)
 
-async def get_video_frame(frame_idx: int):
+def get_video_frame(frame_idx: int):
     with foreground_lock:
         if state.video_dir is None or not state.video_frame_files:
             raise OperationError(400, "Video not initialized")
@@ -663,7 +663,7 @@ async def get_video_frame(frame_idx: int):
             raise OperationError(404, f"Frame file not found: {file_path}")
         return FileResponse(str(file_path))
 
-async def get_video_mask_frame(frame_idx: int):
+def get_video_mask_frame(frame_idx: int):
     with foreground_lock:
         if state.video_dir is None or not 0 <= frame_idx < len(state.video_frame_files):
             raise OperationError(404, "Frame index out of bounds")

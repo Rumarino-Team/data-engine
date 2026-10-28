@@ -18,8 +18,10 @@ async def health():
 
 @router.get("/status")
 async def status():
-    if state.video_masker is not None:
-        return {"status": "video active", "device": state.video_masker.device.type}
-    if state.tracker is not None:
-        return {"status": "tracking active", "device": state.tracker.device}
+    # A worker can replace/release a runtime while this lightweight probe runs.
+    video_masker, tracker = state.video_masker, state.tracker
+    if video_masker is not None:
+        return {"status": "video active", "device": video_masker.device.type}
+    if tracker is not None:
+        return {"status": "tracking active", "device": tracker.device}
     return {"status": "inactive", "device": None}
