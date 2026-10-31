@@ -325,6 +325,14 @@ def run_prompt_tracking_job(request: TrackingPromptPointsRequest, inputs=None) -
                     query_array,
                     add_support_grid=False,
                 )
+        expected_frames = len(state.video_frame_files)
+        expected_tracks_shape = (total_queries, expected_frames, 2)
+        expected_visibility_shape = (total_queries, expected_frames)
+        if tracks.shape != expected_tracks_shape or visibility.shape != expected_visibility_shape:
+            raise RuntimeError(
+                f"Tracking returned tracks shape {tracks.shape} and visibility shape {visibility.shape}; "
+                f"expected {expected_tracks_shape} and {expected_visibility_shape} for the session frame sequence."
+            )
     except ValueError as error:
         _clear_tracking_video_if_loaded_for_operation()
         _restore_masker_state(raise_on_error=False)

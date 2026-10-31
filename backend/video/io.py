@@ -8,10 +8,11 @@ from core.state import BackendState, state
 
 def load_video_frames_as_numpy(video_dir_path: Path, frame_file_names: list[str]) -> np.ndarray:
     frames_rgb: list[np.ndarray] = []
-    for name in frame_file_names:
-        frame_bgr = cv2.imread(str(video_dir_path / name))
+    for frame_idx, name in enumerate(frame_file_names):
+        frame_path = video_dir_path / name
+        frame_bgr = cv2.imread(str(frame_path))
         if frame_bgr is None:
-            continue
+            raise ValueError(f"Unable to read frame {frame_idx}: {frame_path}")
         frames_rgb.append(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
 
     if not frames_rgb:

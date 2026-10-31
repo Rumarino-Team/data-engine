@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import co_tracker
 from co_tracker import CoTracker, FrameChunkLoader, resize_frames_to_model
+from video.io import load_video_frames_as_numpy
 
 
 class FakeOnlineModel:
@@ -53,6 +54,35 @@ class FakeFrameLoader:
 
 
 class FrameChunkLoaderTests(unittest.TestCase):
+    def test_frame_loaders_reject_unreadable_middle_frame(self):
+        for streaming in (False, True):
+            for unreadable in ("missing", "corrupt"):
+                with self.subTest(streaming=streaming, unreadable=unreadable), tempfile.TemporaryDirectory() as tmp_dir:
+                    root = Path(tmp_dir)
+                    names = [f"{index:05d}.png" for index in range(3)]
+                    for index in (0, 2):
+                        cv2.imwrite(str(root / names[index]), np.full((3, 4, 3), index, dtype=np.uint8))
+                    if unreadable == "corrupt":
+                        (root / names[1]).write_bytes(b"invalid image")
+
+                    with self.assertRaisesRegex(ValueError, r"Unable to read frame 1: .*00001\.png"):
+                        if streaming:
+                            FrameChunkLoader(root, names, device="cpu").load_chunk(0, 3)
+                        else:
+                            load_video_frames_as_numpy(root, names)
+
+    def test_in_memory_loader_preserves_supplied_frame_order_and_rgb(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            cv2.imwrite(str(root / "00000.png"), np.full((3, 4, 3), (10, 20, 30), dtype=np.uint8))
+            cv2.imwrite(str(root / "00001.png"), np.full((3, 4, 3), (40, 50, 60), dtype=np.uint8))
+
+            video = load_video_frames_as_numpy(root, ["00001.png", "00000.png"])
+
+            self.assertEqual(video.shape, (2, 3, 4, 3))
+            self.assertEqual(video.dtype, np.uint8)
+            np.testing.assert_array_equal(video[:, 0, 0], [[60, 50, 40], [30, 20, 10]])
+
     def test_load_chunk_returns_cotracker_tensor_shape_and_rgb_order(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

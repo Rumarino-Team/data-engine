@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.state import state
 from core.annotations import SessionAnnotations
+from core.errors import OperationError
 from tracking.prompt_tracking import run_prompt_tracking_job
 from video.prompts import restore_video_masker_from_prompt_events
 
@@ -23,6 +24,8 @@ class _FakeInteractiveMasker:
 
 class _FakeTracker:
     model_name = "cotracker3_online"
+    device = "cpu"
+    model_resolution = (2, 2)
 
     def prepare_video(self, video):
         return video
@@ -119,7 +122,6 @@ class PromptTrackingStatusTests(unittest.TestCase):
         self.assertEqual(result["tracking_result_id"], "track-1")
 
     def test_failed_restore_disables_predictor_without_publishing(self):
-        from core.errors import OperationError
         with (
             patch("tracking.prompt_tracking.update_job"),
             patch("tracking.prompt_tracking.ensure_tracker_model"),
@@ -136,6 +138,84 @@ class PromptTrackingStatusTests(unittest.TestCase):
         publish.assert_not_called()
         self.assertIsNone(state.video_masker)
         self.assertIsNone(state.tracking_video)
+
+    def test_invalid_tracking_coverage_restores_masker_without_publishing(self):
+        shapes = [
+            ((1, 1, 2), (1, 1)),  # Missing frame.
+            ((1, 3, 2), (1, 3)),  # Extra frame.
+            ((1, 2, 2), (1, 1)),  # Visibility missing a frame.
+            ((0, 2, 2), (0, 2)),  # Missing query.
+            ((1, 2, 3), (1, 2)),  # Invalid coordinate shape.
+        ]
+        for streaming in (False, True):
+            for tracks_shape, visibility_shape in shapes:
+                with self.subTest(streaming=streaming, tracks=tracks_shape, visibility=visibility_shape):
+                    masker = _FakeInteractiveMasker()
+                    state.video_masker = masker
+                    previous_metadata = state.session_metadata
+                    state.session_metadata = {"latest_tracking_result_id": "previous-result"}
+                    before_annotations = state.annotations.snapshot()
+                    output = (np.zeros(tracks_shape, dtype=np.float32), np.ones(visibility_shape, dtype=bool))
+
+                    def restore(**kwargs):
+                        state.video_masker = masker
+
+                    try:
+                        with (
+                            patch("tracking.prompt_tracking.update_job"),
+                            patch("tracking.prompt_tracking.ensure_tracker_model"),
+                            patch("tracking.prompt_tracking.should_stream_tracking", return_value=streaming),
+                            patch("tracking.prompt_tracking.load_tracking_video_from_current_video_state",
+                                  return_value=(np.zeros((2, 2, 2, 3), dtype=np.uint8), self.tmp.name)),
+                            patch.object(state.tracker, "track", return_value=output),
+                            patch.object(state.tracker, "track_streaming", return_value=output, create=True),
+                            patch("tracking.prompt_tracking.cleanup_cuda_memory"),
+                            patch("tracking.prompt_tracking.restore_video_masker_from_prompt_events", side_effect=restore) as recovery,
+                            patch("tracking.prompt_tracking.save_prompt_tracking_result") as publish,
+                        ):
+                            with self.assertRaises(OperationError) as failure:
+                                run_prompt_tracking_job(type("Request", (), {"add_support_grid": False})())
+                        self.assertEqual(failure.exception.status_code, 500)
+                        self.assertIn("Tracking returned", failure.exception.message)
+                        publish.assert_not_called()
+                        recovery.assert_called_once()
+                        self.assertIs(state.video_masker, masker)
+                        self.assertIsNone(state.tracking_video)
+                        self.assertEqual(state.session_metadata["latest_tracking_result_id"], "previous-result")
+                        self.assertEqual(state.annotations.snapshot(), before_annotations)
+                    finally:
+                        state.session_metadata = previous_metadata
+
+    def test_unreadable_frame_rejects_tracking_before_inference(self):
+        masker = state.video_masker
+        before_annotations = state.annotations.snapshot()
+
+        def restore(**kwargs):
+            state.video_masker = masker
+
+        with (
+            patch("tracking.prompt_tracking.update_job"),
+            patch("tracking.prompt_tracking.ensure_tracker_model"),
+            patch("tracking.prompt_tracking.should_stream_tracking", return_value=False),
+            patch("video.io.cv2.imread", side_effect=[np.zeros((2, 2, 3), dtype=np.uint8), None]),
+            patch.object(state.tracker, "track") as inference,
+            patch("tracking.prompt_tracking.cleanup_cuda_memory"),
+            patch("tracking.prompt_tracking.restore_video_masker_from_prompt_events", side_effect=restore) as recovery,
+            patch("tracking.prompt_tracking.save_prompt_tracking_result") as publish,
+            patch.object(state, "session_metadata", {"latest_tracking_result_id": "previous-result"}),
+        ):
+            with self.assertRaises(OperationError) as failure:
+                run_prompt_tracking_job(type("Request", (), {"add_support_grid": False})())
+
+            self.assertEqual(failure.exception.status_code, 400)
+            self.assertIn("Unable to read frame 1:", failure.exception.message)
+            inference.assert_not_called()
+            publish.assert_not_called()
+            recovery.assert_called_once()
+            self.assertIs(state.video_masker, masker)
+            self.assertIsNone(state.tracking_video)
+            self.assertEqual(state.session_metadata["latest_tracking_result_id"], "previous-result")
+            self.assertEqual(state.annotations.snapshot(), before_annotations)
 
     def test_restore_progress_override_hides_sam2_labels(self):
         updates = []
