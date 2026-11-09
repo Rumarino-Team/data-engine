@@ -60,14 +60,22 @@ class SessionAnnotationsTests(unittest.TestCase):
     def metadata(self):
         return json.loads((state.active_session_dir / "session.json").read_text())
 
-    def reopen(self):
-        saved_path = state.active_session_dir
+    def save_checkpoint(self, name="checkpoint"):
+        with patch.object(service, "SAVED_ROOT", self.root / "saved"):
+            response = self.client.post("/video/save", json={"name": name, "save_as": True})
+        self.assertEqual(response.status_code, 200)
+        return Path(response.json()["saved_path"])
+
+    def reopen(self, checkpoint=None):
+        """Open a checkpoint (saving the working copy first by default) as a new working copy."""
+        checkpoint = checkpoint or self.save_checkpoint()
         state.annotations = SessionAnnotations()
-        return service.initialize_video_state_from_resolved_input(
-            saved_path, online_mode=True, batch_size=1,
-            offload_video_to_cpu=True, offload_state_to_cpu=True,
-            async_loading_frames=False, session=state,
-        )
+        with patch("video.io.SESSION_CACHE_ROOT", self.root / "cache"):
+            return service.initialize_video_state_from_resolved_input(
+                checkpoint, online_mode=True, batch_size=1,
+                offload_video_to_cpu=True, offload_state_to_cpu=True,
+                async_loading_frames=False, session=state,
+            )
 
     def test_rejected_object_mutations_preserve_inputs_artifacts_and_metadata(self):
         self.add_override(True)
@@ -156,11 +164,9 @@ class SessionAnnotationsTests(unittest.TestCase):
         selected.write_bytes(original.read_bytes())
         state.mask_manifest_path = str(selected)
         write_session_metadata()
-        with patch.object(service, "SAVED_ROOT", self.root / "saved"):
-            response = self.client.post("/video/save", json={"name": "result"})
-        self.assertEqual(response.status_code, 200)
+        checkpoint = self.save_checkpoint("result")
         self.assertEqual(Path(state.mask_manifest_path).name, "manifest-run.json")
-        self.reopen()
+        self.reopen(checkpoint)
         self.assertEqual(Path(state.mask_manifest_path).name, "manifest-run.json")
         self.assertEqual(self.client.get("/video/mask_data/0").json()["sources"], {"1": "manifest"})
 
@@ -347,11 +353,9 @@ class SessionAnnotationsTests(unittest.TestCase):
     def test_save_without_frontend_annotations_preserves_backend_annotations(self):
         state.annotations.set_prompt(VideoPrompt(**PROMPT))
         write_session_metadata()
-        with patch.object(service, "SAVED_ROOT", self.root / "saved"):
-            response = self.client.post("/video/save", json={"name": "review"})
-        self.assertEqual(response.status_code, 200)
+        checkpoint = self.save_checkpoint("review")
         expected = state.annotations.snapshot()
-        restored = self.reopen()
+        restored = self.reopen(checkpoint)
         self.assertEqual(state.annotations.snapshot(), expected)
         self.assertEqual(restored["restored_session"]["annotations"]["prompts"][0]["points"], [[1, 2]])
         self.masker.add_new_points_or_box.assert_called_once_with(
@@ -418,25 +422,36 @@ class SessionAnnotationsTests(unittest.TestCase):
         self.reopen()
         self.assertEqual(state.annotations.snapshot(), expected)
 
+    def rewrite_checkpoint(self, checkpoint, **changes):
+        metadata = json.loads((checkpoint / "session.json").read_text())
+        metadata.update(changes)
+        (checkpoint / "session.json").write_text(json.dumps(metadata))
+
     def test_session_without_canonical_annotations_is_rejected(self):
-        (self.session / "session.json").write_text(json.dumps({"session_id": "annotations-session", "objects": [], "interactive_state": {
-            "points": [{"frame_idx": 0, "obj_id": 7, "x": 1, "y": 2, "label": 1}],
-        }}))
+        checkpoint = self.save_checkpoint()
+        (checkpoint / "session.json").write_text(json.dumps({
+            "session_id": "annotations-session", "checkpoint_id": "cp", "display_name": "Name", "objects": [],
+            "interactive_state": {"points": [{"frame_idx": 0, "obj_id": 7, "x": 1, "y": 2, "label": 1}]}}))
         with self.assertRaisesRegex(OperationError, "Invalid session annotations or editor state"):
-            self.reopen()
+            self.reopen(checkpoint)
 
     def test_corrupt_annotations_is_rejected(self):
-        (self.session / "session.json").write_text(json.dumps({"session_id": "annotations-session", "annotations": {"version": 999}}))
+        checkpoint = self.save_checkpoint()
+        self.rewrite_checkpoint(checkpoint, annotations={"version": 999})
         with self.assertRaisesRegex(OperationError, "Invalid session annotations or editor state"):
-            self.reopen()
+            self.reopen(checkpoint)
 
     def test_invalid_editor_state_is_rejected_without_partial_restore(self):
-        write_session_metadata()
-        metadata = self.metadata()
-        metadata["interactive_state"] = {"points": [{"invalid": True}]}
-        (self.session / "session.json").write_text(json.dumps(metadata))
+        checkpoint = self.save_checkpoint()
+        self.rewrite_checkpoint(checkpoint, interactive_state={"points": [{"invalid": True}]})
         with self.assertRaisesRegex(OperationError, "Invalid session annotations or editor state"):
-            self.reopen()
+            self.reopen(checkpoint)
+
+    def test_checkpoint_without_identity_is_rejected(self):
+        checkpoint = self.save_checkpoint()
+        self.rewrite_checkpoint(checkpoint, checkpoint_id=None)
+        with self.assertRaisesRegex(OperationError, "checkpoint identity"):
+            self.reopen(checkpoint)
 
     def test_failed_metadata_replacement_keeps_previous_complete_annotations(self):
         write_session_metadata()
@@ -516,11 +531,11 @@ class SessionAnnotationsTests(unittest.TestCase):
                     snapshot = apply_delta(snapshot, response.json()["annotation_delta"])
                     self.assertTrue(same_annotations(snapshot, self.client.get("/video/info").json()["annotations"]))
 
-    def override_file(self, artifact):
-        return self.session / "masks" / "overrides" / artifact
+    def override_file(self, artifact, session=None):
+        return (session or state.active_session_dir) / "masks" / "overrides" / artifact
 
-    def override_files(self):
-        return sorted(path.name for path in (self.session / "masks" / "overrides").glob("*.json"))
+    def override_files(self, session=None):
+        return sorted(path.name for path in ((session or state.active_session_dir) / "masks" / "overrides").glob("*.json"))
 
     def test_replaced_and_cleared_overrides_reclaim_their_artifacts(self):
         self.add_override(True)
@@ -544,11 +559,12 @@ class SessionAnnotationsTests(unittest.TestCase):
         self.add_override(True)
         accepted = self.override_files()
         self.override_file("0" * 32 + ".json").write_text("{}")
-        self.reopen()
+        checkpoint = self.save_checkpoint()
+        self.reopen(checkpoint)
         self.assertEqual(self.override_files(), accepted)
-        self.override_file(accepted[0]).unlink()
+        self.override_file(accepted[0], checkpoint).unlink()
         with self.assertRaisesRegex(OperationError, "Mask override artifact is unavailable"):
-            self.reopen()
+            self.reopen(checkpoint)
 
     def test_metadata_writes_never_reread_session_json(self):
         write_session_metadata({"created_at": "then", "latest_tracking_result_id": "abc"})

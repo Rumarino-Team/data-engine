@@ -24,7 +24,6 @@ PERSISTED_METADATA_KEYS = (
     "interactive_state",
     "created_at",
     "saved_at",
-    "saved_path",
     "source_input_path",
     "latest_tracking_result_id",
     "latest_tracking_result_path",
@@ -43,17 +42,11 @@ def interactive_state_projection(raw_state: Optional[dict[str, Any]] = None, *, 
         interactive["selected_object_id"] = None
     return interactive
 
-def write_session_metadata(extra: Optional[dict[str, Any]] = None, *, session: BackendState = state) -> None:
-    from video.masks import discard_override_artifacts
-    session_path = current_session_path(session)
-    if session_path is None:
-        return
-    session_metadata_path = session_path / "session.json"
-    if extra:
-        session.session_metadata.update(extra)
+def session_metadata_document(session: BackendState, overrides: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     metadata = {
         "session_id": session.active_session_id,
-        "saved_name": session.active_session_saved_name,
+        "checkpoint_id": session.checkpoint_id,
+        "display_name": session.display_name,
         "source_video_path": session.video_source_path,
         "resolved_video_frames_dir": session.video_dir,
         "state.mask_manifest_path": session.mask_manifest_path,
@@ -72,24 +65,37 @@ def write_session_metadata(extra: Optional[dict[str, Any]] = None, *, session: B
             }
         )
     metadata.update(session.session_metadata)
+    metadata.update(overrides or {})
     # Editor caches cannot replace accepted annotation inputs.
     metadata["interactive_mask_files"] = session.interactive_mask_files
     metadata["annotations"] = session.annotations.snapshot()
     metadata["interactive_state"] = interactive_state_projection(metadata.get("interactive_state"), session=session)
-    metadata["schema_version"] = 4
+    metadata["schema_version"] = 5
+    return metadata
+
+def write_metadata_file(directory: Path, metadata: dict[str, Any]) -> None:
     # A failed write must leave the last complete annotations readable.
     temporary_path = None
     try:
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=session_path,
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory,
                                          prefix=".session-", suffix=".json", delete=False) as handle:
             temporary_path = Path(handle.name)
             json.dump(metadata, handle, ensure_ascii=True, separators=(",", ":"))
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary_path, session_metadata_path)
+        os.replace(temporary_path, directory / "session.json")
     finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
+
+def write_session_metadata(extra: Optional[dict[str, Any]] = None, *, session: BackendState = state) -> None:
+    from video.masks import discard_override_artifacts
+    session_path = current_session_path(session)
+    if session_path is None:
+        return
+    if extra:
+        session.session_metadata.update(extra)
+    write_metadata_file(session_path, session_metadata_document(session))
     # Replaced override pixels become garbage only after metadata stops naming them.
     referenced = {mask.artifact for mask in session.annotations.mask_overrides}
     stale = session.committed_override_artifacts - referenced
@@ -116,10 +122,3 @@ def load_session_metadata(session_root: Path) -> dict[str, Any]:
             f"Saved session metadata must be a JSON object: {session_json_path}",
         )
     return metadata
-
-def sanitize_save_name(name: str) -> str:
-    sanitized = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", name.strip())
-    sanitized = re.sub(r"_+", "_", sanitized).strip(" ._")
-    if not sanitized or sanitized in {".", ".."}:
-        raise OperationError(400, "Save name cannot be empty.")
-    return sanitized

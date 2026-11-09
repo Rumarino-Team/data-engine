@@ -1,4 +1,4 @@
-import logging, shutil
+import logging, shutil, uuid
 from pathlib import Path
 from typing import Any, Optional
 import cv2
@@ -22,10 +22,11 @@ from schemas.video import (
 )
 from sessions.cache import bump_video_state_epoch, reset_video_session_state
 from schemas.video import InteractiveState
-from sessions.metadata import current_masks_dir, current_session_path, interactive_state_projection, load_session_metadata, persisted_session_fields, sanitize_save_name, write_session_metadata
-from sessions.paths import path_is_relative_to, resolve_input_path, resolve_saved_session_layout, validate_video_input_path
+from sessions.checkpoints import clone_session_directory, content_fingerprint, new_checkpoint_location, normalize_display_name, publish_checkpoint, saved_state
+from sessions.metadata import current_masks_dir, current_session_path, interactive_state_projection, load_session_metadata, persisted_session_fields, session_metadata_document, write_metadata_file, write_session_metadata
+from sessions.paths import resolve_input_path, resolve_saved_session_layout, validate_video_input_path
 from utils import load_mask_manifest
-from video.io import copy_frames_directory_to_session, create_active_session, extract_video_to_session_frames
+from video.io import copy_frames_directory_to_session, create_active_session, extract_video_to_session_frames, open_checkpoint_as_working_copy
 from video.masks import mask_logits_to_2d_bool, store_mask_override, override_pixels, reclaim_override_artifacts, retain_interactive_masks, effective_mask_data
 from video.manifest_cache import load_cached_mask_manifest
 from video.mask_encoding import encode_live_mask_payload
@@ -52,15 +53,16 @@ def initialize_video_state_from_resolved_input(
     saved_session_layout = resolve_saved_session_layout(resolved_input_path)
 
     if saved_session_layout is not None:
-        session_dir, frames_dir, masks_dir = saved_session_layout
-        session_metadata = load_session_metadata(session_dir)
+        checkpoint_dir, _, _ = saved_session_layout
+        session_metadata = load_session_metadata(checkpoint_dir)
+        checkpoint_id, display_name = session_metadata.get("checkpoint_id"), session_metadata.get("display_name")
+        if not all(isinstance(value, str) and value.strip() for value in (checkpoint_id, display_name)):
+            raise OperationError(400, "Saved session is missing its checkpoint identity or display name.")
         source_type = "saved_session"
-        session.active_session_dir = session_dir
-        session.active_session_saved_name = (
-            str(session_metadata.get("saved_name")).strip()
-            if session_metadata.get("saved_name")
-            else session_dir.name
-        )
+        # The checkpoint stays untouched; all edits and results belong to the working copy.
+        session_dir = open_checkpoint_as_working_copy(checkpoint_dir, session=session)
+        frames_dir, masks_dir = session_dir / "frames", session_dir / "masks"
+        session.checkpoint_id, session.checkpoint_dir, session.display_name = checkpoint_id, checkpoint_dir, display_name
         manifest_name = session_metadata.get("mask_manifest_file")
         manifest_path = masks_dir / Path(manifest_name).name if manifest_name else None
         session.mask_manifest_path = str(manifest_path) if manifest_path and manifest_path.exists() else None
@@ -81,9 +83,6 @@ def initialize_video_state_from_resolved_input(
             message=f"Found {len(indexed_frame_files)} saved session frames",
         )
         try:
-            session_id = session_metadata["session_id"]
-            if not isinstance(session_id, str) or not session_id.strip():
-                raise ValueError("Session identity must be a nonempty string.")
             annotations = SessionAnnotations.model_validate(session_metadata["annotations"])
             if any(event.frame_idx >= len(indexed_frame_files) for event in [*annotations.prompts, *annotations.mask_overrides]):
                 raise ValueError("Prompt frame is outside the video.")
@@ -94,7 +93,6 @@ def initialize_video_state_from_resolved_input(
                 override_pixels(mask, session_path=session.active_session_dir)
         except (KeyError, ValidationError, ValueError) as error:
             raise OperationError(400, f"Invalid session annotations or editor state: {error}") from error
-        session.active_session_id = session_id
         session.annotations = annotations
         session.interactive_mask_files = session_metadata.get("interactive_mask_files", {})
         session.session_metadata = persisted_session_fields(session_metadata)
@@ -282,6 +280,7 @@ def initialize_video_state_from_resolved_input(
         metadata_updates["created_at"] = utc_now_iso()
     else:
         metadata_updates["interactive_state"] = restored_session_payload["interactive_state"]
+        session.saved_fingerprint = content_fingerprint(session)
 
     response_payload: dict[str, Any] = {
         "message": "Video state initialized successfully",
@@ -505,37 +504,54 @@ def save_video_session(request: VideoSaveRequest):
         if session_path is None or state.video_dir is None or not state.video_frame_files:
             raise OperationError(400, "Video session is not initialized.")
 
-        save_name = sanitize_save_name(request.name)
-        SAVED_ROOT.mkdir(parents=True, exist_ok=True)
-        saved_path = (SAVED_ROOT / save_name).resolve()
-        if saved_path.exists():
-            raise OperationError(409, f"Saved session already exists: {save_name}")
+        # Re-save replaces this session's own checkpoint; Save As (or a first save) mints a new identity.
+        resave = state.checkpoint_id is not None and not request.save_as
+        if request.name is None and not resave:
+            raise OperationError(400, "A session name is required for the first save and for Save As.")
+        display_name = normalize_display_name(request.name) if request.name is not None else state.display_name
+        if resave:
+            checkpoint_id, target = state.checkpoint_id, state.checkpoint_dir
+        else:
+            SAVED_ROOT.mkdir(parents=True, exist_ok=True)
+            checkpoint_id, target = new_checkpoint_location(display_name, SAVED_ROOT)
 
-        if path_is_relative_to(session_path, SAVED_ROOT):
-            raise OperationError(409, "Current session is already saved.")
-
-        interactive_state_payload = request.interactive_state.model_dump() if request.interactive_state else None
         saved_at = utc_now_iso()
-        metadata_extra = {"saved_name": save_name, "saved_path": str(saved_path), "saved_at": saved_at}
-        if interactive_state_payload is not None:
-            metadata_extra["interactive_state"] = interactive_state_payload
-        write_session_metadata(metadata_extra)
+        overrides: dict[str, Any] = {
+            "checkpoint_id": checkpoint_id, "display_name": display_name, "saved_at": saved_at,
+            "saved_revision": state.annotations.revision,
+            "resolved_video_frames_dir": str(target / "frames"),
+            "state.mask_manifest_path": str(target / "masks" / Path(state.mask_manifest_path).name) if state.mask_manifest_path else None,
+        }
+        if request.interactive_state is not None:
+            overrides["interactive_state"] = request.interactive_state.model_dump()
+        staging = target.parent / f".staging-{uuid.uuid4().hex}"
+        try:
+            clone_session_directory(session_path, staging)
+            write_metadata_file(staging, session_metadata_document(state, overrides))
+            publish_checkpoint(staging, target)
+        except BaseException:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
 
-        session_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(session_path), str(saved_path))
-
-        state.active_session_dir = saved_path
-        state.active_session_saved_name = save_name
-        state.video_dir = str(saved_path / "frames")
-        manifest_path = saved_path / "masks" / Path(state.mask_manifest_path).name if state.mask_manifest_path else None
-        state.mask_manifest_path = str(manifest_path) if manifest_path and manifest_path.exists() else None
-        write_session_metadata(metadata_extra)
+        # The checkpoint is published; the working copy adopts its identity.
+        state.checkpoint_id, state.checkpoint_dir, state.display_name = checkpoint_id, target, display_name
+        state.saved_fingerprint = content_fingerprint(state)
+        state.session_metadata["saved_at"] = saved_at
+        if "interactive_state" in overrides:
+            state.session_metadata["interactive_state"] = overrides["interactive_state"]
+        try:
+            write_session_metadata()
+        except OSError:
+            # Working metadata is disposable; the published checkpoint is already complete.
+            logger.warning("Saved checkpoint %s but could not update working metadata.", checkpoint_id, exc_info=True)
 
         return {
             "message": "Session saved successfully",
-            "name": save_name,
-            "saved_path": str(saved_path),
+            "name": display_name,
+            "checkpoint_id": checkpoint_id,
+            "saved_path": str(target),
             "state_epoch": int(state.video_state_epoch),
+            "saved_state": saved_state(),
         }
 
 def clear_all_prompts_in_frame(frame_idx: int, obj_id: int, precondition: AnnotationPrecondition):
@@ -601,6 +617,7 @@ def annotation_update(precondition: AnnotationPrecondition):
         "state_epoch": int(state.video_state_epoch),
         "annotation_delta": state.annotations.take_delta(precondition.expected_revision),
         "tracking_validity": tracking_validity(),
+        "saved_state": saved_state(),
     }
 
 
@@ -610,6 +627,7 @@ def annotation_snapshot():
         "state_epoch": int(state.video_state_epoch),
         "annotations": state.annotations.snapshot() if current_session_path() is not None else None,
         "tracking_validity": tracking_validity(),
+        "saved_state": saved_state() if current_session_path() is not None else None,
     }
 
 

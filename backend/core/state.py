@@ -22,6 +22,11 @@ class BackendState:
     video_state_epoch: int = 0
     active_session_dir: Optional[Path] = None
     active_session_id: Optional[str] = None
-    active_session_saved_name: Optional[str] = None
+    # Checkpoint this working copy was opened from or last saved to; the working directory is never one.
+    checkpoint_id: Optional[str] = None
+    checkpoint_dir: Optional[Path] = None
+    display_name: Optional[str] = None
+    # Content identity at the last open/save; None means the session was never saved.
+    saved_fingerprint: Optional[tuple] = None
 
 state = BackendState()

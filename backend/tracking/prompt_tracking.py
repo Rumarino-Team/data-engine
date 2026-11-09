@@ -1,5 +1,4 @@
 from core.errors import OperationError
-import logging
 from pathlib import Path
 from typing import Any
 import numpy as np
@@ -10,12 +9,11 @@ from core.jobs import capture_job_inputs, validate_job_inputs, foreground_operat
 from core.runtime import cleanup_cuda_memory
 from core.state import state
 from schemas.tracking import TrackingPromptPointsRequest
-from sessions.cache import bump_video_state_epoch
 from tracking.results import save_prompt_tracking_result
 from tracking.service import ensure_tracker_model, load_tracking_video_from_current_video_state, should_stream_tracking
-from video.prompts import restore_video_masker_from_prompt_events
+from video.prompts import create_masker_runtime
+from video.runtime import MaskerRestorationError, VideoMaskerRuntime
 
-logger = logging.getLogger(__name__)
 
 def start_prompt_tracking(request: TrackingPromptPointsRequest, precondition):
     from video.service import validate_annotation_precondition
@@ -32,7 +30,9 @@ def start_prompt_tracking(request: TrackingPromptPointsRequest, precondition):
             inputs=inputs,
         )
 
-def run_prompt_tracking_job(request: TrackingPromptPointsRequest, inputs=None) -> dict[str, Any]:
+def run_prompt_tracking_job(
+    request: TrackingPromptPointsRequest, inputs=None, *, masker_runtime: VideoMaskerRuntime | None = None,
+) -> dict[str, Any]:
     inputs = inputs or capture_job_inputs("prompt_tracking")
     validate_job_inputs(inputs, "prompt_tracking")
     update_job(
@@ -84,53 +84,15 @@ def run_prompt_tracking_job(request: TrackingPromptPointsRequest, inputs=None) -
         message=f"Preparing tracker for {total_queries} prompt points",
     )
 
-    should_restore_video_masker = state.video_masker is not None and state.video_dir is not None
-    restore_online_mode = state.video_masker.online_mode if state.video_masker is not None else True
-    restore_batch_size = state.video_masker.default_batch_size if state.video_masker is not None else None
-    restore_offload_video_to_cpu = state.video_masker.offload_video_to_cpu if state.video_masker is not None else None
-    restore_offload_state_to_cpu = state.video_masker.offload_state_to_cpu if state.video_masker is not None else None
+    runtime = masker_runtime if masker_runtime is not None else create_masker_runtime(state)
 
-    def _restore_masker_state(*, raise_on_error: bool) -> None:
-        if not should_restore_video_masker:
-            return
-        try:
-            restore_video_masker_from_prompt_events(
-                online_mode=restore_online_mode,
-                batch_size=restore_batch_size,
-                offload_video_to_cpu=restore_offload_video_to_cpu,
-                offload_state_to_cpu=restore_offload_state_to_cpu,
-                progress_stage_override="restoring_masker",
-                progress_label_override="Restoring interactive masking state",
-                progress_message_prefix="Restoring masking state after prompt tracking",
-            )
-        except Exception as error:
-            state.video_masker = None
-            bump_video_state_epoch()
-            logger.exception("Failed to restore interactive video masker state after prompt tracking")
-            if raise_on_error:
-                raise OperationError(503, f"Prompt-point tracking finished but failed to restore interactive masking state: {error}",
-                ) from error
-
-    if state.video_masker is not None:
-        state.video_masker = None
-        bump_video_state_epoch()
-        cleanup_cuda_memory()
-
-    try:
-        ensure_tracker_model(cot.DEFAULT_COTRACKER_MODEL)
-    except Exception as error:
-        _restore_masker_state(raise_on_error=False)
-        if isinstance(error, ValueError):
-            raise OperationError(400, str(error)) from error
-        raise
-    update_job(
-        stage="loading_frames",
-        stage_label="Preparing tracking frames",
-        progress=0.35,
-        current=0,
-        total=total_queries,
-        message="Preparing video frames for prompt tracking",
-    )
+    def _report_restore_progress(_stage: str, _label: str, progress: float | None, message: str) -> None:
+        update_job(
+            stage="restoring_masker",
+            stage_label="Restoring interactive masking state",
+            progress=progress,
+            message=f"Restoring masking state after prompt tracking: {message}",
+        )
 
     def _is_oom_runtime_error(error: RuntimeError) -> bool:
         return "out of memory" in str(error).lower()
@@ -273,105 +235,118 @@ def run_prompt_tracking_job(request: TrackingPromptPointsRequest, inputs=None) -
             loaded_tracking_video_for_operation = False
 
     try:
-        query_array = np.asarray(positive_queries, dtype=np.float32)
-        support_grid_used = bool(request.add_support_grid)
-        use_streaming_tracking = should_stream_tracking(len(state.video_frame_files))
-        tracking_mode = "streaming" if use_streaming_tracking else "in_memory"
-
-        try:
-            if use_streaming_tracking:
-                tracks, visibility = _track_queries_streaming(
-                    query_array,
-                    add_support_grid=support_grid_used,
-                )
-                state.tracking_video_path = str(state.video_dir)
-            else:
-                state.tracking_video, state.tracking_video_path = load_tracking_video_from_current_video_state()
-                loaded_tracking_video_for_operation = True
-                tracks, visibility = _track_queries_batched(
-                    state.tracking_video,
-                    query_array,
-                    add_support_grid=support_grid_used,
-                )
-        except torch.OutOfMemoryError:
-            if not support_grid_used:
-                raise
-            support_grid_used = False
-            if use_streaming_tracking:
-                tracks, visibility = _track_queries_streaming(
-                    query_array,
-                    add_support_grid=False,
-                )
-                state.tracking_video_path = str(state.video_dir)
-            else:
-                tracks, visibility = _track_queries_batched(
-                    state.tracking_video,
-                    query_array,
-                    add_support_grid=False,
-                )
-        except RuntimeError as error:
-            if not _is_oom_runtime_error(error) or not support_grid_used:
-                raise
-            support_grid_used = False
-            if use_streaming_tracking:
-                tracks, visibility = _track_queries_streaming(
-                    query_array,
-                    add_support_grid=False,
-                )
-                state.tracking_video_path = str(state.video_dir)
-            else:
-                tracks, visibility = _track_queries_batched(
-                    state.tracking_video,
-                    query_array,
-                    add_support_grid=False,
-                )
-        expected_frames = len(state.video_frame_files)
-        expected_tracks_shape = (total_queries, expected_frames, 2)
-        expected_visibility_shape = (total_queries, expected_frames)
-        if tracks.shape != expected_tracks_shape or visibility.shape != expected_visibility_shape:
-            raise RuntimeError(
-                f"Tracking returned tracks shape {tracks.shape} and visibility shape {visibility.shape}; "
-                f"expected {expected_tracks_shape} and {expected_visibility_shape} for the session frame sequence."
+        # Leaving this scope restores interactive masking before result publication.
+        with runtime.suspended(progress_callback=_report_restore_progress):
+            try:
+                ensure_tracker_model(cot.DEFAULT_COTRACKER_MODEL)
+            except ValueError as error:
+                raise OperationError(400, str(error)) from error
+            update_job(
+                stage="loading_frames",
+                stage_label="Preparing tracking frames",
+                progress=0.35,
+                current=0,
+                total=total_queries,
+                message="Preparing video frames for prompt tracking",
             )
-    except ValueError as error:
-        _clear_tracking_video_if_loaded_for_operation()
-        _restore_masker_state(raise_on_error=False)
-        raise OperationError(400, str(error)) from error
-    except torch.OutOfMemoryError as error:
-        cleanup_cuda_memory()
-        _clear_tracking_video_if_loaded_for_operation()
-        _restore_masker_state(raise_on_error=False)
-        raise OperationError(
-            507, "CUDA out of memory during tracking. Try fewer prompt points or disable support grid."
-        ) from error
-    except RuntimeError as error:
-        if "out of memory" in str(error).lower():
-            cleanup_cuda_memory()
-            _clear_tracking_video_if_loaded_for_operation()
-            _restore_masker_state(raise_on_error=False)
-            raise OperationError(
-                507, "CUDA out of memory during tracking. Try fewer prompt points or disable support grid."
-            ) from error
-        _clear_tracking_video_if_loaded_for_operation()
-        _restore_masker_state(raise_on_error=False)
-        raise OperationError(500, f"Prompt-point tracking failed: {error}") from error
-    except Exception as error:
-        _clear_tracking_video_if_loaded_for_operation()
-        _restore_masker_state(raise_on_error=False)
-        raise OperationError(500, f"Prompt-point tracking failed: {error}") from error
 
-    cleanup_cuda_memory()
-    update_job(
-        stage="restoring_masker",
-        stage_label="Restoring interactive masking state",
-        progress=0.95,
-        current=int(tracks.shape[0]),
-        total=total_queries,
-        message="Restoring masking state after prompt tracking",
-    )
-    try:
-        validate_job_inputs(inputs, "prompt_tracking")
-        _restore_masker_state(raise_on_error=True)
+            try:
+                query_array = np.asarray(positive_queries, dtype=np.float32)
+                support_grid_used = bool(request.add_support_grid)
+                use_streaming_tracking = should_stream_tracking(len(state.video_frame_files))
+                tracking_mode = "streaming" if use_streaming_tracking else "in_memory"
+
+                try:
+                    if use_streaming_tracking:
+                        tracks, visibility = _track_queries_streaming(
+                            query_array,
+                            add_support_grid=support_grid_used,
+                        )
+                        state.tracking_video_path = str(state.video_dir)
+                    else:
+                        state.tracking_video, state.tracking_video_path = load_tracking_video_from_current_video_state()
+                        loaded_tracking_video_for_operation = True
+                        tracks, visibility = _track_queries_batched(
+                            state.tracking_video,
+                            query_array,
+                            add_support_grid=support_grid_used,
+                        )
+                except torch.OutOfMemoryError:
+                    if not support_grid_used:
+                        raise
+                    support_grid_used = False
+                    if use_streaming_tracking:
+                        tracks, visibility = _track_queries_streaming(
+                            query_array,
+                            add_support_grid=False,
+                        )
+                        state.tracking_video_path = str(state.video_dir)
+                    else:
+                        tracks, visibility = _track_queries_batched(
+                            state.tracking_video,
+                            query_array,
+                            add_support_grid=False,
+                        )
+                except RuntimeError as error:
+                    if not _is_oom_runtime_error(error) or not support_grid_used:
+                        raise
+                    support_grid_used = False
+                    if use_streaming_tracking:
+                        tracks, visibility = _track_queries_streaming(
+                            query_array,
+                            add_support_grid=False,
+                        )
+                        state.tracking_video_path = str(state.video_dir)
+                    else:
+                        tracks, visibility = _track_queries_batched(
+                            state.tracking_video,
+                            query_array,
+                            add_support_grid=False,
+                        )
+                expected_frames = len(state.video_frame_files)
+                expected_tracks_shape = (total_queries, expected_frames, 2)
+                expected_visibility_shape = (total_queries, expected_frames)
+                if tracks.shape != expected_tracks_shape or visibility.shape != expected_visibility_shape:
+                    raise RuntimeError(
+                        f"Tracking returned tracks shape {tracks.shape} and visibility shape {visibility.shape}; "
+                        f"expected {expected_tracks_shape} and {expected_visibility_shape} for the session frame sequence."
+                    )
+            except ValueError as error:
+                _clear_tracking_video_if_loaded_for_operation()
+                raise OperationError(400, str(error)) from error
+            except torch.OutOfMemoryError as error:
+                cleanup_cuda_memory()
+                _clear_tracking_video_if_loaded_for_operation()
+                raise OperationError(
+                    507, "CUDA out of memory during tracking. Try fewer prompt points or disable support grid."
+                ) from error
+            except RuntimeError as error:
+                if "out of memory" in str(error).lower():
+                    cleanup_cuda_memory()
+                    _clear_tracking_video_if_loaded_for_operation()
+                    raise OperationError(
+                        507, "CUDA out of memory during tracking. Try fewer prompt points or disable support grid."
+                    ) from error
+                _clear_tracking_video_if_loaded_for_operation()
+                raise OperationError(500, f"Prompt-point tracking failed: {error}") from error
+            except Exception as error:
+                _clear_tracking_video_if_loaded_for_operation()
+                raise OperationError(500, f"Prompt-point tracking failed: {error}") from error
+
+            cleanup_cuda_memory()
+            update_job(
+                stage="restoring_masker",
+                stage_label="Restoring interactive masking state",
+                progress=0.95,
+                current=int(tracks.shape[0]),
+                total=total_queries,
+                message="Restoring masking state after prompt tracking",
+            )
+            validate_job_inputs(inputs, "prompt_tracking")
+    except MaskerRestorationError as error:
+        raise OperationError(
+            503, f"Prompt-point tracking finished but failed to restore interactive masking state: {error}"
+        ) from error
     finally:
         _clear_tracking_video_if_loaded_for_operation()
 

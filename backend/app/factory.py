@@ -3,7 +3,7 @@ from fastapi.exception_handlers import http_exception_handler as _default_http_e
 from fastapi.middleware.cors import CORSMiddleware
 
 from core.errors import OperationError
-from core.runtime import cleanup_backend_cache_on_shutdown
+from core.runtime import cleanup_backend_cache_on_shutdown, sweep_stale_sessions_on_startup
 from routers import jobs, root, tracking, video
 
 
@@ -28,6 +28,7 @@ def create_app() -> FastAPI:
     app.include_router(jobs.router)
     app.include_router(video.router)
     app.include_router(tracking.router)
+    app.add_event_handler("startup", sweep_stale_sessions_on_startup)
     app.add_event_handler("shutdown", cleanup_backend_cache_on_shutdown)
 
     return app

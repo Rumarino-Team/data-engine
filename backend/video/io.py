@@ -5,6 +5,7 @@ import cv2
 import numpy as np
 from core.config import IMAGE_EXTENSIONS, SESSION_CACHE_ROOT
 from core.state import BackendState, state
+from sessions.checkpoints import clone_session_directory
 
 def load_video_frames_as_numpy(video_dir_path: Path, frame_file_names: list[str]) -> np.ndarray:
     frames_rgb: list[np.ndarray] = []
@@ -64,7 +65,16 @@ def create_active_session(source_path: Path, *, session: BackendState = state) -
     (session_dir / "masks").mkdir(parents=True, exist_ok=True)
     session.active_session_dir = session_dir
     session.active_session_id = session_id
-    session.active_session_saved_name = None
+    return session_dir
+
+def open_checkpoint_as_working_copy(checkpoint_dir: Path, *, session: BackendState = state) -> Path:
+    """Edits and generated results go to a fresh working directory; the checkpoint is never written."""
+    SESSION_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
+    session_id = uuid.uuid4().hex
+    session_dir = SESSION_CACHE_ROOT / session_id
+    clone_session_directory(checkpoint_dir, session_dir)
+    session.active_session_dir = session_dir
+    session.active_session_id = session_id
     return session_dir
 
 def copy_frames_directory_to_session(

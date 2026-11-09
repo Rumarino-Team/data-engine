@@ -25,7 +25,6 @@ class TrackingResultTests(unittest.TestCase):
         self.session_path = Path(self.tmp.name)
         state.active_session_dir = self.session_path
         state.active_session_id = "session-1"
-        state.active_session_saved_name = None
         state.video_frame_files = ["00000.jpg", "00001.jpg"]
         state.video_state_epoch = 1
         state.session_metadata = {}
@@ -35,7 +34,6 @@ class TrackingResultTests(unittest.TestCase):
     def tearDown(self):
         state.active_session_dir = None
         state.active_session_id = None
-        state.active_session_saved_name = None
         state.video_frame_files = []
         state.annotations = SessionAnnotations(objects={1: {"id": 1, "label": "Object 1", "color": "#ff0000"}}, prompts=[])
         self.tmp.cleanup()

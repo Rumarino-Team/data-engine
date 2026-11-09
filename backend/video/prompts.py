@@ -5,10 +5,12 @@ from video.masks import override_pixels, discard_override_artifacts
 from core.errors import OperationError
 import sam2_video_masker as svm
 from core.jobs import update_job
+from core.runtime import cleanup_cuda_memory
 from core.state import BackendState, state
 from sessions.cache import bump_video_state_epoch
 from sessions.metadata import write_session_metadata
 from schemas.video import VideoPrompt
+from video.runtime import MaskerSettings, VideoMaskerRuntime
 
 def record_prompt_event(request: "VideoAddPointsOrBoxRequest"):
     event = VideoPrompt.model_validate({
@@ -31,6 +33,16 @@ def replay_annotation_prompts(session: BackendState = state) -> None:
     for mask in session.annotations.mask_overrides:
         session.video_masker.add_new_mask(frame_idx=mask.frame_idx, obj_id=mask.obj_id,
                                        mask=override_pixels(mask, session_path=session.active_session_dir))
+
+
+def create_masker_runtime(session: BackendState) -> VideoMaskerRuntime:
+    return VideoMaskerRuntime(
+        session=session,
+        create_masker=svm.SAM2VideoMasker,
+        replay_inputs=replay_annotation_prompts,
+        persist_session=lambda active: write_session_metadata(session=active),
+        release_memory=cleanup_cuda_memory,
+    )
 
 
 def restore_video_masker_from_prompt_events(
@@ -56,24 +68,15 @@ def restore_video_masker_from_prompt_events(
             message=f"{progress_message_prefix}: {message}" if progress_message_prefix else message,
         )
 
-    if state.video_masker is None:
-        state.video_masker = svm.SAM2VideoMasker(progress_callback=_on_progress)
-
-    state.video_masker.init_state(
-        state.video_dir,
-        online_mode=online_mode,
-        batch_size=batch_size,
-        offload_video_to_cpu=offload_video_to_cpu,
-        offload_state_to_cpu=offload_state_to_cpu,
-        async_loading_frames=False,
+    create_masker_runtime(state).restore(
+        MaskerSettings(
+            online_mode=online_mode, batch_size=batch_size,
+            offload_video_to_cpu=offload_video_to_cpu,
+            offload_state_to_cpu=offload_state_to_cpu,
+        ),
         progress_callback=_on_progress,
+        increment_epoch=increment_epoch,
     )
-
-    replay_annotation_prompts()
-
-    if increment_epoch:
-        bump_video_state_epoch()
-        write_session_metadata()
 
 
 @contextmanager

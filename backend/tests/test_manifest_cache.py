@@ -29,12 +29,24 @@ class ManifestCacheTests(unittest.TestCase):
         self.assertIs(first, second)
         self.assertEqual(parse.call_count, 1)
 
-    def test_reloads_after_same_size_rewrite_even_with_restored_mtime(self):
+    def test_reloads_after_same_size_in_place_rewrite_with_new_mtime(self):
         self.path.write_text('{"version":1}')
         original = self.path.stat()
         self.assertEqual(load_cached_mask_manifest(self.path)["version"], 1)
         self.path.write_text('{"version":2}')
-        os.utime(self.path, ns=(original.st_atime_ns, original.st_mtime_ns))
+        # Coarse filesystem timestamps can tie, so make the modification time distinct.
+        os.utime(self.path, ns=(original.st_atime_ns, original.st_mtime_ns + 1_000_000_000))
+        self.assertEqual(load_cached_mask_manifest(self.path)["version"], 2)
+
+    def test_reloads_same_size_atomic_replacement_even_with_restored_mtime(self):
+        # Manifests are published by atomic replacement, which gives the file a new identity.
+        self.path.write_text('{"version":1}')
+        original = self.path.stat()
+        self.assertEqual(load_cached_mask_manifest(self.path)["version"], 1)
+        replacement = self.path.with_name("replacement.json")
+        replacement.write_text('{"version":2}')
+        os.utime(replacement, ns=(original.st_atime_ns, original.st_mtime_ns))
+        replacement.replace(self.path)
         self.assertEqual(load_cached_mask_manifest(self.path)["version"], 2)
 
     def test_reloads_replaced_file_and_keeps_only_one_manifest(self):

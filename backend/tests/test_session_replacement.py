@@ -115,7 +115,7 @@ class SessionReplacementTests(unittest.TestCase):
         (saved / "masks" / "overrides").mkdir(parents=True)
         (saved / "frames" / "00000.jpg").touch()
         metadata = json.loads(self.metadata)
-        metadata["session_id"] = "saved"
+        metadata.update(session_id="saved", checkpoint_id="saved-checkpoint", display_name="Saved")
         metadata["annotations"]["prompts"] = [
             {"frame_idx": 0, "obj_id": 1, "points": [[1, 2]], "labels": [1], "box": None}]
         (saved / "session.json").write_text(json.dumps(metadata))

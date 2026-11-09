@@ -140,7 +140,9 @@ class InteractiveState(BaseModel):
         return value
 
 class VideoSaveRequest(BaseModel):
-    name: str
+    # Display name only; required for the first save and Save As, optional for re-save (rename).
+    name: Optional[str] = None
+    save_as: bool = False
     interactive_state: Optional[InteractiveState] = None
 
 
