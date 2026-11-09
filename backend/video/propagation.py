@@ -10,6 +10,7 @@ from core.jobs import capture_job_inputs, validate_job_inputs, foreground_operat
 from core.runtime import cleanup_cuda_memory
 from core.state import state
 from schemas.video import VideoPropagateRequest
+from sessions.artifacts import sweep_unreferenced_artifacts
 from sessions.cache import clear_window_cache, bump_video_state_epoch
 from sessions.metadata import current_masks_dir, write_session_metadata
 from utils import build_empty_mask_manifest, load_mask_manifest, prepare_video_masks_output, save_single_video_mask_frame, write_mask_manifest
@@ -531,18 +532,20 @@ def run_propagation_job(request: VideoPropagateRequest, inputs=None) -> dict[str
     )
 
     with foreground_lock:
-        validate_job_inputs(inputs, "mask_propagation")
-        write_mask_manifest(manifest_file_path, manifest)
         previous_masks = state.interactive_mask_files
         previous_path = state.mask_manifest_path
-        state.interactive_mask_files = {key: value for key, value in previous_masks.items()
-                                        if int(key) not in processed_frames}
-        state.mask_manifest_path = str(manifest_file_path)
         try:
+            validate_job_inputs(inputs, "mask_propagation")
+            write_mask_manifest(manifest_file_path, manifest)
+            state.interactive_mask_files = {key: value for key, value in previous_masks.items()
+                                            if int(key) not in processed_frames}
+            state.mask_manifest_path = str(manifest_file_path)
             write_session_metadata()
-        except Exception:
+        except BaseException:
             state.interactive_mask_files = previous_masks
             state.mask_manifest_path = previous_path
+            # The unpublished manifest and overlays are unreachable; the previous run stays intact.
+            sweep_unreferenced_artifacts(state)
             raise
 
     return {

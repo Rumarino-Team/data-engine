@@ -130,28 +130,6 @@ def override_payload(ref: "MaskOverride") -> dict[str, Any]:
     return _load_override(ref)[1]
 
 
-def reclaim_override_artifacts(keep: set[str], *, session_path: Path | None = None) -> None:
-    """Best effort: an unreferenced artifact is garbage once metadata no longer names it."""
-    try:
-        overrides_dir = session_path / "masks" / "overrides" if session_path else _overrides_dir()
-        if not overrides_dir.is_dir():
-            return
-        for path in overrides_dir.glob("*.json"):
-            if path.name not in keep:
-                path.unlink(missing_ok=True)
-    except OSError:
-        logger.warning("Unable to reclaim mask override artifacts", exc_info=True)
-
-
-def discard_override_artifacts(names: set[str], *, session_path: Path | None = None) -> None:
-    for name in names:
-        try:
-            directory = session_path / "masks" / "overrides" if session_path else _overrides_dir()
-            (directory / name).unlink(missing_ok=True)
-        except (OSError, ValueError):
-            logger.warning("Unable to remove mask override artifact %s", name, exc_info=True)
-
-
 def retain_interactive_masks(frame_idx: int, obj_ids: list[int], encoded_masks: list[dict]) -> None:
     from core.state import state
     from sessions.metadata import current_masks_dir

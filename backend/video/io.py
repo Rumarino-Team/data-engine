@@ -1,4 +1,4 @@
-import os, shutil, uuid
+import logging, os, shutil, uuid
 from pathlib import Path
 from typing import Callable, Optional
 import cv2
@@ -66,6 +66,19 @@ def create_active_session(source_path: Path, *, session: BackendState = state) -
     session.active_session_dir = session_dir
     session.active_session_id = session_id
     return session_dir
+
+def discard_working_session(session_dir: Optional[Path]) -> None:
+    """Delete a working directory this backend created; checkpoints and any other path are never touched."""
+    if session_dir is None:
+        return
+    try:
+        resolved = Path(session_dir).resolve()
+        if resolved.parent != SESSION_CACHE_ROOT.resolve():
+            return
+        shutil.rmtree(resolved)
+    except OSError:
+        # Best effort; anything left behind is removed by the startup sweep.
+        logging.getLogger(__name__).warning("Unable to remove working session %s", session_dir, exc_info=True)
 
 def open_checkpoint_as_working_copy(checkpoint_dir: Path, *, session: BackendState = state) -> Path:
     """Edits and generated results go to a fresh working directory; the checkpoint is never written."""

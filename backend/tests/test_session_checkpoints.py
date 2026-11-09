@@ -1,4 +1,5 @@
 import json
+import shutil
 import sys
 import tempfile
 import unittest
@@ -154,6 +155,22 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(self.metadata(checkpoint)["annotations"]["objects"]["1"]["label"], "Hand")
         self.assertEqual(state.checkpoint_dir, checkpoint)
 
+    def test_reclaiming_working_artifacts_never_removes_the_checkpoints_copy(self):
+        from video.masks import retain_interactive_masks
+        retain_interactive_masks(0, [1], [{"size": [1, 1], "rle": []}])
+        write_session_metadata()
+        artifact = state.interactive_mask_files["0"]
+        checkpoint = Path(self.save(name="Bedroom").json()["saved_path"])
+        self.open_checkpoint(checkpoint)
+        working_file = state.active_session_dir / "masks" / "interactive" / artifact
+        self.assertTrue(working_file.exists())
+        # The working copy stops referencing the result; only its own link is reclaimed.
+        state.interactive_mask_files = {}
+        write_session_metadata()
+        self.assertFalse(working_file.exists())
+        self.assertTrue((checkpoint / "masks" / "interactive" / artifact).exists())
+        self.assertIn(artifact, json.dumps(self.metadata(checkpoint)))
+
     def test_failed_save_preserves_previous_checkpoint_and_working_changes(self):
         checkpoint = Path(self.save(name="Bedroom").json()["saved_path"])
         before = (checkpoint / "session.json").read_bytes()
@@ -167,23 +184,92 @@ class CheckpointTests(unittest.TestCase):
         self.assertTrue(self.info()["dirty"])
         self.assertEqual([path.name for path in self.saved_root.iterdir()], [checkpoint.name])
 
-    def test_failed_swap_restores_the_previous_checkpoint(self):
-        checkpoint = Path(self.save(name="Bedroom").json()["saved_path"])
-        before = (checkpoint / "session.json").read_bytes()
-        self.edit("Unsaved")
-        real_replace = checkpoints.os.replace
-        calls = []
+    def commit_result(self, frame=0):
+        from video.masks import retain_interactive_masks
+        retain_interactive_masks(frame, [1], [{"size": [1, 1], "rle": []}])
+        write_session_metadata()
+        return state.interactive_mask_files[str(frame)]
 
-        def replace(source, target):
-            calls.append(Path(target).name)
-            if len(calls) == 2:
-                raise OSError("swap failed")
-            return real_replace(source, target)
-        with patch.object(checkpoints.os, "replace", side_effect=replace):
+    def files(self, checkpoint):
+        return sorted(path.relative_to(checkpoint).as_posix() for path in checkpoint.rglob("*") if path.is_file())
+
+    def test_first_save_copies_frames_and_only_referenced_artifacts(self):
+        kept = self.commit_result()
+        (self.working / "masks" / "interactive" / ("0" * 32 + ".json")).write_text("{}")
+        (self.working / "masks" / "notes.txt").write_text("scratch")
+        checkpoint = Path(self.save(name="Bedroom").json()["saved_path"])
+        self.assertEqual(self.files(checkpoint), ["frames/00000.jpg", f"masks/interactive/{kept}", "session.json"])
+        self.assertTrue((checkpoint / "masks").is_dir())
+
+    def test_resave_copies_only_new_files_and_deletes_superseded_ones(self):
+        first = self.commit_result()
+        checkpoint = Path(self.save(name="Bedroom").json()["saved_path"])
+        # A sentinel proves later saves neither recopy frames nor rewrite unchanged artifacts.
+        (checkpoint / "frames" / "00000.jpg").write_bytes(b"sentinel-frame")
+        (checkpoint / "masks" / "interactive" / first).write_text("sentinel-artifact")
+        second = self.commit_result()
+        self.assertNotEqual(first, second)
+        with patch.object(checkpoints, "_link_or_copy", wraps=checkpoints._link_or_copy) as link:
+            self.save()
+        self.assertEqual([Path(call.args[1]).name for call in link.call_args_list], [second])
+        self.assertEqual(self.files(checkpoint), ["frames/00000.jpg", f"masks/interactive/{second}", "session.json"])
+        self.assertEqual((checkpoint / "frames" / "00000.jpg").read_bytes(), b"sentinel-frame")
+        self.assertEqual(self.metadata(checkpoint)["interactive_mask_files"], {"0": second})
+
+    def test_resave_after_open_continues_incrementally(self):
+        first = self.commit_result()
+        checkpoint = Path(self.save(name="Bedroom").json()["saved_path"])
+        self.open_checkpoint(checkpoint)
+        write_session_metadata({"latest_tracking_result_path": "tracking/new.json"})
+        (state.active_session_dir / "tracking").mkdir()
+        (state.active_session_dir / "tracking" / "new.json").write_text("{}")
+        with patch.object(checkpoints, "_link_or_copy", wraps=checkpoints._link_or_copy) as link:
+            self.save()
+        self.assertEqual([Path(call.args[1]).name for call in link.call_args_list], ["new.json"])
+        self.assertEqual(self.files(checkpoint), ["frames/00000.jpg", f"masks/interactive/{first}",
+                                                  "session.json", "tracking/new.json"])
+
+    def test_failed_resave_removes_added_files_and_keeps_previous_checkpoint(self):
+        self.commit_result()
+        checkpoint = Path(self.save(name="Bedroom").json()["saved_path"])
+        before, before_files = (checkpoint / "session.json").read_bytes(), self.files(checkpoint)
+        self.commit_result(1)
+        self.edit("Edited alongside the new mask")
+        with patch("sessions.metadata.os.replace", side_effect=OSError("disk full")):
             with self.assertRaises(OSError):
                 self.save()
         self.assertEqual((checkpoint / "session.json").read_bytes(), before)
-        self.assertEqual([path.name for path in self.saved_root.iterdir()], [checkpoint.name])
+        self.assertEqual(self.files(checkpoint), before_files)
+        self.assertTrue(self.info()["dirty"])
+        # A later save still succeeds and includes both results.
+        self.save()
+        self.assertEqual(len(self.metadata(checkpoint)["interactive_mask_files"]), 2)
+
+    def test_resave_with_a_missing_working_artifact_fails_before_changing_the_checkpoint(self):
+        checkpoint = Path(self.save(name="Bedroom").json()["saved_path"])
+        before, before_files = (checkpoint / "session.json").read_bytes(), self.files(checkpoint)
+        missing = self.commit_result(1)
+        (self.working / "masks" / "interactive" / missing).unlink()
+        response = self.save()
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual((checkpoint / "session.json").read_bytes(), before)
+        self.assertEqual(self.files(checkpoint), before_files)
+
+    def test_resave_recreates_a_deleted_checkpoint_and_refuses_a_damaged_one(self):
+        checkpoint = Path(self.save(name="Bedroom").json()["saved_path"])
+        shutil.rmtree(checkpoint)
+        self.assertEqual(self.save().status_code, 200)
+        self.assertTrue((checkpoint / "session.json").is_file())
+        (checkpoint / "session.json").unlink()
+        self.assertEqual(self.save().status_code, 409)
+
+    def test_failed_first_save_leaves_no_staging_or_checkpoint(self):
+        self.commit_result()
+        with patch.object(checkpoints.os, "replace", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.save(name="Bedroom")
+        self.assertEqual(list(self.saved_root.iterdir()), [])
+        self.assertIsNone(self.info()["checkpoint_id"])
 
     def test_sweep_discards_working_copies_and_staging_but_keeps_checkpoints(self):
         checkpoint = Path(self.save(name="Bedroom").json()["saved_path"])

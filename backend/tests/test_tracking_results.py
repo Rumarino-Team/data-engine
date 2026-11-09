@@ -75,11 +75,8 @@ class TrackingResultTests(unittest.TestCase):
                 save_prompt_tracking_result(**kwargs)
         self.assertEqual(state.session_metadata, old_metadata)
         self.assertEqual(load_prompt_tracking_result(old["result_id"])["num_points"], 1)
-        orphan = next(path.stem for path in (self.session_path / "tracking").glob("*.json")
-                      if path.stem != old["result_id"])
-        with self.assertRaises(OperationError) as failure:
-            load_prompt_tracking_result(orphan)
-        self.assertEqual(failure.exception.status_code, 404)
+        # The rejected result was never published, so its file is reclaimed immediately.
+        self.assertEqual([path.stem for path in (self.session_path / "tracking").glob("*.json")], [old["result_id"]])
 
     def test_same_validity_for_retrieval_guidance_and_restore(self):
         saved = save_prompt_tracking_result(model_name="cotracker3_online", num_points=1, num_frames=2,

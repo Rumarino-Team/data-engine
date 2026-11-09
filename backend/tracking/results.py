@@ -6,6 +6,7 @@ from typing import Any
 from core.errors import OperationError
 from core.state import BackendState, state
 from core.jobs import utc_now_iso
+from sessions.artifacts import sweep_unreferenced_artifacts
 from sessions.metadata import current_session_path, write_session_metadata
 from tracking.guidance import tracked_prompt_keys, positive_prompt_keys
 from utils import load_mask_manifest, write_mask_manifest
@@ -88,6 +89,8 @@ def save_prompt_tracking_result(
         })
     except Exception:
         state.session_metadata = previous_metadata
+        # The rejected result file is unreachable; the previously published one stays intact.
+        sweep_unreferenced_artifacts(state)
         raise
     return {"result_id": result_id, "path": str(result_path), "summary": summary}
 

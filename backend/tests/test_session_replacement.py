@@ -1,4 +1,5 @@
 import json
+import shutil
 import sys
 import tempfile
 import unittest
@@ -108,6 +109,39 @@ class SessionReplacementTests(unittest.TestCase):
         self.assertEqual(json.loads((state.active_session_dir / "session.json").read_text())["session_id"],
                          state.active_session_id)
         self.assertEqual((self.old_dir / "session.json").read_bytes(), self.metadata)
+
+    def adopt_as_working_copy(self):
+        working = self.root / "candidates" / "current-working"
+        shutil.copytree(self.old_dir, working)
+        state.active_session_dir = working
+        self.old_dir = working
+        return working
+
+    def test_replaced_working_directory_is_deleted_after_publication(self):
+        working = self.adopt_as_working_copy()
+        with patch.object(service.svm, "SAM2VideoMasker", return_value=self.masker()):
+            self.run_init()
+        self.assertNotEqual(state.active_session_dir, working)
+        self.assertFalse(working.exists())
+        self.assertTrue(state.active_session_dir.is_dir())
+
+    def test_rejected_candidate_directory_is_deleted_and_current_working_copy_kept(self):
+        working = self.adopt_as_working_copy()
+        failing = self.masker()
+        failing.init_state.side_effect = RuntimeError("model failed")
+        with patch.object(service.svm, "SAM2VideoMasker", return_value=failing):
+            with self.assertRaises(RuntimeError):
+                self.run_init()
+        self.assert_old_session()
+        self.assertEqual([path.name for path in (self.root / "candidates").iterdir()], [working.name])
+
+    def test_directories_outside_the_working_cache_are_never_deleted(self):
+        # self.old_dir lives outside the patched cache root, as a checkpoint would.
+        with patch.object(service.svm, "SAM2VideoMasker", return_value=self.masker()):
+            self.run_init()
+        self.assertTrue((self.old_dir / "session.json").exists())
+        service.discard_working_session(self.source)
+        self.assertTrue(self.source.exists())
 
     def test_saved_session_replay_failure_preserves_both_sessions_and_artifacts(self):
         saved = self.root / "saved"

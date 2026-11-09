@@ -38,10 +38,11 @@ def release_active_session(*, clear_video_masker: bool = True, clear_tracker: bo
         state.checkpoint_dir = None
         state.display_name = None
         state.saved_fingerprint = None
+        state.checkpoint_artifacts = set()
         state.annotations = SessionAnnotations()
         state.interactive_mask_files = {}
         state.session_metadata = {}
-        state.committed_override_artifacts = set()
+        state.committed_artifacts = set()
     if clear_prompts:
         state.annotations.clear_prompts()
     cleanup_cuda_memory()

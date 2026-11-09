@@ -1,7 +1,8 @@
 from typing import Optional
 from contextlib import contextmanager
 import logging
-from video.masks import override_pixels, discard_override_artifacts
+from sessions.artifacts import sweep_unreferenced_artifacts
+from video.masks import override_pixels
 from core.errors import OperationError
 import sam2_video_masker as svm
 from core.jobs import update_job
@@ -95,13 +96,11 @@ def annotation_edit(*, restore_runtime: bool = True):
     try:
         yield
     except Exception:
-        # Override artifacts published by the rejected edit were never committed.
-        discard_override_artifacts({mask.artifact for mask in state.annotations.mask_overrides}
-                                   - {mask.artifact for mask in previous.mask_overrides}
-                                   - state.committed_override_artifacts)
         state.annotations = previous
         state.interactive_mask_files = previous_masks
         state.mask_manifest_path = previous_manifest
+        # Artifacts published by the rejected edit were never committed.
+        sweep_unreferenced_artifacts(state)
         if not restore_runtime:
             raise
         try:

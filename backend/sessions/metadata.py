@@ -4,6 +4,7 @@ from typing import Any, Optional
 from core.errors import OperationError
 from core.jobs import utc_now_iso
 from core.state import BackendState, state
+from sessions.artifacts import reclaim_superseded_artifacts
 from utils import load_mask_manifest
 
 logger = logging.getLogger(__name__)
@@ -89,18 +90,14 @@ def write_metadata_file(directory: Path, metadata: dict[str, Any]) -> None:
             temporary_path.unlink(missing_ok=True)
 
 def write_session_metadata(extra: Optional[dict[str, Any]] = None, *, session: BackendState = state) -> None:
-    from video.masks import discard_override_artifacts
     session_path = current_session_path(session)
     if session_path is None:
         return
     if extra:
         session.session_metadata.update(extra)
     write_metadata_file(session_path, session_metadata_document(session))
-    # Replaced override pixels become garbage only after metadata stops naming them.
-    referenced = {mask.artifact for mask in session.annotations.mask_overrides}
-    stale = session.committed_override_artifacts - referenced
-    session.committed_override_artifacts = referenced
-    discard_override_artifacts(stale, session_path=session.active_session_dir)
+    # Files become garbage only after committed metadata stops naming them.
+    reclaim_superseded_artifacts(session)
 
 def load_session_metadata(session_root: Path) -> dict[str, Any]:
     session_json_path = session_root / "session.json"

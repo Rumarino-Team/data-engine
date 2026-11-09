@@ -22,12 +22,13 @@ from schemas.video import (
 )
 from sessions.cache import bump_video_state_epoch, reset_video_session_state
 from schemas.video import InteractiveState
-from sessions.checkpoints import clone_session_directory, content_fingerprint, new_checkpoint_location, normalize_display_name, publish_checkpoint, saved_state
-from sessions.metadata import current_masks_dir, current_session_path, interactive_state_projection, load_session_metadata, persisted_session_fields, session_metadata_document, write_metadata_file, write_session_metadata
+from sessions.artifacts import referenced_artifacts, sweep_unreferenced_artifacts
+from sessions.checkpoints import content_fingerprint, new_checkpoint_location, normalize_display_name, saved_state, write_checkpoint
+from sessions.metadata import current_masks_dir, current_session_path, interactive_state_projection, load_session_metadata, persisted_session_fields, session_metadata_document, write_session_metadata
 from sessions.paths import resolve_input_path, resolve_saved_session_layout, validate_video_input_path
 from utils import load_mask_manifest
-from video.io import copy_frames_directory_to_session, create_active_session, extract_video_to_session_frames, open_checkpoint_as_working_copy
-from video.masks import mask_logits_to_2d_bool, store_mask_override, override_pixels, reclaim_override_artifacts, retain_interactive_masks, effective_mask_data
+from video.io import copy_frames_directory_to_session, create_active_session, discard_working_session, extract_video_to_session_frames, open_checkpoint_as_working_copy
+from video.masks import mask_logits_to_2d_bool, store_mask_override, override_pixels, retain_interactive_masks, effective_mask_data
 from video.manifest_cache import load_cached_mask_manifest
 from video.mask_encoding import encode_live_mask_payload
 from video.prompts import record_prompt_event, replay_annotation_prompts, annotation_edit
@@ -96,7 +97,6 @@ def initialize_video_state_from_resolved_input(
         session.annotations = annotations
         session.interactive_mask_files = session_metadata.get("interactive_mask_files", {})
         session.session_metadata = persisted_session_fields(session_metadata)
-        session.committed_override_artifacts = {mask.artifact for mask in annotations.mask_overrides}
         restored_session_payload = {
             "annotations": session.annotations.snapshot(),
             "interactive_state": interactive_state_projection(interactive_state, session=session),
@@ -297,7 +297,10 @@ def initialize_video_state_from_resolved_input(
     if restored_session_payload is not None:
         response_payload["restored_session"] = restored_session_payload
     write_session_metadata(metadata_updates, session=session)
-    reclaim_override_artifacts(session.committed_override_artifacts, session_path=session.active_session_dir)
+    # A cloned checkpoint can carry files its metadata does not name.
+    sweep_unreferenced_artifacts(session)
+    # A freshly opened working copy matches its checkpoint, so re-save can copy only differences.
+    session.checkpoint_artifacts = set(session.committed_artifacts) if source_type == "saved_session" else set()
     return response_payload
 
 def start_video_init(request: VideoInitStateRequest):
@@ -322,20 +325,27 @@ def run_video_init_job(request: VideoInitStateRequest) -> dict[str, Any]:
     # Keep accepted state and its runtime readable until the replacement is ready.
     previous_session_id = state.active_session_id
     candidate = BackendState(video_state_epoch=state.video_state_epoch)
-    result = initialize_video_state_from_resolved_input(
-        resolved_input_path,
-        online_mode=request.online_mode,
-        batch_size=request.batch_size,
-        offload_video_to_cpu=request.offload_video_to_cpu,
-        offload_state_to_cpu=request.offload_state_to_cpu,
-        async_loading_frames=request.async_loading_frames,
-        session=candidate,
-    )
-    with foreground_lock:
-        if state.active_session_id != previous_session_id:
-            raise OperationError(409, "The active session changed while preparing its replacement.")
-        state.__dict__.update(candidate.__dict__)
-    # Previous working files remain recoverable; reclamation is a separate operation.
+    try:
+        result = initialize_video_state_from_resolved_input(
+            resolved_input_path,
+            online_mode=request.online_mode,
+            batch_size=request.batch_size,
+            offload_video_to_cpu=request.offload_video_to_cpu,
+            offload_state_to_cpu=request.offload_state_to_cpu,
+            async_loading_frames=request.async_loading_frames,
+            session=candidate,
+        )
+        with foreground_lock:
+            if state.active_session_id != previous_session_id:
+                raise OperationError(409, "The active session changed while preparing its replacement.")
+            previous_dir = state.active_session_dir
+            state.__dict__.update(candidate.__dict__)
+    except BaseException:
+        # The rejected candidate never became active; its working directory is unreachable.
+        discard_working_session(candidate.active_session_dir)
+        raise
+    # The replaced working copy is unreachable once the candidate is published.
+    discard_working_session(previous_dir)
     return result
 
 
@@ -524,17 +534,16 @@ def save_video_session(request: VideoSaveRequest):
         }
         if request.interactive_state is not None:
             overrides["interactive_state"] = request.interactive_state.model_dump()
-        staging = target.parent / f".staging-{uuid.uuid4().hex}"
-        try:
-            clone_session_directory(session_path, staging)
-            write_metadata_file(staging, session_metadata_document(state, overrides))
-            publish_checkpoint(staging, target)
-        except BaseException:
-            shutil.rmtree(staging, ignore_errors=True)
-            raise
+        references = referenced_artifacts(state)
+        if references is None:
+            raise OperationError(500, "The session's mask results cannot be read, so it cannot be saved.")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        write_checkpoint(session_path, target, session_metadata_document(state, overrides), references,
+                         state.checkpoint_artifacts if resave else None)
 
         # The checkpoint is published; the working copy adopts its identity.
         state.checkpoint_id, state.checkpoint_dir, state.display_name = checkpoint_id, target, display_name
+        state.checkpoint_artifacts = references
         state.saved_fingerprint = content_fingerprint(state)
         state.session_metadata["saved_at"] = saved_at
         if "interactive_state" in overrides:
