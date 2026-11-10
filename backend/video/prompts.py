@@ -46,7 +46,7 @@ def create_masker_runtime(session: BackendState) -> VideoMaskerRuntime:
 def annotation_edit(session: BackendState, *, restore_runtime: bool = True):
     """Stage accepted inputs and restore them when an edit fails.
 
-    Caller holds foreground_operation. Encode results before persisting acceptance.
+    Caller holds `ctx.edit()`. Encode results before persisting acceptance.
     Set restore_runtime=False for changes that never touch the predictor.
     """
     # Frame entries are replaced, never mutated by foreground edits.

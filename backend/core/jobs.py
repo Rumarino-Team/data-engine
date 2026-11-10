@@ -1,6 +1,5 @@
 """The one background job and the lock that orders foreground edits against it."""
 from typing import Any, Callable, Optional
-from contextlib import contextmanager
 from datetime import datetime
 import logging, threading, uuid
 from typing import TYPE_CHECKING
@@ -78,20 +77,13 @@ class JobHandle:
 
 
 class JobManager:
-    """Owns the single job slot. Foreground edits and job admission share `foreground_lock`:
-    once admitted, an active job excludes foreground edits until its worker has finished."""
+    """Owns the single job slot. Job admission takes the session's `foreground_lock`, shared with
+    foreground edits: once admitted, an active job excludes edits until its worker has finished."""
 
-    def __init__(self) -> None:
+    def __init__(self, foreground_lock: "threading.RLock") -> None:
         self._job: Optional[dict[str, Any]] = None
         self._lock = threading.Lock()
-        self.foreground_lock = threading.RLock()
-
-    @contextmanager
-    def foreground_operation(self):
-        """Serialize synchronous mutation bodies; never suspend/await inside this block."""
-        with self.foreground_lock:
-            self.require_idle()
-            yield
+        self._foreground_lock = foreground_lock
 
     def _active(self) -> bool:
         return self._job is not None and self._job.get("status") in {"queued", "running"}
@@ -131,7 +123,7 @@ class JobManager:
         return {"job_id": job_id, "status": "queued", "operation": operation, "message": message}
 
     def _admit(self, operation: str, *, stage: str, stage_label: str, message: str, inputs) -> str:
-        with self.foreground_lock, self._lock:
+        with self._foreground_lock, self._lock:
             if self._active():
                 raise OperationError(409, "Another operation is already running.")
             now = utc_now_iso()
@@ -222,8 +214,6 @@ class JobManager:
                 message="Operation completed", result=result, error=None, updated_at=now, completed_at=now,
             )
 
-
-job_manager = JobManager()
 
 
 def capture_job_inputs(session: "BackendState", operation: str) -> dict[str, Any]:

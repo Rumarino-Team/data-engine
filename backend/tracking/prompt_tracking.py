@@ -5,9 +5,9 @@ import numpy as np
 import torch
 import co_tracker as cot
 from core.config import DEFAULT_PROMPT_TRACK_BATCH_SIZE, DEFAULT_STREAMING_TRACK_FRAME_THRESHOLD
-from core.jobs import JobHandle, capture_job_inputs, validate_job_inputs, job_manager
+from core.context import AppContext
+from core.jobs import JobHandle, capture_job_inputs, validate_job_inputs
 from core.runtime import cleanup_cuda_memory
-from core.state import state
 from sessions.checkpoints import saved_state
 from schemas.tracking import TrackingPromptPointsRequest
 from tracking.results import save_prompt_tracking_result
@@ -16,27 +16,29 @@ from video.prompts import create_masker_runtime
 from video.runtime import MaskerRestorationError, VideoMaskerRuntime
 
 
-def start_prompt_tracking(request: TrackingPromptPointsRequest, precondition):
+def start_prompt_tracking(ctx: AppContext, request: TrackingPromptPointsRequest, precondition):
     from video.service import validate_annotation_precondition
-    with job_manager.foreground_operation():
-        validate_annotation_precondition(precondition)
-        inputs = capture_job_inputs(state, "prompt_tracking")
+    with ctx.edit():
+        session = ctx.session
+        validate_annotation_precondition(session, precondition)
+        inputs = capture_job_inputs(session, "prompt_tracking")
         inputs["parameters"] = request.model_dump()
-        return job_manager.start(
+        return ctx.jobs.start(
             operation="prompt_tracking",
             stage="collecting_prompts",
             stage_label="Collecting prompts",
             message="Prompt tracking queued",
-            worker=lambda job: run_prompt_tracking_job(request, job, inputs),
+            worker=lambda job: run_prompt_tracking_job(ctx, request, job, inputs),
             inputs=inputs,
         )
 
 def run_prompt_tracking_job(
-    request: TrackingPromptPointsRequest, job: JobHandle, inputs=None, *,
+    ctx: AppContext, request: TrackingPromptPointsRequest, job: JobHandle, inputs=None, *,
     masker_runtime: VideoMaskerRuntime | None = None,
 ) -> dict[str, Any]:
-    inputs = inputs or capture_job_inputs(state, "prompt_tracking")
-    validate_job_inputs(state, inputs, "prompt_tracking")
+    session = ctx.session
+    inputs = inputs or capture_job_inputs(session, "prompt_tracking")
+    validate_job_inputs(session, inputs, "prompt_tracking")
     job.enter_stage(
         "collecting_prompts", "Collecting prompts",
         status="running",
@@ -44,13 +46,13 @@ def run_prompt_tracking_job(
         message="Collecting positive prompt points",
     )
 
-    if not state.annotations.prompt_events():
+    if not session.annotations.prompt_events():
         raise OperationError(400, "No annotation prompts available for tracking.")
 
     positive_queries: list[list[float]] = []
     point_metadata: list[dict[str, Any]] = []
 
-    for event_idx, event in enumerate(state.annotations.prompt_events()):
+    for event_idx, event in enumerate(session.annotations.prompt_events()):
         points = event.get("points", []) or []
         labels = event.get("labels", []) or [1] * len(points)
         frame_idx = int(event.get("frame_idx", 0))
@@ -84,7 +86,7 @@ def run_prompt_tracking_job(
         message=f"Preparing tracker for {total_queries} prompt points",
     )
 
-    runtime = masker_runtime if masker_runtime is not None else create_masker_runtime(state)
+    runtime = masker_runtime if masker_runtime is not None else create_masker_runtime(session)
 
     def _report_restore_progress(_stage: str, _label: str, progress: float | None, message: str) -> None:
         job.enter_stage(
@@ -114,14 +116,14 @@ def run_prompt_tracking_job(
         visibility_batches: list[np.ndarray] = []
         index = 0
         # Resize once; every query batch reuses the same model-resolution frames.
-        prepared_video = state.tracker.prepare_video(video)
+        prepared_video = session.tracker.prepare_video(video)
 
         while index < query_array.shape[0]:
             end_index = min(query_array.shape[0], index + batch_size)
             query_batch = query_array[index:end_index]
 
             try:
-                batch_tracks, batch_visibility = state.tracker.track(
+                batch_tracks, batch_visibility = session.tracker.track(
                     prepared_video,
                     queries=query_batch,
                     add_support_grid=add_support_grid,
@@ -161,16 +163,16 @@ def run_prompt_tracking_job(
         *,
         add_support_grid: bool,
     ) -> tuple[np.ndarray, np.ndarray]:
-        if state.video_dir is None or not state.video_frame_files:
+        if session.video_dir is None or not session.video_frame_files:
             raise ValueError("Video is not initialized for streaming tracking.")
         if query_array.size == 0:
             raise ValueError("No query points provided for streaming tracking.")
 
         frame_loader = cot.FrameChunkLoader(
-            video_dir=Path(state.video_dir),
-            frame_files=state.video_frame_files,
-            device=state.tracker.device,
-            resolution=state.tracker.model_resolution,
+            video_dir=Path(session.video_dir),
+            frame_files=session.video_frame_files,
+            device=session.tracker.device,
+            resolution=session.tracker.model_resolution,
         )
 
         initial_batch_size = int(DEFAULT_PROMPT_TRACK_BATCH_SIZE)
@@ -187,7 +189,7 @@ def run_prompt_tracking_job(
             query_batch = query_array[index:end_index]
 
             try:
-                batch_tracks, batch_visibility = state.tracker.track_streaming(
+                batch_tracks, batch_visibility = session.tracker.track_streaming(
                     frame_loader,
                     queries=query_batch,
                     add_support_grid=add_support_grid,
@@ -227,15 +229,15 @@ def run_prompt_tracking_job(
     def _clear_tracking_video_if_loaded_for_operation() -> None:
         nonlocal loaded_tracking_video_for_operation
         if loaded_tracking_video_for_operation:
-            state.tracking_video = None
-            state.tracking_video_path = None
+            session.tracking_video = None
+            session.tracking_video_path = None
             loaded_tracking_video_for_operation = False
 
     try:
         # Leaving this scope restores interactive masking before result publication.
         with runtime.suspended(progress_callback=_report_restore_progress):
             try:
-                ensure_tracker_model(cot.DEFAULT_COTRACKER_MODEL)
+                ensure_tracker_model(session, cot.DEFAULT_COTRACKER_MODEL)
             except ValueError as error:
                 raise OperationError(400, str(error)) from error
             job.enter_stage(
@@ -249,7 +251,7 @@ def run_prompt_tracking_job(
             try:
                 query_array = np.asarray(positive_queries, dtype=np.float32)
                 support_grid_used = bool(request.add_support_grid)
-                use_streaming_tracking = should_stream_tracking(len(state.video_frame_files))
+                use_streaming_tracking = should_stream_tracking(len(session.video_frame_files))
                 tracking_mode = "streaming" if use_streaming_tracking else "in_memory"
 
                 try:
@@ -258,12 +260,12 @@ def run_prompt_tracking_job(
                             query_array,
                             add_support_grid=support_grid_used,
                         )
-                        state.tracking_video_path = str(state.video_dir)
+                        session.tracking_video_path = str(session.video_dir)
                     else:
-                        state.tracking_video, state.tracking_video_path = load_tracking_video_from_current_video_state()
+                        session.tracking_video, session.tracking_video_path = load_tracking_video_from_current_video_state(session)
                         loaded_tracking_video_for_operation = True
                         tracks, visibility = _track_queries_batched(
-                            state.tracking_video,
+                            session.tracking_video,
                             query_array,
                             add_support_grid=support_grid_used,
                         )
@@ -276,10 +278,10 @@ def run_prompt_tracking_job(
                             query_array,
                             add_support_grid=False,
                         )
-                        state.tracking_video_path = str(state.video_dir)
+                        session.tracking_video_path = str(session.video_dir)
                     else:
                         tracks, visibility = _track_queries_batched(
-                            state.tracking_video,
+                            session.tracking_video,
                             query_array,
                             add_support_grid=False,
                         )
@@ -292,14 +294,14 @@ def run_prompt_tracking_job(
                             query_array,
                             add_support_grid=False,
                         )
-                        state.tracking_video_path = str(state.video_dir)
+                        session.tracking_video_path = str(session.video_dir)
                     else:
                         tracks, visibility = _track_queries_batched(
-                            state.tracking_video,
+                            session.tracking_video,
                             query_array,
                             add_support_grid=False,
                         )
-                expected_frames = len(state.video_frame_files)
+                expected_frames = len(session.video_frame_files)
                 expected_tracks_shape = (total_queries, expected_frames, 2)
                 expected_visibility_shape = (total_queries, expected_frames)
                 if tracks.shape != expected_tracks_shape or visibility.shape != expected_visibility_shape:
@@ -337,7 +339,7 @@ def run_prompt_tracking_job(
                 total=total_queries,
                 message="Restoring masking state after prompt tracking",
             )
-            validate_job_inputs(state, inputs, "prompt_tracking")
+            validate_job_inputs(session, inputs, "prompt_tracking")
     except MaskerRestorationError as error:
         raise OperationError(
             503, f"Prompt-point tracking finished but failed to restore interactive masking state: {error}"
@@ -345,10 +347,10 @@ def run_prompt_tracking_job(
     finally:
         _clear_tracking_video_if_loaded_for_operation()
 
-    with job_manager.foreground_lock:
-        validate_job_inputs(state, inputs, "prompt_tracking")
-        tracking_result = save_prompt_tracking_result(state, 
-            model_name=state.tracker.model_name,
+    with ctx.lock:
+        validate_job_inputs(session, inputs, "prompt_tracking")
+        tracking_result = save_prompt_tracking_result(session, 
+            model_name=session.tracker.model_name,
             num_points=int(tracks.shape[0]),
             num_frames=int(tracks.shape[1]),
             add_support_grid_used=support_grid_used,
@@ -363,13 +365,13 @@ def run_prompt_tracking_job(
         "session_id": inputs["session_id"],
         "input_revision": inputs["input_revision"],
         "message": "Prompt-point tracking completed",
-        "model_name": state.tracker.model_name,
+        "model_name": session.tracker.model_name,
         "num_points": int(tracks.shape[0]),
         "num_frames": int(tracks.shape[1]),
         "add_support_grid_used": support_grid_used,
         "tracking_mode": tracking_mode,
         "streaming_frame_threshold": int(DEFAULT_STREAMING_TRACK_FRAME_THRESHOLD),
         "tracking_result_id": tracking_result["result_id"],
-        "state_epoch": int(state.video_state_epoch),
-        "saved_state": saved_state(state),
+        "state_epoch": int(session.video_state_epoch),
+        "saved_state": saved_state(session),
     }

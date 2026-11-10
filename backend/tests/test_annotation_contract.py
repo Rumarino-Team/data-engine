@@ -8,10 +8,9 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from core.jobs import job_manager
 from core.annotations import SessionAnnotations
 from core.errors import OperationError
-from core.state import state
+from support import state
 from pydantic import ValidationError
 from schemas.video import AnnotationPrecondition, VideoPrompt
 from sessions.metadata import write_session_metadata
@@ -186,7 +185,7 @@ class PreconditionTests(BackendStateTestCase):
         state.annotations.set_prompt(VideoPrompt(frame_idx=0, obj_id=1, points=[[1, 2]], labels=[1]))
         for route, module in [("/video/propagate_in_video", "video.propagation"),
                               ("/tracking/track_prompt_points", "tracking.prompt_tracking")]:
-            with patch.object(job_manager, "start", return_value={"job_id": "test"}) as queue:
+            with patch.object(self.ctx.jobs, "start", return_value={"job_id": "test"}) as queue:
                 response = self.client.post(route, json={}, headers=self.headers(revision=state.annotations.revision))
                 self.assertEqual(response.status_code, 200)
                 inputs = queue.call_args.kwargs["inputs"]
@@ -221,16 +220,16 @@ class PreconditionTests(BackendStateTestCase):
         def persist(*args):
             entered.set()
             self.assertTrue(release.wait(timeout=5))
-            self.assertFalse(job_manager.is_active())
+            self.assertFalse(self.ctx.jobs.is_active())
             write_session_metadata(state)
 
         def admit():
             admission_attempted.set()
             self.activate_job("queued")
-            return job_manager.snapshot()
+            return self.ctx.jobs.snapshot()
         with ThreadPoolExecutor(max_workers=2) as pool:
             with patch.object(service, "write_session_metadata", side_effect=persist):
-                edit = pool.submit(service.create_object,
+                edit = pool.submit(service.create_object, self.ctx,
                                    AnnotationPrecondition(session_id="current", expected_revision=1))
                 self.assertTrue(entered.wait(timeout=5))
                 admission = pool.submit(admit)

@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.annotations import SessionAnnotations
 from core.errors import OperationError
-from core.state import state
+from support import state
 from schemas.video import VideoPrompt
 from sessions.cache import release_active_session
 from sessions.metadata import interactive_state_projection, write_session_metadata
@@ -551,7 +551,7 @@ class VideoEditTests(BackendStateTestCase):
     def test_release_clears_annotations_and_snapshot_reports_no_session(self):
         state.annotations.set_prompt(VideoPrompt(**PROMPT))
         with patch("core.runtime.cleanup_cuda_memory"):
-            release_active_session(state, )
+            release_active_session(state)
         self.assertEqual(state.annotations.snapshot(), SessionAnnotations().snapshot())
         response = self.client.get("/video/info")
         self.assertEqual(response.status_code, 200)

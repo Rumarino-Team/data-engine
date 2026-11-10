@@ -1,8 +1,7 @@
-"""Shared fixtures for tests that touch the process-global backend state.
+"""Shared fixtures for tests that need a backend: every test builds its own AppContext.
 
-`state` and the job manager are globals, so every test that uses them must start from a clean copy and put
-the original back. Keeping that in one place also means a future move to explicitly constructed application
-state only has to change this module, not every test file.
+`state` is a read/write view of the running test's active session, so assertions can say `state.annotations`
+without threading the context everywhere; the context itself is `self.ctx`.
 """
 import sys
 import tempfile
@@ -17,34 +16,46 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.factory import create_app
-from core.jobs import JobHandle, job_manager
-from core.state import BackendState, state
+from core.context import AppContext, SessionManager
+from core.jobs import JobHandle, JobManager
+from core.state import BackendState
+
+_active: Optional[AppContext] = None
+
+
+class _ActiveSession:
+    """The running test's session; never holds state of its own."""
+
+    @property
+    def __dict__(self):
+        return _active.session.__dict__
+
+    def __getattr__(self, name):
+        return getattr(_active.session, name)
+
+    def __setattr__(self, name, value):
+        setattr(_active.session, name, value)
+
+
+state = _ActiveSession()
 
 
 class BackendStateFixtures:
     """Mixin for TestCase and IsolatedAsyncioTestCase: isolated `state`, idle jobs, temp dirs, API client."""
 
-    _state_snapshot: Optional[dict[str, Any]] = None
+    ctx: Optional[AppContext] = None
 
     def reset_backend_state(self, **fields: Any) -> BackendState:
-        """Replace `state` with a fresh BackendState and clear the job registry; undone when the test ends."""
-        if self._state_snapshot is None:
-            self._state_snapshot = state.__dict__.copy()
-            with job_manager._lock:
-                self._job_snapshot = job_manager._job
-            self.addCleanup(self._restore_backend_state)
-        state.__dict__.clear()
-        state.__dict__.update(BackendState(**fields).__dict__)
-        with job_manager._lock:
-            job_manager._job = None
-        return state
-
-    def _restore_backend_state(self) -> None:
-        state.__dict__.clear()
-        state.__dict__.update(self._state_snapshot)
-        with job_manager._lock:
-            job_manager._job = self._job_snapshot
-        self._state_snapshot = None
+        """Start from a fresh session and idle jobs. The first call creates this test's context; later calls
+        (a table test starting over) reset it in place so clients already bound to it stay valid."""
+        global _active
+        if getattr(self, "ctx", None) is None:
+            self.ctx = _active = AppContext(SessionManager(BackendState(**fields)))
+            self.addCleanup(_deactivate)
+        else:
+            self.ctx.sessions.current = BackendState(**fields)
+            self.ctx.jobs = JobManager(self.ctx.sessions.lock)
+        return self.ctx.session
 
     def temp_dir(self) -> Path:
         directory = tempfile.TemporaryDirectory()
@@ -74,7 +85,7 @@ class BackendStateFixtures:
 
     def make_client(self, *, preconditions: bool = True) -> TestClient:
         """An API client; by default every request carries the active session and revision headers."""
-        client = TestClient(create_app())
+        client = TestClient(create_app(self.ctx))
         if preconditions:
             def add_preconditions(request):
                 request.headers.setdefault("X-Session-ID", state.active_session_id or "absent")
@@ -84,23 +95,29 @@ class BackendStateFixtures:
 
     def activate_job(self, status: str = "running") -> str:
         """Make the job manager report an active job, as a long operation would; returns its id."""
-        job_id = job_manager._admit(
-            "video_init", stage="working", stage_label="Working", message="working", inputs=None)
-        job_manager._job["status"] = status
+        jobs = self.ctx.jobs
+        job_id = jobs._admit("video_init", stage="working", stage_label="Working", message="working", inputs=None)
+        jobs._job["status"] = status
         return job_id
 
     def finished_job(self, result: dict[str, Any]) -> str:
         """Run a job to completion with this result; returns its id."""
-        job_manager.start(operation="video_init", stage="init", stage_label="Init", message="init",
-                          worker=lambda handle: result)
+        jobs = self.ctx.jobs
+        jobs.start(operation="video_init", stage="init", stage_label="Init", message="init",
+                   worker=lambda handle: result)
         deadline = time.time() + 5
-        while job_manager.is_active() and time.time() < deadline:
+        while jobs.is_active() and time.time() < deadline:
             time.sleep(0.001)
-        return job_manager.snapshot()["job_id"]
+        return jobs.snapshot()["job_id"]
 
     def job_handle(self) -> Mock:
         """A stand-in for the handle a job worker receives; progress calls are recorded, not stored."""
         return Mock(spec=JobHandle)
+
+
+def _deactivate() -> None:
+    global _active
+    _active = None
 
 
 class BackendStateTestCase(BackendStateFixtures, unittest.TestCase):

@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core.errors import OperationError
-from core.state import state
+from support import state
 from schemas.video import VideoInitStateRequest
 from sessions.metadata import write_session_metadata
 from support import BackendStateTestCase
@@ -38,7 +38,7 @@ class SessionReplacementTests(BackendStateTestCase):
 
     def run_init(self, path=None):
         return service.run_video_init_job(
-            VideoInitStateRequest(video_frames_dir=str(path or self.source)), self.job_handle())
+            self.ctx, VideoInitStateRequest(video_frames_dir=str(path or self.source)), self.job_handle())
 
     def assert_old_session(self):
         self.assertEqual(state.active_session_id, "old")
@@ -156,5 +156,5 @@ class SessionReplacementTests(BackendStateTestCase):
         source.touch()
         with patch.object(tracking, "read_tracking_video", side_effect=ValueError("bad video")):
             with self.assertRaises(ValueError):
-                tracking.load_tracking_video(TrackingLoadVideoRequest(video_path=str(source)))
+                tracking.load_tracking_video(self.ctx, TrackingLoadVideoRequest(video_path=str(source)))
         self.assert_old_session()

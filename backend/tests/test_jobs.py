@@ -14,7 +14,7 @@ class JobManagerTests(unittest.TestCase):
     """Each test owns its manager: nothing here touches the application's."""
 
     def setUp(self):
-        self.jobs = JobManager()
+        self.jobs = JobManager(threading.RLock())
         self.release = threading.Event()
         self.addCleanup(self.release.set)
 
@@ -52,18 +52,16 @@ class JobManagerTests(unittest.TestCase):
         for field in ("batch_current", "batch_total", "batch_index", "batch_count", "window_index"):
             self.assertIsNone(job[field], field)
 
-    def test_a_second_active_job_is_refused_and_edits_wait_for_idle(self):
+    def test_a_second_active_job_is_refused_while_one_runs(self):
         self.hold()
         with self.assertRaises(OperationError) as refused:
             self.start(lambda handle: {}, "mask_propagation")
         self.assertEqual(refused.exception.status_code, 409)
         with self.assertRaises(OperationError):
-            with self.jobs.foreground_operation():
-                pass
+            self.jobs.require_idle()
         self.release.set()
         self.wait_for("completed")
-        with self.jobs.foreground_operation():
-            pass
+        self.jobs.require_idle()
 
     def test_update_refines_a_stage_and_entering_one_clears_the_previous_position(self):
         handle = self.hold()

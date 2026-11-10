@@ -6,7 +6,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.errors import OperationError
-from core.state import state
+from support import state
 from core.annotations import SessionAnnotations
 from sessions.metadata import write_session_metadata
 from tracking.results import (

@@ -1,6 +1,7 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
-from core.state import state
+from app.dependencies import get_context
+from core.context import AppContext
 
 
 router = APIRouter()
@@ -17,9 +18,10 @@ async def health():
 
 
 @router.get("/status")
-async def status():
+async def status(ctx: AppContext = Depends(get_context)):
     # A worker can replace/release a runtime while this lightweight probe runs.
-    video_masker, tracker = state.video_masker, state.tracker
+    session = ctx.session
+    video_masker, tracker = session.video_masker, session.tracker
     if video_masker is not None:
         return {"status": "video active", "device": video_masker.device.type}
     if tracker is not None:

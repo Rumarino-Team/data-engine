@@ -1,5 +1,7 @@
 from fastapi import APIRouter, Depends, Header, Path
 
+from app.dependencies import get_context
+from core.context import AppContext
 from schemas.video import (
     VideoAddMaskRequest,
     VideoAddPointsOrBoxRequest,
@@ -41,82 +43,107 @@ def annotation_precondition(
 
 
 @router.post("/video/init_state")
-def init_video_state(request: VideoInitStateRequest):
-    return start_video_init(request)
+def init_video_state(request: VideoInitStateRequest, ctx: AppContext = Depends(get_context)):
+    return start_video_init(ctx, request)
 
 
 @router.post("/video/reset_state")
-def reset_video_state_route(precondition: AnnotationPrecondition = Depends(annotation_precondition)):
-    return reset_video_state(precondition)
+def reset_video_state_route(
+    precondition: AnnotationPrecondition = Depends(annotation_precondition),
+    ctx: AppContext = Depends(get_context),
+):
+    return reset_video_state(ctx, precondition)
 
 
 @router.post("/video/add_new_points_or_box")
-def add_new_points_or_box_route(request: VideoAddPointsOrBoxRequest,
-                                      precondition: AnnotationPrecondition = Depends(annotation_precondition)):
-    return add_new_points_or_box(request, precondition)
+def add_new_points_or_box_route(
+    request: VideoAddPointsOrBoxRequest,
+    precondition: AnnotationPrecondition = Depends(annotation_precondition),
+    ctx: AppContext = Depends(get_context),
+):
+    return add_new_points_or_box(ctx, request, precondition)
 
 
 @router.post("/video/add_new_mask")
-def add_new_mask_route(request: VideoAddMaskRequest,
-                             precondition: AnnotationPrecondition = Depends(annotation_precondition)):
-    return add_new_mask(request, precondition)
+def add_new_mask_route(
+    request: VideoAddMaskRequest,
+    precondition: AnnotationPrecondition = Depends(annotation_precondition),
+    ctx: AppContext = Depends(get_context),
+):
+    return add_new_mask(ctx, request, precondition)
 
 
 @router.post("/video/save")
-def save_video_session_route(request: VideoSaveRequest):
-    return save_video_session(request)
+def save_video_session_route(request: VideoSaveRequest, ctx: AppContext = Depends(get_context)):
+    return save_video_session(ctx, request)
 
 
 @router.post("/video/propagate_in_video")
-def propagate_in_video(request: VideoPropagateRequest,
-                             precondition: AnnotationPrecondition = Depends(annotation_precondition)):
-    return start_propagation(request, precondition)
+def propagate_in_video(
+    request: VideoPropagateRequest,
+    precondition: AnnotationPrecondition = Depends(annotation_precondition),
+    ctx: AppContext = Depends(get_context),
+):
+    return start_propagation(ctx, request, precondition)
 
 
 @router.post("/video/clear_all_prompts_in_frame")
-def clear_all_prompts_in_frame_route(frame_idx: int, obj_id: int,
-                                         precondition: AnnotationPrecondition = Depends(annotation_precondition)):
-    return clear_all_prompts_in_frame(frame_idx, obj_id, precondition)
+def clear_all_prompts_in_frame_route(
+    frame_idx: int,
+    obj_id: int,
+    precondition: AnnotationPrecondition = Depends(annotation_precondition),
+    ctx: AppContext = Depends(get_context),
+):
+    return clear_all_prompts_in_frame(ctx, frame_idx, obj_id, precondition)
 
 
 @router.post("/video/objects")
-def create_object_route(precondition: AnnotationPrecondition = Depends(annotation_precondition)):
-    return create_object(precondition)
+def create_object_route(
+    precondition: AnnotationPrecondition = Depends(annotation_precondition),
+    ctx: AppContext = Depends(get_context),
+):
+    return create_object(ctx, precondition)
 
 
 @router.put("/video/objects/{obj_id}")
 def update_object_route(
-    request: VideoObjectUpdate, obj_id: int = Path(ge=1),
+    request: VideoObjectUpdate,
+    obj_id: int = Path(ge=1),
     precondition: AnnotationPrecondition = Depends(annotation_precondition),
+    ctx: AppContext = Depends(get_context),
 ):
-    return update_object(obj_id, request, precondition)
+    return update_object(ctx, obj_id, request, precondition)
 
 
 @router.post("/video/remove_object")
-def remove_object_route(obj_id: int, precondition: AnnotationPrecondition = Depends(annotation_precondition)):
-    return remove_object(obj_id, precondition)
+def remove_object_route(
+    obj_id: int,
+    precondition: AnnotationPrecondition = Depends(annotation_precondition),
+    ctx: AppContext = Depends(get_context),
+):
+    return remove_object(ctx, obj_id, precondition)
 
 
 @router.get("/video/info")
-def get_video_info_route():
-    return get_video_info()
+def get_video_info_route(ctx: AppContext = Depends(get_context)):
+    return get_video_info(ctx)
 
 
 @router.get("/video/mask_manifest")
-def get_mask_manifest_route():
-    return get_mask_manifest()
+def get_mask_manifest_route(ctx: AppContext = Depends(get_context)):
+    return get_mask_manifest(ctx)
 
 
 @router.get("/video/mask_data/{frame_idx}")
-def get_mask_data_route(frame_idx: int):
-    return get_mask_data(frame_idx)
+def get_mask_data_route(frame_idx: int, ctx: AppContext = Depends(get_context)):
+    return get_mask_data(ctx, frame_idx)
 
 
 @router.get("/video/frame/{frame_idx}")
-def get_video_frame_route(frame_idx: int):
-    return get_video_frame(frame_idx)
+def get_video_frame_route(frame_idx: int, ctx: AppContext = Depends(get_context)):
+    return get_video_frame(ctx, frame_idx)
 
 
 @router.get("/video/mask_frame/{frame_idx}")
-def get_video_mask_frame_route(frame_idx: int):
-    return get_video_mask_frame(frame_idx)
+def get_video_mask_frame_route(frame_idx: int, ctx: AppContext = Depends(get_context)):
+    return get_video_mask_frame(ctx, frame_idx)

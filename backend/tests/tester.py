@@ -377,7 +377,7 @@ def propagate_in_video(start_frame_idx=None, max_frame_num_to_track=None, revers
         # Overlay PNGs are the visual output copied to tests/bedroom/masks.
         "export_overlay_frames": True,
     }
-    response = requests.post(url, json=payload)
+    response = requests.post(url, json=payload, headers=annotation_headers())
     if response.status_code == 200:
         print("Propagation job started.")
         success, response_data = wait_for_job(response.json())
@@ -405,7 +405,7 @@ def propagate_in_video(start_frame_idx=None, max_frame_num_to_track=None, revers
 def track_prompt_points(add_support_grid=False):
     """Runs prompt-point tracking from current SAM prompt state and fetches the disk-backed result."""
     url = f"{BASE_URL}/tracking/track_prompt_points"
-    response = requests.post(url, json={"add_support_grid": bool(add_support_grid)})
+    response = requests.post(url, json={"add_support_grid": bool(add_support_grid)}, headers=annotation_headers())
     if response.status_code != 200:
         print(f"Failed to start prompt tracking. Status: {response.status_code}, Response: {response.text}")
         return False, None
@@ -472,6 +472,11 @@ def restore_bedroom_masks_output(result_payload):
         return False
 
 
+def _kill_windows_process_tree(pid):
+    """On Windows terminate()/kill() stop only the `fastapi dev` reloader; its server worker would keep the port."""
+    subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
+
+
 def stop_server_process(server_process):
     """Stops FastAPI server process and its child processes reliably."""
     if server_process is None:
@@ -485,7 +490,7 @@ def stop_server_process(server_process):
         if os.name != "nt":
             os.killpg(server_process.pid, signal.SIGTERM)
         else:
-            server_process.terminate()
+            _kill_windows_process_tree(server_process.pid)
     except ProcessLookupError:
         print("Server process not found during shutdown.")
         return
@@ -503,7 +508,7 @@ def stop_server_process(server_process):
         if os.name != "nt":
             os.killpg(server_process.pid, signal.SIGKILL)
         else:
-            server_process.kill()
+            _kill_windows_process_tree(server_process.pid)
     except ProcessLookupError:
         pass
 

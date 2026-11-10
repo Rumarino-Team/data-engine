@@ -9,7 +9,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from core.state import state
+from support import state
 from core.annotations import SessionAnnotations
 from core.errors import OperationError
 from support import BackendStateTestCase
@@ -76,7 +76,7 @@ class PromptTrackingStatusTests(BackendStateTestCase):
 
     def run_tracking(self):
         return run_prompt_tracking_job(
-            type("Request", (), {"add_support_grid": False})(), self.job, masker_runtime=self.runtime,
+            self.ctx, type("Request", (), {"add_support_grid": False})(), self.job, masker_runtime=self.runtime,
         )
 
     @contextmanager

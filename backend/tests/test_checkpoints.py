@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.annotations import SessionAnnotations
 from core.errors import OperationError
-from core.state import state
+from support import state
 from sessions import checkpoints
 from sessions.metadata import write_session_metadata
 from support import BackendStateTestCase

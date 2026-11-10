@@ -32,4 +32,3 @@ class BackendState:
     # Content identity when the session was loaded or last saved; None only before initialization completes.
     saved_fingerprint: Optional[tuple] = None
 
-state = BackendState()
