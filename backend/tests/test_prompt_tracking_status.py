@@ -1,5 +1,5 @@
-import tempfile
 import unittest
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from unittest.mock import Mock, patch
 import sys
@@ -9,9 +9,10 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from core.state import BackendState, state
+from core.state import state
 from core.annotations import SessionAnnotations
 from core.errors import OperationError
+from support import BackendStateTestCase
 from tracking.prompt_tracking import run_prompt_tracking_job
 from video.prompts import restore_video_masker_from_prompt_events
 from video.runtime import VideoMaskerRuntime
@@ -52,27 +53,18 @@ class _FakeRestoreMasker:
         return None
 
 
-class PromptTrackingStatusTests(unittest.TestCase):
+class PromptTrackingStatusTests(BackendStateTestCase):
     def setUp(self):
-        self.previous_state = state.__dict__.copy()
-        state.__dict__.update(BackendState().__dict__)
-        self.tmp = tempfile.TemporaryDirectory()
-        state.active_session_dir = Path(self.tmp.name)
-        state.active_session_id = "session-1"
-        state.video_dir = str(Path(self.tmp.name))
-        state.video_frame_files = ["00000.jpg", "00001.jpg"]
-        state.annotations = SessionAnnotations(objects={1: {"id": 1, "label": "Object 1", "color": "#ff0000"}}, prompts=[
-            {
-                "frame_idx": 0,
-                "obj_id": 1,
-                "points": [[10.0, 20.0]],
-                "labels": [1],
-                "box": None,
-            }
-        ])
-        state.video_masker = _FakeInteractiveMasker()
-        state.tracker = _FakeTracker()
-        state.video_state_epoch = 1
+        super().setUp()
+        self.tmp_dir = str(self.temp_dir())
+        self.working_session(
+            Path(self.tmp_dir) / "session", session_id="session-1", frames=("00000.jpg", "00001.jpg"),
+            video_dir=self.tmp_dir, video_state_epoch=1, tracker=_FakeTracker(),
+            video_masker=_FakeInteractiveMasker(),
+            annotations=SessionAnnotations(
+                objects={1: {"id": 1, "label": "Object 1", "color": "#ff0000"}},
+                prompts=[{"frame_idx": 0, "obj_id": 1, "points": [[10.0, 20.0]], "labels": [1], "box": None}]),
+        )
         self.restored_masker = _FakeRestoreMasker()
         self.factory = Mock(return_value=self.restored_masker)
         self.replay = Mock()
@@ -82,15 +74,24 @@ class PromptTrackingStatusTests(unittest.TestCase):
             persist_session=self.persist, release_memory=Mock(),
         )
 
-    def tearDown(self):
-        state.__dict__.clear()
-        state.__dict__.update(self.previous_state)
-        self.tmp.cleanup()
-
     def run_tracking(self):
         return run_prompt_tracking_job(
             type("Request", (), {"add_support_grid": False})(), masker_runtime=self.runtime,
         )
+
+    @contextmanager
+    def tracking_environment(self, *, streaming=False, load_video=True):
+        """Patch the tracking job's collaborators; yields the mock that publishes a result."""
+        with ExitStack() as stack:
+            stack.enter_context(patch("tracking.prompt_tracking.update_job"))
+            stack.enter_context(patch("tracking.prompt_tracking.ensure_tracker_model"))
+            stack.enter_context(patch("tracking.prompt_tracking.should_stream_tracking", return_value=streaming))
+            if load_video:
+                stack.enter_context(patch(
+                    "tracking.prompt_tracking.load_tracking_video_from_current_video_state",
+                    return_value=(np.zeros((2, 2, 2, 3), dtype=np.uint8), self.tmp_dir)))
+            stack.enter_context(patch("tracking.prompt_tracking.cleanup_cuda_memory"))
+            yield stack.enter_context(patch("tracking.prompt_tracking.save_prompt_tracking_result"))
 
     def test_prompt_tracking_uses_tracking_labels_and_restore_progress(self):
         updates = []
@@ -110,7 +111,7 @@ class PromptTrackingStatusTests(unittest.TestCase):
             patch("tracking.prompt_tracking.should_stream_tracking", return_value=False),
             patch(
                 "tracking.prompt_tracking.load_tracking_video_from_current_video_state",
-                return_value=(np.zeros((2, 2, 2, 3), dtype=np.uint8), str(self.tmp.name)),
+                return_value=(np.zeros((2, 2, 2, 3), dtype=np.uint8), str(self.tmp_dir)),
             ),
             patch("tracking.prompt_tracking.cleanup_cuda_memory", return_value=None),
             patch(
@@ -131,21 +132,13 @@ class PromptTrackingStatusTests(unittest.TestCase):
         self.factory.assert_called_once()
         self.replay.assert_called_once_with(state)
         self.persist.assert_called_once_with(state)
-        self.assertEqual(self.restored_masker.init_args, (self.tmp.name,))
+        self.assertEqual(self.restored_masker.init_args, (self.tmp_dir,))
         self.assertEqual(self.restored_masker.init_kwargs["batch_size"], 32)
         self.assertEqual(result["tracking_result_id"], "track-1")
 
     def test_failed_restore_disables_predictor_without_publishing(self):
         self.factory.side_effect = RuntimeError("restore failed")
-        with (
-            patch("tracking.prompt_tracking.update_job"),
-            patch("tracking.prompt_tracking.ensure_tracker_model"),
-            patch("tracking.prompt_tracking.should_stream_tracking", return_value=False),
-            patch("tracking.prompt_tracking.load_tracking_video_from_current_video_state",
-                  return_value=(np.zeros((2, 2, 2, 3), dtype=np.uint8), self.tmp.name)),
-            patch("tracking.prompt_tracking.cleanup_cuda_memory"),
-            patch("tracking.prompt_tracking.save_prompt_tracking_result") as publish,
-        ):
+        with self.tracking_environment() as publish:
             with self.assertRaises(OperationError) as failure:
                 self.run_tracking()
         self.assertEqual(failure.exception.status_code, 503)
@@ -177,14 +170,8 @@ class PromptTrackingStatusTests(unittest.TestCase):
                 state.video_masker = _FakeInteractiveMasker()
                 self.factory.side_effect = RuntimeError("restore failed")
                 with (
-                    patch("tracking.prompt_tracking.update_job"),
-                    patch("tracking.prompt_tracking.ensure_tracker_model"),
-                    patch("tracking.prompt_tracking.should_stream_tracking", return_value=False),
-                    patch("tracking.prompt_tracking.load_tracking_video_from_current_video_state",
-                          return_value=(np.zeros((2, 2, 2, 3), dtype=np.uint8), self.tmp.name)),
+                    self.tracking_environment() as publish,
                     patch.object(state.tracker, "track", side_effect=error),
-                    patch("tracking.prompt_tracking.cleanup_cuda_memory"),
-                    patch("tracking.prompt_tracking.save_prompt_tracking_result") as publish,
                     self.assertLogs("video.runtime", level="ERROR"),
                 ):
                     with self.assertRaises(OperationError) as failure:
@@ -197,15 +184,7 @@ class PromptTrackingStatusTests(unittest.TestCase):
 
     def test_inputs_are_revalidated_after_restoration_before_publication(self):
         self.replay.side_effect = lambda session: session.annotations.clear_prompts()
-        with (
-            patch("tracking.prompt_tracking.update_job"),
-            patch("tracking.prompt_tracking.ensure_tracker_model"),
-            patch("tracking.prompt_tracking.should_stream_tracking", return_value=False),
-            patch("tracking.prompt_tracking.load_tracking_video_from_current_video_state",
-                  return_value=(np.zeros((2, 2, 2, 3), dtype=np.uint8), self.tmp.name)),
-            patch("tracking.prompt_tracking.cleanup_cuda_memory"),
-            patch("tracking.prompt_tracking.save_prompt_tracking_result") as publish,
-        ):
+        with self.tracking_environment() as publish:
             with self.assertRaises(OperationError) as failure:
                 self.run_tracking()
 
@@ -235,15 +214,9 @@ class PromptTrackingStatusTests(unittest.TestCase):
 
                     try:
                         with (
-                            patch("tracking.prompt_tracking.update_job"),
-                            patch("tracking.prompt_tracking.ensure_tracker_model"),
-                            patch("tracking.prompt_tracking.should_stream_tracking", return_value=streaming),
-                            patch("tracking.prompt_tracking.load_tracking_video_from_current_video_state",
-                                  return_value=(np.zeros((2, 2, 2, 3), dtype=np.uint8), self.tmp.name)),
+                            self.tracking_environment(streaming=streaming) as publish,
                             patch.object(state.tracker, "track", return_value=output),
                             patch.object(state.tracker, "track_streaming", return_value=output, create=True),
-                            patch("tracking.prompt_tracking.cleanup_cuda_memory"),
-                            patch("tracking.prompt_tracking.save_prompt_tracking_result") as publish,
                         ):
                             with self.assertRaises(OperationError) as failure:
                                 self.run_tracking()
@@ -262,13 +235,9 @@ class PromptTrackingStatusTests(unittest.TestCase):
         before_annotations = state.annotations.snapshot()
 
         with (
-            patch("tracking.prompt_tracking.update_job"),
-            patch("tracking.prompt_tracking.ensure_tracker_model"),
-            patch("tracking.prompt_tracking.should_stream_tracking", return_value=False),
+            self.tracking_environment(load_video=False) as publish,
             patch("video.io.cv2.imread", side_effect=[np.zeros((2, 2, 3), dtype=np.uint8), None]),
             patch.object(state.tracker, "track") as inference,
-            patch("tracking.prompt_tracking.cleanup_cuda_memory"),
-            patch("tracking.prompt_tracking.save_prompt_tracking_result") as publish,
             patch.object(state, "session_metadata", {"latest_tracking_result_id": "previous-result"}),
         ):
             with self.assertRaises(OperationError) as failure:

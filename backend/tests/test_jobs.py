@@ -8,13 +8,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import core.jobs as jobs
 from core.errors import OperationError
+from support import BackendStateTestCase
 
 
-class JobTests(unittest.TestCase):
-    def tearDown(self):
-        with jobs.current_job_lock:
-            jobs.current_job = None
-
+class JobTests(BackendStateTestCase):
     def test_queue_long_job_stores_global_job_and_completes(self):
         started = jobs.queue_long_job(
             operation="video_init",

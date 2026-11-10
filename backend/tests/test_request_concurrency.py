@@ -3,10 +3,9 @@ from contextlib import contextmanager
 import json
 from pathlib import Path
 import sys
-import tempfile
 import threading
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import anyio.to_thread
 import httpx
@@ -15,28 +14,23 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.factory import create_app
 from core import jobs
-from core.state import BackendState, state
+from core.state import state
 from routers import video as video_routes
 from sessions.metadata import write_session_metadata
+from support import BackendStateFixtures
 from video import service
 
 
-class RequestConcurrencyTests(unittest.IsolatedAsyncioTestCase):
+class RequestConcurrencyTests(BackendStateFixtures, unittest.IsolatedAsyncioTestCase):
     """All requests share one ASGI loop, unlike separate TestClient portals."""
 
     async def asyncSetUp(self):
-        self.previous_state = state.__dict__.copy()
-        with jobs.current_job_lock:
-            self.previous_job = jobs.current_job
-            jobs.current_job = None
-        self.tmp = tempfile.TemporaryDirectory()
-        self.session_path = Path(self.tmp.name)
-        state.__dict__.update(BackendState(
+        self.session_path = self.temp_dir()
+        self.reset_backend_state(
             active_session_id="session", active_session_dir=self.session_path,
             video_dir=str(self.session_path), video_frame_files=["00000.jpg"],
-            video_masker=Mock(online_mode=True, default_batch_size=1,
-                              offload_video_to_cpu=True, offload_state_to_cpu=True),
-        ).__dict__)
+            video_masker=self.make_masker(),
+        )
         state.annotations.create_object()
         write_session_metadata()
         job = jobs._start_job("video_init", stage="init", stage_label="Init", message="init")
@@ -56,11 +50,6 @@ class RequestConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         self.release.set()
         await asyncio.wait_for(asyncio.gather(*self.requests, return_exceptions=True), timeout=5)
         await self.client.aclose()
-        state.__dict__.clear()
-        state.__dict__.update(self.previous_state)
-        with jobs.current_job_lock:
-            jobs.current_job = self.previous_job
-        self.tmp.cleanup()
 
     def block_worker(self):
         self.worker_threads.append(threading.get_ident())

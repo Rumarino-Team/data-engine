@@ -3,7 +3,7 @@ import { VideoJobsService } from './video-jobs.service';
 import { cachedMasks } from '../testing/workflow-test-helpers';
 import { describe, beforeEach, expect, it, vi } from 'vitest';
 import { of, throwError } from 'rxjs';
-import { createWorkflowFixture } from '../testing/workflow-test-helpers';
+import { createWorkflowFixture, mockInitJob, mockJob } from '../testing/workflow-test-helpers';
 
 describe('session workflows', () => {
   let editor: ReturnType<typeof createWorkflowFixture>['editor'];
@@ -15,48 +15,7 @@ describe('session workflows', () => {
   });
 
   it('starts a video init job, polls completion, and applies the result', async () => {
-    backendMock.initVideoState.mockReturnValue(
-      of({
-        job_id: 'job-1',
-        status: 'queued',
-        operation: 'video_init',
-        message: 'queued',
-      }),
-    );
-    backendMock.getJob.mockReturnValue(
-      of({
-        job: {
-          job_id: 'job-1',
-          operation: 'video_init',
-          status: 'completed',
-          stage: 'completed',
-          stage_label: 'Completed',
-          progress: 1,
-          current: 12,
-          total: 12,
-          window_index: null,
-          window_count: null,
-          frame_idx: null,
-          stage_history: [],
-          message: 'done',
-          error: null,
-          started_at: 'now',
-          updated_at: 'now',
-          completed_at: 'now',
-          result: {
-            message: 'Video state initialized successfully',
-            num_frames: 12,
-            resolved_video_frames_dir: 'C:/frames',
-            source_video_path: null,
-            online_mode: true,
-            batch_size: 32,
-            offload_video_to_cpu: true,
-            offload_state_to_cpu: true,
-            state_epoch: 7,
-          },
-        },
-      }),
-    );
+    mockInitJob(backendMock);
     editor.store.videoDir.set('C:/frames');
 
     await editor.sessions.initVideo();
@@ -73,75 +32,16 @@ describe('session workflows', () => {
     expect(backendMock.updateObject).not.toHaveBeenCalled();
   });
 
-  it('uses the same init endpoint path flow for saved-session mode', async () => {
-    backendMock.initVideoState.mockReturnValue(
-      of({
-        job_id: 'job-saved',
-        status: 'queued',
-        operation: 'video_init',
-        message: 'queued',
-      }),
-    );
-    backendMock.getJob.mockReturnValue(
-      of({
-        job: {
-          job_id: 'job-saved',
-          operation: 'video_init',
-          status: 'completed',
-          stage: 'completed',
-          stage_label: 'Completed',
-          progress: 1,
-          current: 8,
-          total: 8,
-          window_index: null,
-          window_count: null,
-          frame_idx: null,
-          stage_history: [],
-          message: 'done',
-          error: null,
-          started_at: 'now',
-          updated_at: 'now',
-          completed_at: 'now',
-          result: {
-            message: 'Video state initialized successfully',
-            num_frames: 8,
-            resolved_video_frames_dir: 'C:/backend/saved/review-run/frames',
-            source_video_path: null,
-            online_mode: true,
-            batch_size: 32,
-            offload_video_to_cpu: true,
-            offload_state_to_cpu: true,
-            state_epoch: 11,
-          },
-        },
-      }),
-    );
-    editor.store.loadSourceMode.set('saved_session_dir');
-    editor.store.videoDir.set('C:/backend/saved/review-run');
-
-    await editor.sessions.initVideo();
-
-    expect(backendMock.initVideoState).toHaveBeenCalledWith('C:/backend/saved/review-run');
-    expect(editor.store.isInitialized()).toBe(true);
-  });
-
   it('preserves an intentionally empty canonical session and its reserved object IDs', async () => {
-    backendMock.initVideoState.mockReturnValue(of({ job_id: 'canonical' }));
-    backendMock.getJob.mockReturnValue(
-      of({
-        job: {
-          status: 'completed',
-          result: {
-            num_frames: 1,
-            state_epoch: 4,
-            restored_session: {
-              annotations: { version: 1, revision: 8, next_object_id: 7, objects: {}, prompts: [] },
-              interactive_state: { version: 1 },
-            },
-          },
-        },
-      }),
-    );
+    mockInitJob(backendMock, {
+      num_frames: 1,
+      state_epoch: 4,
+      restored_session: {
+        annotations: { version: 1, revision: 8, next_object_id: 7, objects: {}, prompts: [] },
+        interactive_state: { version: 1 },
+        has_mask_manifest: false,
+      },
+    });
     editor.store.videoDir.set('C:/saved/session');
 
     await editor.sessions.initVideo();
@@ -153,73 +53,27 @@ describe('session workflows', () => {
   });
 
   it('restores interactive state from saved-session init result', async () => {
-    backendMock.initVideoState.mockReturnValue(
-      of({
-        job_id: 'job-restore',
-        status: 'queued',
-        operation: 'video_init',
-        message: 'queued',
-      }),
-    );
-    backendMock.getJob.mockReturnValue(
-      of({
-        job: {
-          job_id: 'job-restore',
-          operation: 'video_init',
-          status: 'completed',
-          stage: 'completed',
-          stage_label: 'Completed',
-          progress: 1,
-          current: 10,
-          total: 10,
-          window_index: null,
-          window_count: null,
-          frame_idx: null,
-          stage_history: [],
-          message: 'done',
-          error: null,
-          started_at: 'now',
-          updated_at: 'now',
-          completed_at: 'now',
-          result: {
-            message: 'Video state initialized successfully',
-            num_frames: 10,
-            resolved_video_frames_dir: 'C:/backend/saved/review-run/frames',
-            source_video_path: null,
-            online_mode: true,
-            batch_size: 32,
-            offload_video_to_cpu: true,
-            offload_state_to_cpu: true,
-            state_epoch: 12,
-            source_type: 'saved_session',
-            restored_session: {
-              annotations: {
-                version: 1,
-                revision: 1,
-                next_object_id: 2,
-                objects: { '1': { id: 1, label: 'buoy', color: '#ff6600' } },
-                prompts: [
-                  {
-                    frame_idx: 4,
-                    obj_id: 1,
-                    points: [[10, 20]],
-                    labels: [1],
-                    box: null,
-                  },
-                ],
-              },
-              has_mask_manifest: true,
-              interactive_state: {
-                version: 1,
-                selected_object_id: 1,
-                interaction_mode: 'negative',
-                current_frame_idx: 4,
-              },
-            },
-          },
+    mockInitJob(backendMock, {
+      num_frames: 10,
+      state_epoch: 12,
+      source_type: 'saved_session',
+      restored_session: {
+        annotations: {
+          version: 1,
+          revision: 1,
+          next_object_id: 2,
+          objects: { '1': { id: 1, label: 'buoy', color: '#ff6600' } },
+          prompts: [{ frame_idx: 4, obj_id: 1, points: [[10, 20]], labels: [1], box: null }],
         },
-      }),
-    );
+        has_mask_manifest: true,
+        interactive_state: {
+          version: 1,
+          selected_object_id: 1,
+          interaction_mode: 'negative',
+          current_frame_idx: 4,
+        },
+      },
+    });
     editor.store.loadSourceMode.set('saved_session_dir');
     editor.store.videoDir.set('C:/backend/saved/review-run');
 
@@ -235,196 +89,91 @@ describe('session workflows', () => {
     expect(backendMock.updateObject).not.toHaveBeenCalled();
   });
 
-  it('restores persisted tracking result from saved-session init result', async () => {
-    backendMock.initVideoState.mockReturnValue(
-      of({
-        job_id: 'job-restore-track',
-        status: 'queued',
-        operation: 'video_init',
-        message: 'queued',
-      }),
-    );
-    backendMock.getJob.mockReturnValue(
-      of({
-        job: {
-          job_id: 'job-restore-track',
-          operation: 'video_init',
-          status: 'completed',
-          stage: 'completed',
-          stage_label: 'Completed',
-          progress: 1,
-          current: 10,
-          total: 10,
-          window_index: null,
-          window_count: null,
-          frame_idx: null,
-          stage_history: [],
-          message: 'done',
-          error: null,
-          started_at: 'now',
-          updated_at: 'now',
-          completed_at: 'now',
-          result: {
-            message: 'Video state initialized successfully',
-            num_frames: 10,
-            resolved_video_frames_dir: 'C:/backend/saved/review-run/frames',
-            source_video_path: null,
-            online_mode: true,
-            batch_size: 32,
-            offload_video_to_cpu: true,
-            offload_state_to_cpu: true,
-            state_epoch: 12,
-            source_type: 'saved_session',
-            restored_session: {
-              annotations: { version: 1, revision: 0, next_object_id: 1, objects: {}, prompts: [] },
-              has_mask_manifest: true,
-              tracking_result: {
-                result_id: 'track-restored',
-                summary: { num_points: 1 },
-              },
-            },
-          },
+  describe('restoring a persisted tracking result', () => {
+    const initWithTrackingResult = (trackingResult: {
+      result_id: string;
+      summary?: Record<string, unknown>;
+    }) => {
+      mockInitJob(backendMock, {
+        num_frames: 10,
+        state_epoch: 12,
+        source_type: 'saved_session',
+        restored_session: {
+          annotations: { version: 1, revision: 0, next_object_id: 1, objects: {}, prompts: [] },
+          has_mask_manifest: true,
+          tracking_result: trackingResult,
         },
-      }),
-    );
-    backendMock.getTrackingResult.mockReturnValue(
-      of({
-        result: {
-          version: 1,
-          result_id: 'track-restored',
-          session_id: 'session-1',
-          annotation_revision: 0,
-          state_epoch: 12,
-          model_name: 'cotracker3_online',
-          num_points: 1,
-          num_frames: 2,
-          add_support_grid_used: false,
-          tracking_mode: 'streaming',
-          streaming_frame_threshold: 256,
-          tracks: [
-            [
-              [10, 20],
-              [11, 21],
+      });
+      editor.store.loadSourceMode.set('saved_session_dir');
+      editor.store.videoDir.set('C:/backend/saved/review-run');
+    };
+
+    it('loads the result named by the saved session', async () => {
+      initWithTrackingResult({ result_id: 'track-restored', summary: { num_points: 1 } });
+      backendMock.getTrackingResult.mockReturnValue(
+        of({
+          result: {
+            version: 1,
+            result_id: 'track-restored',
+            session_id: 'session-1',
+            annotation_revision: 0,
+            state_epoch: 12,
+            model_name: 'cotracker3_online',
+            num_points: 1,
+            num_frames: 2,
+            add_support_grid_used: false,
+            tracking_mode: 'streaming',
+            streaming_frame_threshold: 256,
+            tracks: [
+              [
+                [10, 20],
+                [11, 21],
+              ],
             ],
-          ],
-          visibility: [[true, true]],
-          points: [
-            {
-              point_id: 'p0_0',
-              obj_id: 1,
-              source_frame_idx: 0,
-              source_x: 10,
-              source_y: 20,
-            },
-          ],
-        },
-      }),
-    );
-    editor.store.loadSourceMode.set('saved_session_dir');
-    editor.store.videoDir.set('C:/backend/saved/review-run');
-
-    await editor.sessions.initVideo();
-
-    expect(backendMock.getTrackingResult).toHaveBeenCalledWith('track-restored');
-    expect(editor.store.trackedPoints()[0].tracks).toEqual([
-      [10, 20],
-      [11, 21],
-    ]);
-  });
-
-  it('keeps saved-session init successful when restored tracking result is unavailable', async () => {
-    backendMock.initVideoState.mockReturnValue(
-      of({
-        job_id: 'job-restore-track-missing',
-        status: 'queued',
-        operation: 'video_init',
-        message: 'queued',
-      }),
-    );
-    backendMock.getJob.mockReturnValue(
-      of({
-        job: {
-          job_id: 'job-restore-track-missing',
-          operation: 'video_init',
-          status: 'completed',
-          stage: 'completed',
-          stage_label: 'Completed',
-          progress: 1,
-          current: 10,
-          total: 10,
-          window_index: null,
-          window_count: null,
-          frame_idx: null,
-          stage_history: [],
-          message: 'done',
-          error: null,
-          started_at: 'now',
-          updated_at: 'now',
-          completed_at: 'now',
-          result: {
-            message: 'Video state initialized successfully',
-            num_frames: 10,
-            resolved_video_frames_dir: 'C:/backend/saved/review-run/frames',
-            source_video_path: null,
-            online_mode: true,
-            batch_size: 32,
-            offload_video_to_cpu: true,
-            offload_state_to_cpu: true,
-            state_epoch: 12,
-            source_type: 'saved_session',
-            restored_session: {
-              annotations: { version: 1, revision: 0, next_object_id: 1, objects: {}, prompts: [] },
-              has_mask_manifest: true,
-              tracking_result: { result_id: 'missing-track' },
-            },
+            visibility: [[true, true]],
+            points: [
+              { point_id: 'p0_0', obj_id: 1, source_frame_idx: 0, source_x: 10, source_y: 20 },
+            ],
           },
-        },
-      }),
-    );
-    backendMock.getTrackingResult.mockReturnValue(
-      throwError(() => ({ error: { detail: 'missing' } })),
-    );
-    editor.store.loadSourceMode.set('saved_session_dir');
-    editor.store.videoDir.set('C:/backend/saved/review-run');
+        }),
+      );
 
-    await editor.sessions.initVideo();
+      await editor.sessions.initVideo();
 
-    expect(editor.store.isInitialized()).toBe(true);
-    expect(editor.store.toasts()[0].title).toBe('Tracking result unavailable');
+      expect(backendMock.getTrackingResult).toHaveBeenCalledWith('track-restored');
+      expect(editor.store.trackedPoints()[0].tracks).toEqual([
+        [10, 20],
+        [11, 21],
+      ]);
+    });
+
+    it('keeps init successful when the result is unavailable', async () => {
+      initWithTrackingResult({ result_id: 'missing-track' });
+      backendMock.getTrackingResult.mockReturnValue(
+        throwError(() => ({ error: { detail: 'missing' } })),
+      );
+
+      await editor.sessions.initVideo();
+
+      expect(editor.store.isInitialized()).toBe(true);
+      expect(editor.store.toasts()[0].title).toBe('Tracking result unavailable');
+    });
   });
 
   it('creates an error toast when a job fails', async () => {
-    backendMock.initVideoState.mockReturnValue(
-      of({
-        job_id: 'job-2',
-        status: 'queued',
-        operation: 'video_init',
-        message: 'queued',
-      }),
-    );
-    backendMock.getJob.mockReturnValue(
-      of({
-        job: {
-          job_id: 'job-2',
-          operation: 'video_init',
-          status: 'failed',
-          stage: 'initializing_state',
-          stage_label: 'Initializing video state',
-          progress: 0.5,
-          current: null,
-          total: null,
-          window_index: null,
-          window_count: null,
-          frame_idx: null,
-          stage_history: [],
-          message: 'failed',
-          error: { code: 'validation_error', message: 'Path not found', detail: null },
-          started_at: 'now',
-          updated_at: 'now',
-          completed_at: 'now',
-          result: null,
-        },
-      }),
+    mockJob(
+      backendMock.initVideoState,
+      backendMock.getJob,
+      'video_init',
+      {
+        status: 'failed',
+        stage: 'initializing_state',
+        stage_label: 'Initializing video state',
+        progress: 0.5,
+        message: 'failed',
+        error: { code: 'validation_error', message: 'Path not found', detail: null },
+      },
+      'job-2',
     );
     editor.store.videoDir.set('C:/missing');
 

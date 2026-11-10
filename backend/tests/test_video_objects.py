@@ -1,44 +1,24 @@
 import json
 import sys
-import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
-from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import core.jobs as jobs
-from app.factory import create_app
 from core.state import state
 from core.annotations import SessionAnnotations
 from pydantic import ValidationError
 from schemas.video import VideoPrompt
 from annotation_delta import apply_delta, same_annotations
+from support import BackendStateTestCase
 
 
-class VideoObjectTests(unittest.TestCase):
+class VideoObjectTests(BackendStateTestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.session_path = Path(self.tmp.name)
-        state.active_session_dir = self.session_path
-        state.active_session_id = "object-session"
-        state.annotations = SessionAnnotations()
-        self.client = TestClient(create_app())
-        def preconditions(request):
-            request.headers.setdefault("X-Session-ID", state.active_session_id or "absent")
-            request.headers.setdefault("X-Annotation-Revision", str(state.annotations.revision))
-        self.client.event_hooks["request"].append(preconditions)
-
-    def tearDown(self):
-        with jobs.current_job_lock:
-            jobs.current_job = None
-        state.active_session_dir = None
-        state.active_session_id = None
-        state.annotations = SessionAnnotations()
-        state.video_masker = None
-        self.tmp.cleanup()
+        super().setUp()
+        self.session_path = self.working_session(session_id="object-session", frames=())
+        self.client = self.make_client()
 
     def session_objects(self):
         return sorted(json.loads((self.session_path / "session.json").read_text())["annotations"]["objects"].values(), key=lambda obj: obj["id"])
@@ -74,8 +54,7 @@ class VideoObjectTests(unittest.TestCase):
     def test_allocation_survives_deletion_and_metadata_reload(self):
         state.annotations = SessionAnnotations(next_object_id=8)
         self.assertEqual(self.client.post("/video/objects").json()["created_object_id"], 8)
-        state.video_masker = mock.Mock(online_mode=True, default_batch_size=1,
-                                      offload_video_to_cpu=False, offload_state_to_cpu=False)
+        state.video_masker = self.make_masker()
         self.assertEqual(self.client.post("/video/remove_object", params={"obj_id": 8}).status_code, 200)
         metadata = json.loads((self.session_path / "session.json").read_text())
         state.annotations = SessionAnnotations.model_validate(metadata["annotations"])
@@ -86,8 +65,7 @@ class VideoObjectTests(unittest.TestCase):
         state.active_session_dir = None
         self.assertEqual(self.client.post("/video/objects").status_code, 409)
         state.active_session_dir = self.session_path
-        with jobs.current_job_lock:
-            jobs.current_job = {"job_id": "active", "status": "running"}
+        self.activate_job()
         self.assertEqual(self.client.post("/video/objects").status_code, 409)
         self.assertEqual(state.annotations.next_object_id, 1)
         self.assertEqual(state.annotations.objects, {})
@@ -105,16 +83,13 @@ class VideoObjectTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
 
     def test_update_is_guarded_while_job_active(self):
-        with jobs.current_job_lock:
-            jobs.current_job = {"job_id": "active", "status": "running"}
+        self.activate_job()
         response = self.client.put("/video/objects/1", json={"label": "buoy", "color": "#ff0000"})
         self.assertEqual(response.status_code, 409)
 
     def test_remove_object_drops_metadata(self):
         self.client.post("/video/objects")
-        state.video_masker = mock.Mock(
-            online_mode=True, default_batch_size=1, offload_video_to_cpu=False, offload_state_to_cpu=False
-        )
+        state.video_masker = self.make_masker()
         response = self.client.post("/video/remove_object", params={"obj_id": 1})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["annotation_delta"]["removed_objects"], [1])
@@ -149,9 +124,7 @@ class VideoObjectTests(unittest.TestCase):
         for obj_id in (1, 2):
             self.client.post("/video/objects")
             state.annotations.set_prompt(VideoPrompt(frame_idx=0, obj_id=obj_id, points=[[1, 2]], labels=[1]))
-        state.video_masker = mock.Mock(
-            online_mode=True, default_batch_size=1, offload_video_to_cpu=False, offload_state_to_cpu=False,
-        )
+        state.video_masker = self.make_masker()
         before = self.info()
         snapshot = self.client.post("/video/remove_object", params={"obj_id": 1}).json()
         self.assertEqual(snapshot["session_id"], "object-session")

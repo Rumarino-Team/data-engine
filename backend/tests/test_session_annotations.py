@@ -1,61 +1,42 @@
 import json
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 import numpy as np
-from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.factory import create_app
 from core.annotations import SessionAnnotations
 from core.errors import OperationError
-from core.state import BackendState, state
+from core.state import state
 from schemas.video import VideoPrompt
 from sessions.cache import release_active_session
 from sessions.metadata import write_session_metadata
 from video import service
+from video.mask_encoding import encode_live_mask_payload
 from video.prompts import restore_video_masker_from_prompt_events
 from sessions.metadata import interactive_state_projection
 from annotation_delta import apply_delta, same_annotations
+from support import BackendStateTestCase
 
 
 OBJECT = {"id": 1, "label": "Hand", "color": "#ff0000"}
 PROMPT = {"frame_idx": 0, "obj_id": 1, "points": [[1, 2]], "labels": [1]}
 
 
-class SessionAnnotationsTests(unittest.TestCase):
+class SessionAnnotationsTests(BackendStateTestCase):
     def setUp(self):
-        self.previous_state = state.__dict__.copy()
-        state.__dict__.update(BackendState().__dict__)
-        self.tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self.tmp.name)
-        self.session = self.root / "working"
-        (self.session / "frames").mkdir(parents=True)
-        (self.session / "masks").mkdir()
-        (self.session / "frames" / "00000.jpg").touch()
-        state.active_session_dir = self.session
-        state.active_session_id = "annotations-session"
-        state.video_dir = str(self.session / "frames")
-        state.video_frame_files = ["00000.jpg"]
-        state.annotations = SessionAnnotations(objects={1: OBJECT})
-        self.masker = Mock(online_mode=True, default_batch_size=1,
-                           offload_video_to_cpu=True, offload_state_to_cpu=True)
+        super().setUp()
+        self.root = self.temp_dir()
+        self.session = self.working_session(
+            self.root / "working", session_id="annotations-session",
+            annotations=SessionAnnotations(objects={1: OBJECT}))
+        self.masker = self.make_masker()
         self.masker.add_new_points_or_box.return_value = (0, [1], [np.ones((3, 3))])
         state.video_masker = self.masker
-        self.client = TestClient(create_app())
-        def preconditions(request):
-            request.headers.setdefault("X-Session-ID", state.active_session_id or "absent")
-            request.headers.setdefault("X-Annotation-Revision", str(state.annotations.revision))
-        self.client.event_hooks["request"].append(preconditions)
-
-    def tearDown(self):
-        state.__dict__.clear()
-        state.__dict__.update(self.previous_state)
-        self.tmp.cleanup()
+        self.client = self.make_client()
 
     def metadata(self):
         return json.loads((state.active_session_dir / "session.json").read_text())
@@ -267,13 +248,12 @@ class SessionAnnotationsTests(unittest.TestCase):
                 self.assertEqual(state.annotations.mask_overrides, [])
                 self.assertEqual(self.client.get("/video/mask_data/0").json()["objects"], {})
 
-    def test_reset_logically_invalidates_masks_when_file_cleanup_fails(self):
+    def test_reset_invalidates_propagated_masks(self):
         self.seed_manifest()
-        with patch.object(service.shutil, "rmtree"):
-            self.assertEqual(self.client.post("/video/reset_state").status_code, 200)
-        self.assertTrue((self.session / "masks" / "manifest.json").exists())
+        self.assertEqual(self.client.get("/video/mask_data/0").json()["sources"], {"1": "manifest"})
+        self.assertEqual(self.client.post("/video/reset_state").status_code, 200)
+        self.assertIsNone(state.mask_manifest_path)
         self.assertEqual(self.client.get("/video/mask_data/0").json()["objects"], {})
-
     def test_invalid_prompts_never_reach_predictor_or_change_revision(self):
         invalid = [
             {**PROMPT, "labels": []}, {**PROMPT, "points": [[1]]},
@@ -367,22 +347,56 @@ class SessionAnnotationsTests(unittest.TestCase):
             frame_idx=0, obj_id=1, points=[[1, 2]], labels=[1], clear_old_points=True, box=None,
         )
 
-    def test_stale_frontend_save_cannot_replace_backend_prompts_or_restore_its_masks(self):
+    def post_point(self, mask):
+        self.masker.add_new_points_or_box.return_value = (0, [1], [mask])
+        with patch.object(service, "mask_logits_to_2d_bool", side_effect=lambda value: np.asarray(value, dtype=bool)):
+            return self.client.post("/video/add_new_points_or_box", json=PROMPT)
+
+    def test_point_response_encodes_each_mask_with_matching_metadata(self):
+        self.masker.propagate_in_video.return_value = {}
+        compact = np.zeros((108, 192), dtype=bool)
+        compact[20:80, 30:140] = True
+        for name, mask in {
+            "compact": compact,
+            "fragmented": np.indices((17, 19)).sum(axis=0) % 2 == 0,
+            "empty": np.zeros((2, 2), dtype=bool),
+        }.items():
+            with self.subTest(name):
+                body = self.post_point(mask).json()
+                self.assertEqual(body["mask_data"]["objects"]["1"], encode_live_mask_payload(mask))
+                self.assertEqual(body["mask_shapes"], {"1": list(mask.shape)})
+                self.assertEqual(body["mask_pixel_counts"], {"1": int(mask.sum())})
+                self.assertEqual(body["state_epoch"], state.video_state_epoch)
+                self.assertFalse(body["single_frame_fallback_used"])
+        self.assertEqual(self.client.get("/video/mask_data/0").json()["objects"]["1"]["rle"], [])
+        self.assertEqual(
+            self.post_point(np.indices((17, 19)).sum(axis=0) % 2 == 0).json()["mask_data"]["objects"]["1"]["encoding"],
+            "packed-bits")
+
+    def test_empty_interactive_result_falls_back_to_a_single_frame_propagation(self):
+        fallback = np.array([[True, False], [False, False]])
+        self.masker.propagate_in_video.return_value = {0: {1: fallback}}
+        body = self.post_point(np.zeros((2, 2), dtype=bool)).json()
+        self.assertTrue(body["single_frame_fallback_used"])
+        self.assertEqual(body["mask_data"]["objects"]["1"], encode_live_mask_payload(fallback))
+        self.assertEqual(body["mask_pixel_counts"], {"1": 1})
+        self.masker.propagate_in_video.reset_mock()
+        self.assertFalse(self.post_point(np.ones((2, 2), dtype=bool)).json()["single_frame_fallback_used"])
+        self.masker.propagate_in_video.assert_not_called()
+
+    def test_save_persists_editor_preferences_and_rejects_client_supplied_inputs(self):
         state.annotations.set_prompt(VideoPrompt(**PROMPT))
         write_session_metadata()
         with patch.object(service, "SAVED_ROOT", self.root / "saved"):
-            # Editor state carries preferences only; client copies of inputs are rejected outright.
-            stale = self.client.post("/video/save", json={"name": "review", "interactive_state": {
-                "points": [{"frame_idx": 0, "obj_id": 1, "x": 99, "y": 99, "label": 1}],
-                "live_masks": [{"frame_idx": 0, "obj_id": 1, "height": 1, "width": 1, "counts": [0, 1]}],
-            }})
-            self.assertEqual(stale.status_code, 422)
+            # Editor state carries preferences only; client copies of accepted inputs are rejected outright.
+            rejected = self.client.post("/video/save", json={"name": "review", "interactive_state": {
+                "points": [{"frame_idx": 0, "obj_id": 1, "x": 99, "y": 99, "label": 1}]}})
+            self.assertEqual(rejected.status_code, 422)
             response = self.client.post("/video/save", json={"name": "review", "interactive_state": {
                 "selected_object_id": 1, "interaction_mode": "negative", "current_frame_idx": 0}})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self.metadata()["interactive_state"]["interaction_mode"], "negative")
         self.assertEqual(self.metadata()["annotations"], state.annotations.snapshot())
-
     def test_delete_then_reopen_does_not_resurrect_inputs_or_manifest_masks(self):
         state.annotations.set_prompt(VideoPrompt(**PROMPT))
         write_session_metadata()

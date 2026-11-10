@@ -2,7 +2,7 @@ import { describe, beforeEach, expect, it, vi } from 'vitest';
 import { Subject, of } from 'rxjs';
 import { TestBed } from '@angular/core/testing';
 import { VideoJobsService } from './video-jobs.service';
-import { createWorkflowFixture, makeResponse } from '../testing/workflow-test-helpers';
+import { createWorkflowFixture, makeResponse, mockJob } from '../testing/workflow-test-helpers';
 
 describe('tracking workflows', () => {
   let editor: ReturnType<typeof createWorkflowFixture>['editor'];
@@ -38,47 +38,24 @@ describe('tracking workflows', () => {
   });
 
   it('runs CoTracker without sending a model selector value', async () => {
-    backendMock.trackPromptPoints.mockReturnValue(
-      of({
-        job_id: 'job-track',
-        status: 'queued',
-        operation: 'prompt_tracking',
-        message: 'queued',
-      }),
-    );
-    backendMock.getJob.mockReturnValue(
-      of({
-        job: {
-          job_id: 'job-track',
-          operation: 'prompt_tracking',
-          status: 'completed',
-          stage: 'completed',
-          stage_label: 'Completed',
-          progress: 1,
-          current: 1,
-          total: 1,
-          window_index: null,
-          window_count: null,
-          frame_idx: null,
-          stage_history: [],
-          message: 'done',
-          error: null,
-          started_at: 'now',
-          updated_at: 'now',
-          completed_at: 'now',
-          result: {
-            message: 'Prompt-point tracking completed',
-            model_name: 'cotracker3_online',
-            num_points: 1,
-            num_frames: 2,
-            add_support_grid_used: true,
-            tracking_mode: 'streaming',
-            streaming_frame_threshold: 256,
-            tracking_result_id: 'track-1',
-            state_epoch: 3,
-          },
+    mockJob(
+      backendMock.trackPromptPoints,
+      backendMock.getJob,
+      'prompt_tracking',
+      {
+        result: {
+          message: 'Prompt-point tracking completed',
+          model_name: 'cotracker3_online',
+          num_points: 1,
+          num_frames: 2,
+          add_support_grid_used: true,
+          tracking_mode: 'streaming',
+          streaming_frame_threshold: 256,
+          tracking_result_id: 'track-1',
+          state_epoch: 3,
         },
-      }),
+      },
+      'job-track',
     );
     backendMock.getTrackingResult.mockReturnValue(
       of({

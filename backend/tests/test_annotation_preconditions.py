@@ -2,41 +2,29 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
 import sys
-import tempfile
 import threading
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
-from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from app.factory import create_app
 from core import jobs
-from core.state import BackendState, state
+from core.state import state
 from schemas.video import AnnotationPrecondition
 from sessions.metadata import write_session_metadata
+from support import BackendStateTestCase
 from video import service
 
 
-class AnnotationPreconditionTests(unittest.TestCase):
+class AnnotationPreconditionTests(BackendStateTestCase):
     def setUp(self):
-        self.previous = state.__dict__.copy()
-        state.__dict__.update(BackendState().__dict__)
-        self.tmp = tempfile.TemporaryDirectory()
-        state.active_session_dir = Path(self.tmp.name)
+        super().setUp()
+        state.active_session_dir = self.temp_dir()
         state.active_session_id = "current"
         state.annotations.create_object()
-        state.video_masker = Mock(online_mode=True, default_batch_size=1,
-                                  offload_video_to_cpu=False, offload_state_to_cpu=False)
+        state.video_masker = self.make_masker(offload_video_to_cpu=False)
         write_session_metadata()
-        self.client = TestClient(create_app())
-
-    def tearDown(self):
-        with jobs.current_job_lock:
-            jobs.current_job = None
-        state.__dict__.clear()
-        state.__dict__.update(self.previous)
-        self.tmp.cleanup()
+        self.client = self.make_client(preconditions=False)
 
     def headers(self, session="current", revision=1):
         return {"X-Session-ID": session, "X-Annotation-Revision": str(revision)}
@@ -64,6 +52,23 @@ class AnnotationPreconditionTests(unittest.TestCase):
         state.video_masker.add_new_points_or_box.assert_not_called()
         state.video_masker.clear_all_prompts_in_frame.assert_not_called()
         state.video_masker.reset_state.assert_not_called()
+
+    def test_mutations_are_rejected_while_a_job_is_active_but_reads_are_not(self):
+        self.activate_job()
+        for method, url, body in [
+            ("POST", "/video/objects", None),
+            ("PUT", "/video/objects/1", {"label": "changed", "color": "#123456"}),
+            ("POST", "/video/remove_object?obj_id=1", None),
+            ("POST", "/video/add_new_points_or_box", {"frame_idx": 0, "obj_id": 1, "points": [[1, 2]], "labels": [1]}),
+            ("POST", "/video/clear_all_prompts_in_frame?frame_idx=0&obj_id=1", None),
+            ("POST", "/video/reset_state", None),
+        ]:
+            with self.subTest(url=url):
+                response = self.client.request(method, url, headers=self.headers(), json=body)
+                self.assertEqual(response.status_code, 409)
+                self.assertEqual(response.json()["detail"], "Another operation is already running.")
+        self.assertEqual(state.annotations.revision, 1)
+        self.assertEqual(self.client.get("/video/info").status_code, 200)
 
     def test_preconditions_are_required_and_validated(self):
         for headers in [{}, self.headers(revision=-1), self.headers(revision="bad")]:

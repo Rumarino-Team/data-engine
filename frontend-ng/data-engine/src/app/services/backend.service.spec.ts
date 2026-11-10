@@ -130,135 +130,63 @@ describe('BackendService', () => {
     expect(localStorage.getItem('dataEngineApiUrl')).toBeNull();
   });
 
-  it('calls the health endpoint', () => {
-    const http = {
-      post: vi.fn(),
-      get: vi.fn(() => of({ status: 'ok' })),
-    } as unknown as HttpClient;
-    const service = new BackendService(http);
-
-    service.health().subscribe();
-
-    expect((http.get as any).mock.calls[0][0]).toBe('http://127.0.0.1:8000/health');
-  });
-
-  it('fetches job status by id', () => {
-    const http = {
-      post: vi.fn(),
-      get: vi.fn(() => of({ job: null })),
-    } as unknown as HttpClient;
-    const service = new BackendService(http);
-
-    service.getJob('abc123').subscribe();
-
-    expect((http.get as any).mock.calls[0][0]).toBe('http://127.0.0.1:8000/jobs/abc123');
-  });
-
-  it('starts prompt tracking without a model selector payload', () => {
-    const http = {
-      post: vi.fn(() => of({})),
-      get: vi.fn(),
-    } as unknown as HttpClient;
-    const service = new BackendService(http);
-
-    service
-      .trackPromptPoints(
+  describe('request shapes', () => {
+    const precondition = { session_id: 'session-1', expected_revision: 0 };
+    const preferences = {
+      version: 1,
+      selected_object_id: 1,
+      interaction_mode: 'positive' as const,
+      current_frame_idx: 3,
+    };
+    type Call = (service: BackendService) => { subscribe: () => unknown };
+    const cases: [string, Call, 'get' | 'post', string, unknown?][] = [
+      ['health', (s) => s.health(), 'get', '/health'],
+      ['job status', (s) => s.getJob('abc123'), 'get', '/jobs/abc123'],
+      ['tracking result', (s) => s.getTrackingResult('abc123'), 'get', '/tracking/results/abc123'],
+      [
+        'clear job result',
+        (s) => s.clearJobResult('job-1'),
+        'post',
+        '/jobs/job-1/clear_result',
+        {},
+      ],
+      [
+        'prompt tracking without a model selector',
+        (s) => s.trackPromptPoints({ add_support_grid: true }, precondition),
+        'post',
+        '/tracking/track_prompt_points',
         { add_support_grid: true },
-        { session_id: 'session-1', expected_revision: 0 },
-      )
-      .subscribe();
-
-    expect((http.post as any).mock.calls[0][0]).toBe(
-      'http://127.0.0.1:8000/tracking/track_prompt_points',
-    );
-    expect((http.post as any).mock.calls[0][1]).toEqual({ add_support_grid: true });
-    expect((http.post as any).mock.calls[0][1]).not.toHaveProperty('model_name');
-  });
-
-  it('fetches a persisted tracking result by id', () => {
-    const http = {
-      post: vi.fn(),
-      get: vi.fn(() => of({ result: {} })),
-    } as unknown as HttpClient;
-    const service = new BackendService(http);
-
-    service.getTrackingResult('abc123').subscribe();
-
-    expect((http.get as any).mock.calls[0][0]).toBe(
-      'http://127.0.0.1:8000/tracking/results/abc123',
-    );
-  });
-
-  it('clears a completed job result by id', () => {
-    const http = {
-      post: vi.fn(() => of({ cleared: true })),
-      get: vi.fn(),
-    } as unknown as HttpClient;
-    const service = new BackendService(http);
-
-    service.clearJobResult('job-1').subscribe();
-
-    expect((http.post as any).mock.calls[0][0]).toBe(
-      'http://127.0.0.1:8000/jobs/job-1/clear_result',
-    );
-    expect((http.post as any).mock.calls[0][1]).toEqual({});
-  });
-
-  it('saves a video session by name', () => {
-    const http = {
-      post: vi.fn(() => of({})),
-      get: vi.fn(),
-    } as unknown as HttpClient;
-    const service = new BackendService(http);
-
-    service.saveVideoSession({ name: 'review-run' }).subscribe();
-
-    expect((http.post as any).mock.calls[0][0]).toBe('http://127.0.0.1:8000/video/save');
-    expect((http.post as any).mock.calls[0][1]).toEqual({ name: 'review-run' });
-  });
-
-  it('re-saves without a name and requests Save As explicitly', () => {
-    const http = {
-      post: vi.fn(() => of({})),
-      get: vi.fn(),
-    } as unknown as HttpClient;
-    const service = new BackendService(http);
-
-    service.saveVideoSession({}).subscribe();
-    service.saveVideoSession({ name: 'copy', saveAs: true }).subscribe();
-
-    expect((http.post as any).mock.calls[0][1]).toEqual({});
-    expect((http.post as any).mock.calls[1][1]).toEqual({ name: 'copy', save_as: true });
-  });
-
-  it('sends interactive state when saving a session snapshot', () => {
-    const http = {
-      post: vi.fn(() => of({})),
-      get: vi.fn(),
-    } as unknown as HttpClient;
-    const service = new BackendService(http);
-
-    service
-      .saveVideoSession(
+      ],
+      [
+        'first save by name',
+        (s) => s.saveVideoSession({ name: 'review-run' }),
+        'post',
+        '/video/save',
         { name: 'review-run' },
-        {
-          version: 1,
-          selected_object_id: 1,
-          interaction_mode: 'positive',
-          current_frame_idx: 3,
-        },
-      )
-      .subscribe();
+      ],
+      ['re-save without a name', (s) => s.saveVideoSession({}), 'post', '/video/save', {}],
+      [
+        'Save As',
+        (s) => s.saveVideoSession({ name: 'copy', saveAs: true }),
+        'post',
+        '/video/save',
+        { name: 'copy', save_as: true },
+      ],
+      [
+        'save with editor preferences',
+        (s) => s.saveVideoSession({ name: 'review-run' }, preferences),
+        'post',
+        '/video/save',
+        { name: 'review-run', interactive_state: preferences },
+      ],
+    ];
 
-    expect((http.post as any).mock.calls[0][0]).toBe('http://127.0.0.1:8000/video/save');
-    expect((http.post as any).mock.calls[0][1]).toEqual({
-      name: 'review-run',
-      interactive_state: {
-        version: 1,
-        selected_object_id: 1,
-        interaction_mode: 'positive',
-        current_frame_idx: 3,
-      },
+    it.each(cases)('%s', (_name, call, method, path, body) => {
+      const http = { get: vi.fn(() => of({})), post: vi.fn(() => of({})) };
+      call(new BackendService(http as unknown as HttpClient)).subscribe();
+      const request = http[method].mock.calls[0] as unknown[];
+      expect(request[0]).toBe(`http://127.0.0.1:8000${path}`);
+      if (body !== undefined) expect(request[1]).toEqual(body);
     });
   });
 });

@@ -1,37 +1,26 @@
 import json
 import shutil
 import sys
-import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
-
-from fastapi.testclient import TestClient
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from app.factory import create_app
 from core.errors import OperationError
-from core.state import BackendState, state
+from core.state import state
 from schemas.video import VideoInitStateRequest
 from sessions.metadata import write_session_metadata
+from support import BackendStateTestCase
 from video import service
 
 
-class SessionReplacementTests(unittest.TestCase):
+class SessionReplacementTests(BackendStateTestCase):
     def setUp(self):
-        self.previous = state.__dict__.copy()
-        self.tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self.tmp.name)
-        self.old_dir = self.root / "old"
-        (self.old_dir / "frames").mkdir(parents=True)
-        (self.old_dir / "masks").mkdir()
-        (self.old_dir / "frames" / "00000.jpg").touch()
+        super().setUp()
+        self.root = self.temp_dir()
         self.old_masker = self.masker()
-        state.__dict__.update(BackendState(
-            active_session_id="old", active_session_dir=self.old_dir,
-            video_dir=str(self.old_dir / "frames"), video_frame_files=["00000.jpg"],
-            video_masker=self.old_masker, video_state_epoch=4,
-        ).__dict__)
+        self.old_dir = self.working_session(
+            self.root / "old", session_id="old", video_masker=self.old_masker, video_state_epoch=4)
         state.annotations.create_object()
         write_session_metadata()
         self.before = state.annotations.snapshot()
@@ -39,19 +28,13 @@ class SessionReplacementTests(unittest.TestCase):
         self.source = self.root / "source"
         self.source.mkdir()
         (self.source / "00000.jpg").touch()
-        self.cache = patch("video.io.SESSION_CACHE_ROOT", self.root / "candidates")
-        self.cache.start()
-        self.client = TestClient(create_app())
-
-    def tearDown(self):
-        self.cache.stop()
-        state.__dict__.clear()
-        state.__dict__.update(self.previous)
-        self.tmp.cleanup()
+        cache = patch("video.io.SESSION_CACHE_ROOT", self.root / "candidates")
+        cache.start()
+        self.addCleanup(cache.stop)
+        self.client = self.make_client(preconditions=False)
 
     def masker(self):
-        return Mock(online_mode=True, default_batch_size=1,
-                    offload_video_to_cpu=True, offload_state_to_cpu=True)
+        return self.make_masker(offload_state_to_cpu=True)
 
     def run_init(self, path=None):
         return service.run_video_init_job(VideoInitStateRequest(video_frames_dir=str(path or self.source)))

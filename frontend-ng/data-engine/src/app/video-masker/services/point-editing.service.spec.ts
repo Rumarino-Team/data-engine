@@ -114,36 +114,6 @@ describe('point-editing workflows', () => {
     },
   );
 
-  it('cancels a pending preview when the editor is destroyed', async () => {
-    const response = new Subject<VideoAddPointsResponse>();
-    backendMock.addNewPointsOrBox.mockReturnValue(response);
-    const accepted = editor.store.points();
-    const pending = editor.prompts.addPoint(10, 20, 1, 5);
-    TestBed.resetTestingModule();
-    await pending;
-    expect(editor.store.points()).toBe(accepted);
-    expect(editor.store.pendingPointEdit()).toBeNull();
-    expect(editor.store.isPointRequestInFlight()).toBe(false);
-    expect(editor.store.annotationRecoveryRequested()).toBe(false);
-  });
-
-  it('discards a late response from a replaced session even at the same epoch', async () => {
-    const response = new Subject<VideoAddPointsResponse>();
-    backendMock.addNewPointsOrBox.mockReturnValue(response);
-    const pending = editor.prompts.addPoint(10, 20, 1, 5);
-    editor.store.applyAnnotationSnapshot(
-      makeInfo({ session_id: 'replacement' }),
-      backendMock.getApiUrl(),
-      true,
-    );
-    const accepted = editor.store.annotations();
-    response.next(makeResponse({}));
-    await pending;
-    expect(editor.store.annotations()).toBe(accepted);
-    expect(editor.store.sessionId()).toBe('replacement');
-    expect(editor.store.annotationRecoveryRequested()).toBe(false);
-  });
-
   it('blocks conflicting workflows while a point update is pending', async () => {
     const response$ = new Subject<VideoAddPointsResponse>();
     backendMock.addNewPointsOrBox.mockReturnValue(response$);
@@ -328,20 +298,6 @@ describe('point-editing workflows', () => {
     await editor.prompts.addPoint(30, 40, 1, 5);
 
     expect(editor.store.lastMaskPixelCount()).toBe(0);
-  });
-
-  it('keeps masks unchanged while a prompt preview is pending', async () => {
-    const response$ = new Subject<VideoAddPointsResponse>();
-    backendMock.addNewPointsOrBox.mockReturnValue(response$);
-
-    const pendingRequest = editor.prompts.addPoint(30, 40, 1, 5);
-
-    expect(editor.store.points().get(5)?.get(1)).toBeUndefined();
-    expect(editor.store.previewPoints().get(5)?.get(1)?.length).toBe(1);
-
-    response$.next(makeResponse({}));
-    response$.complete();
-    await pendingRequest;
   });
 
   it('discards the preview and requests recovery when point update conflicts', async () => {

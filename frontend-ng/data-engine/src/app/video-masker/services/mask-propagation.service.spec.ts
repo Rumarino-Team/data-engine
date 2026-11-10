@@ -1,7 +1,6 @@
 import { cachedMasks, seedMasks } from '../testing/workflow-test-helpers';
 import { describe, beforeEach, expect, it } from 'vitest';
-import { of } from 'rxjs';
-import { createWorkflowFixture } from '../testing/workflow-test-helpers';
+import { createWorkflowFixture, mockJob } from '../testing/workflow-test-helpers';
 
 describe('mask-propagation workflows', () => {
   let editor: ReturnType<typeof createWorkflowFixture>['editor'];
@@ -12,52 +11,29 @@ describe('mask-propagation workflows', () => {
   });
 
   it('invalidates rendering caches and refetches backend-selected masks after propagation', async () => {
-    backendMock.propagateInVideo.mockReturnValue(
-      of({
-        job_id: 'job-propagate',
-        status: 'queued',
-        operation: 'mask_propagation',
-        message: 'queued',
-      }),
-    );
-    backendMock.getJob.mockReturnValue(
-      of({
-        job: {
-          job_id: 'job-propagate',
-          operation: 'mask_propagation',
-          status: 'completed',
-          stage: 'completed',
-          stage_label: 'Completed',
-          progress: 1,
-          current: 2,
-          total: 2,
-          window_index: null,
-          window_count: null,
-          frame_idx: null,
-          stage_history: [],
-          message: 'done',
-          error: null,
-          started_at: 'now',
-          updated_at: 'now',
-          completed_at: 'now',
-          result: {
-            video_segments: {},
-            saved_mask_paths: {},
-            video_segments_total_frames: 2,
-            video_segments_returned_frames: 0,
-            video_segments_returned_mask_values: 0,
-            video_segments_truncated: false,
-            'state.mask_manifest_path': '/tmp/session/masks/manifest.json',
-            state_epoch: 3,
-            saved_state: {
-              checkpoint_id: 'cp-1',
-              display_name: 'Bedroom',
-              saved_at: 'then',
-              dirty: true,
-            },
+    mockJob(
+      backendMock.propagateInVideo,
+      backendMock.getJob,
+      'mask_propagation',
+      {
+        result: {
+          video_segments: {},
+          saved_mask_paths: {},
+          video_segments_total_frames: 2,
+          video_segments_returned_frames: 0,
+          video_segments_returned_mask_values: 0,
+          video_segments_truncated: false,
+          'state.mask_manifest_path': '/tmp/session/masks/manifest.json',
+          state_epoch: 3,
+          saved_state: {
+            checkpoint_id: 'cp-1',
+            display_name: 'Bedroom',
+            saved_at: 'then',
+            dirty: true,
           },
         },
-      }),
+      },
+      'job-propagate',
     );
     editor.store.isInitialized.set(true);
     editor.store.numFrames.set(5);

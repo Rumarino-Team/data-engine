@@ -1,6 +1,5 @@
 import json
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -8,32 +7,21 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.annotations import SessionAnnotations
-from core.state import BackendState, state
+from core.state import state
 from sessions import artifacts
 from sessions.metadata import write_session_metadata
+from support import BackendStateTestCase
 from video.masks import retain_interactive_masks
 
 OBJECT = {"id": 1, "label": "Hand", "color": "#ff0000"}
 
 
-class ArtifactLifecycleTests(unittest.TestCase):
+class ArtifactLifecycleTests(BackendStateTestCase):
     def setUp(self):
-        self.previous_state = state.__dict__.copy()
-        state.__dict__.update(BackendState().__dict__)
-        self.tmp = tempfile.TemporaryDirectory()
-        self.session = Path(self.tmp.name) / "working"
+        super().setUp()
+        self.session = self.working_session(annotations=SessionAnnotations(objects={1: OBJECT}))
         self.masks = self.session / "masks"
-        self.masks.mkdir(parents=True)
-        state.active_session_dir = self.session
-        state.active_session_id = "session"
-        state.video_frame_files = ["00000.jpg"]
-        state.annotations = SessionAnnotations(objects={1: OBJECT})
         artifacts._read_manifest_overlays.cache_clear()
-
-    def tearDown(self):
-        state.__dict__.clear()
-        state.__dict__.update(self.previous_state)
-        self.tmp.cleanup()
 
     def names(self, directory):
         return sorted(path.relative_to(self.session).as_posix() for path in (self.session / directory).rglob("*") if path.is_file())

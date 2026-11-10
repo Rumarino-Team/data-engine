@@ -1,6 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 import { Observable, map, of } from 'rxjs';
-import { vi } from 'vitest';
+import { vi, type Mock } from 'vitest';
 import {
   BackendService,
   VideoAddPointsResponse,
@@ -148,6 +148,77 @@ export const makeInfo = (overrides: Partial<VideoInfoResponse> = {}): VideoInfoR
   frame_files: [],
   ...overrides,
 });
+
+/** A /jobs/{id} response; defaults to a finished job with no result. */
+export function jobResponse(operation: string, job: Record<string, unknown> = {}, jobId = 'job-1') {
+  return {
+    job: {
+      job_id: jobId,
+      operation,
+      status: 'completed',
+      stage: 'completed',
+      stage_label: 'Completed',
+      progress: 1,
+      current: null,
+      total: null,
+      window_index: null,
+      window_count: null,
+      frame_idx: null,
+      stage_history: [],
+      message: 'done',
+      error: null,
+      started_at: 'now',
+      updated_at: 'now',
+      completed_at: 'now',
+      result: null,
+      ...job,
+    },
+  };
+}
+
+/** Makes `start` return a queued job and the job poll report `job` as already finished. */
+export function mockJob(
+  start: Mock,
+  getJob: Mock,
+  operation: string,
+  job: Record<string, unknown> = {},
+  jobId = 'job-1',
+): void {
+  start.mockReturnValue(of({ job_id: jobId, status: 'queued', operation, message: 'queued' }));
+  getJob.mockReturnValue(of(jobResponse(operation, job, jobId)));
+}
+
+export function initResult(
+  overrides: Partial<VideoInitStateResponse> = {},
+): VideoInitStateResponse {
+  return {
+    message: 'Video state initialized successfully',
+    num_frames: 12,
+    resolved_video_frames_dir: 'C:/frames',
+    source_video_path: null,
+    online_mode: true,
+    batch_size: 32,
+    offload_video_to_cpu: true,
+    offload_state_to_cpu: true,
+    state_epoch: 7,
+    ...overrides,
+  };
+}
+
+/** Next initVideoState call starts a job that finishes with `result` merged over the defaults. */
+export function mockInitJob(
+  backendMock: ReturnType<typeof createBackendMocks>['backendMock'],
+  result: Partial<VideoInitStateResponse> = {},
+  jobId = 'job-1',
+): void {
+  mockJob(
+    backendMock.initVideoState,
+    backendMock.getJob,
+    'video_init',
+    { result: initResult(result) },
+    jobId,
+  );
+}
 
 export function createBackendMocks() {
   const backendMock = {

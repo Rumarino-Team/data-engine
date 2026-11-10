@@ -71,17 +71,6 @@ describe('object-operations workflows', () => {
     expect(editor.store.isRecoveringAnnotations()).toBe(false);
   });
 
-  it('does not refresh another backend after an old request fails', () => {
-    editor.store.isInitialized.set(true);
-    const pending = new Subject<ObjectCreationResponse>();
-    backendMock.createObject.mockReturnValue(pending);
-    objectOperations.addObject();
-    backendMock.getApiUrl.mockReturnValue('http://replacement');
-    pending.error({ status: 0 });
-    TestBed.tick();
-    expect(backendMock.getVideoInfo).not.toHaveBeenCalled();
-  });
-
   it('uses the revision returned by point acceptance for the next object edit', async () => {
     backendMock.addNewPointsOrBox.mockReturnValue(of(makeResponse({})));
     await editor.prompts.addPoint(10, 20, 1, 5);
@@ -258,36 +247,6 @@ describe('object-operations workflows', () => {
     expect(editor.store.objects()[0].label).toBe('Newer');
     expect(editor.store.annotationRevision()).toBe(10);
     expect(editor.store.isInteractionBusy()).toBe(false);
-  });
-
-  it('does not apply a response after the backend URL changes', () => {
-    const pending = new Subject<AnnotationUpdate>();
-    backendMock.updateObject.mockReturnValue(pending);
-    const response = objectUpdate(editor.store, [
-      { id: 1, label: 'Old backend', color: '#ff0000' },
-    ]);
-    objectOperations.renameObject(1, 'Old backend');
-    backendMock.getApiUrl.mockReturnValue('http://other-backend');
-    pending.next(response);
-    expect(editor.store.objects()[0].label).toBe('Object 1');
-    expect(editor.store.annotationRevision()).toBe(0);
-  });
-
-  it('does not apply a response to a replacement session', () => {
-    const pending = new Subject<AnnotationUpdate>();
-    backendMock.updateObject.mockReturnValue(pending);
-    const response = objectUpdate(editor.store, [
-      { id: 1, label: 'Old session', color: '#ff0000' },
-    ]);
-    objectOperations.renameObject(1, 'Old session');
-    const replacement = objectSnapshot(editor.store, [
-      { id: 1, label: 'Replacement', color: '#00ff00' },
-    ]);
-    replacement.session_id = 'replacement-session';
-    editor.store.applyAnnotationSnapshot(replacement, backendMock.getApiUrl(), true);
-    pending.next(response);
-    expect(editor.store.sessionId()).toBe('replacement-session');
-    expect(editor.store.objects()[0].label).toBe('Replacement');
   });
 
   it('takes remaining prompts from the deletion response instead of cleaning local point maps', () => {

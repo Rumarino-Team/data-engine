@@ -1,4 +1,3 @@
-import tempfile
 import unittest
 from unittest.mock import patch
 from pathlib import Path
@@ -16,27 +15,20 @@ from tracking.results import (
     save_prompt_tracking_result,
 )
 from tracking.guidance import TrackingGuidance, TrackedGuidancePoint, load_latest_tracking_guidance
+from support import BackendStateTestCase
 from utils import load_mask_manifest
 
 
-class TrackingResultTests(unittest.TestCase):
+class TrackingResultTests(BackendStateTestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.session_path = Path(self.tmp.name)
+        super().setUp()
+        self.session_path = self.temp_dir()
         state.active_session_dir = self.session_path
         state.active_session_id = "session-1"
         state.video_frame_files = ["00000.jpg", "00001.jpg"]
         state.video_state_epoch = 1
-        state.session_metadata = {}
         state.annotations = SessionAnnotations(objects={1: {"id": 1, "label": "Object 1", "color": "#ff0000"}},
             prompts=[{"frame_idx": 0, "obj_id": 1, "points": [[10, 20]], "labels": [1]}])
-
-    def tearDown(self):
-        state.active_session_dir = None
-        state.active_session_id = None
-        state.video_frame_files = []
-        state.annotations = SessionAnnotations(objects={1: {"id": 1, "label": "Object 1", "color": "#ff0000"}}, prompts=[])
-        self.tmp.cleanup()
 
     def test_save_and_read_tracking_result(self):
         saved = save_prompt_tracking_result(

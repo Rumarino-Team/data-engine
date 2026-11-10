@@ -4,6 +4,7 @@ import { SavedState, VideoSaveResponse } from '../../services/backend.service';
 import {
   createWorkflowFixture,
   makeInfo,
+  mockInitJob,
   updateWithSavedState,
 } from '../testing/workflow-test-helpers';
 
@@ -89,65 +90,51 @@ describe('saving workflows', () => {
     expect(editor.store.toasts()[0].title).toBe('Missing save name');
   });
 
-  it('sends the typed name on the first save and records the checkpoint', async () => {
-    editor.store.savedState.set(saved({ checkpoint_id: null, display_name: null, dirty: true }));
-    editor.store.saveName.set('  Bedroom  ');
-    backendMock.saveVideoSession.mockReturnValue(of(saveResponse()));
-
-    await expect(editor.sessions.save()).resolves.toBe(true);
-
-    expect(backendMock.saveVideoSession.mock.calls[0][0]).toEqual({
-      name: 'Bedroom',
+  it.each([
+    {
+      case: 'a first save sends the typed name',
+      state: saved({ checkpoint_id: null, display_name: null, dirty: true }),
+      typed: '  Bedroom  ',
       saveAs: false,
-    });
-    expect(editor.store.savedState()).toEqual(saved());
-    expect(editor.store.saveStatus()).toBe('saved');
-    expect(editor.store.saveName()).toBe('Bedroom');
-  });
-
-  it('re-saves without a name and renames only when the name changed', async () => {
-    editor.store.savedState.set(saved({ dirty: true }));
-    editor.store.saveName.set('Bedroom');
-    backendMock.saveVideoSession.mockReturnValue(of(saveResponse()));
-
-    await editor.sessions.save();
-    expect(backendMock.saveVideoSession.mock.calls[0][0]).toEqual({
-      name: undefined,
+      request: { name: 'Bedroom', saveAs: false },
+    },
+    {
+      case: 'a re-save with an unchanged name sends no name',
+      state: saved({ dirty: true }),
+      typed: 'Bedroom',
       saveAs: false,
-    });
-
-    editor.store.saveName.set('Kitchen');
-    backendMock.saveVideoSession.mockReturnValue(
-      of(saveResponse({ name: 'Kitchen', saved_state: saved({ display_name: 'Kitchen' }) })),
-    );
-    await editor.sessions.save();
-    expect(backendMock.saveVideoSession.mock.calls[1][0]).toEqual({
-      name: 'Kitchen',
+      request: { name: undefined, saveAs: false },
+    },
+    {
+      case: 'a re-save with a new name renames',
+      state: saved({ dirty: true }),
+      typed: 'Kitchen',
       saveAs: false,
-    });
-    expect(editor.store.saveName()).toBe('Kitchen');
-  });
-
-  it('Save As sends the name with save_as and adopts the new checkpoint', async () => {
-    editor.store.savedState.set(saved());
-    editor.store.saveName.set('Bedroom copy');
-    backendMock.saveVideoSession.mockReturnValue(
-      of(
-        saveResponse({
-          name: 'Bedroom copy',
-          checkpoint_id: 'cp-2',
-          saved_state: saved({ checkpoint_id: 'cp-2', display_name: 'Bedroom copy' }),
-        }),
-      ),
-    );
-
-    await editor.sessions.save(true);
-
-    expect(backendMock.saveVideoSession.mock.calls[0][0]).toEqual({
-      name: 'Bedroom copy',
+      request: { name: 'Kitchen', saveAs: false },
+    },
+    {
+      case: 'Save As sends the name with save_as',
+      state: saved(),
+      typed: 'Bedroom copy',
       saveAs: true,
+      request: { name: 'Bedroom copy', saveAs: true },
+    },
+  ])('$case and adopts the accepted checkpoint', async ({ state, typed, saveAs, request }) => {
+    editor.store.savedState.set(state);
+    editor.store.saveName.set(typed);
+    const name = request.name ?? 'Bedroom';
+    const response = saveResponse({
+      name,
+      checkpoint_id: saveAs ? 'cp-2' : 'cp-1',
+      saved_state: saved({ checkpoint_id: saveAs ? 'cp-2' : 'cp-1', display_name: name }),
     });
-    expect(editor.store.savedState()?.checkpoint_id).toBe('cp-2');
+    backendMock.saveVideoSession.mockReturnValue(of(response));
+
+    await expect(editor.sessions.save(saveAs)).resolves.toBe(true);
+
+    expect(backendMock.saveVideoSession.mock.calls[0][0]).toEqual(request);
+    expect(editor.store.savedState()).toEqual(response.saved_state);
+    expect(editor.store.saveName()).toBe(name);
   });
 
   it('keeps the unsaved state and reports a failed save', async () => {
@@ -187,43 +174,7 @@ describe('saving workflows', () => {
   });
 
   it('adopts the saved name and state of a loaded session', async () => {
-    backendMock.initVideoState.mockReturnValue(
-      of({ job_id: 'job-1', status: 'queued', operation: 'video_init', message: 'queued' }),
-    );
-    backendMock.getJob.mockReturnValue(
-      of({
-        job: {
-          job_id: 'job-1',
-          operation: 'video_init',
-          status: 'completed',
-          stage: 'completed',
-          stage_label: 'Completed',
-          progress: 1,
-          current: 10,
-          total: 10,
-          window_index: null,
-          window_count: null,
-          frame_idx: null,
-          stage_history: [],
-          message: 'done',
-          error: null,
-          started_at: 'now',
-          updated_at: 'now',
-          completed_at: 'now',
-          result: {
-            message: 'Video state initialized successfully',
-            num_frames: 10,
-            resolved_video_frames_dir: 'C:/work/frames',
-            online_mode: true,
-            batch_size: 1,
-            offload_video_to_cpu: true,
-            offload_state_to_cpu: true,
-            state_epoch: 3,
-            source_type: 'saved_session',
-          },
-        },
-      }),
-    );
+    mockInitJob(backendMock, { num_frames: 10, state_epoch: 3, source_type: 'saved_session' });
     backendMock.getVideoInfo.mockReturnValue(of(makeInfo({ saved_state: saved() })));
     editor.store.isInitialized.set(false);
     editor.store.saveName.set('stale');

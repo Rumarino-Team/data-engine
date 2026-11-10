@@ -231,14 +231,6 @@ describe('session annotation snapshots', () => {
     expect(editor.store.annotations()!.prompts.map((prompt) => prompt.obj_id)).toEqual([1]);
   });
 
-  it('rejects a snapshot with an older accepted revision', async () => {
-    const { editor, backendMock } = fixture;
-    connect(5);
-    backendMock.getVideoInfo.mockReturnValue(of(snapshot(4)));
-    expect(await editor.sessions.refreshAnnotations()).toBe(false);
-    expect(editor.store.annotationRevision()).toBe(5);
-  });
-
   it('keeps a newer response when an earlier snapshot request finishes last', async () => {
     const { editor, backendMock } = fixture;
     connect();
@@ -252,15 +244,6 @@ describe('session annotation snapshots', () => {
     first.next(snapshot(2));
     expect(await older).toBe(false);
     expect(editor.store.annotationRevision()).toBe(3);
-  });
-
-  it('does not adopt a replacement backend session during recovery', async () => {
-    const { editor, backendMock } = fixture;
-    connect();
-    backendMock.getVideoInfo.mockReturnValue(of({ ...snapshot(), session_id: 'other-session' }));
-    expect(await editor.sessions.refreshAnnotations()).toBe(false);
-    expect(editor.store.sessionId()).toBe('session-1');
-    expect(editor.store.isInitialized()).toBe(false);
   });
 
   it('discards a response after the configured backend changes', async () => {
@@ -319,13 +302,56 @@ describe('session annotation snapshots', () => {
     expect(editor.store.objects()[0].label).toBe('Draft label');
   });
 
-  it('does not apply a snapshot from an earlier predictor epoch', async () => {
+  it.each([
+    {
+      reason: 'an older accepted revision',
+      prepare: () => fixture.editor.store.applyAnnotationSnapshot(snapshot(5), apiUrl, true),
+      info: () => snapshot(4),
+      expected: { revision: 5, epoch: 3, initialized: true },
+    },
+    {
+      reason: 'an earlier predictor epoch',
+      prepare: () => fixture.editor.store.updateStateEpoch(4, 'rebuild'),
+      info: () => snapshot(2),
+      expected: { revision: 1, epoch: 4, initialized: true },
+    },
+    {
+      reason: 'a replacement backend session',
+      prepare: () => undefined,
+      info: () => ({ ...snapshot(), session_id: 'other-session' }),
+      expected: { revision: 1, epoch: 3, initialized: false },
+    },
+  ])('recovery does not adopt $reason', async ({ prepare, info, expected }) => {
     const { editor, backendMock } = fixture;
     connect();
-    editor.store.updateStateEpoch(4, 'rebuild');
-    backendMock.getVideoInfo.mockReturnValue(of(snapshot(2)));
+    prepare();
+    editor.store.isInitialized.set(true);
+    backendMock.getVideoInfo.mockReturnValue(of(info()));
     expect(await editor.sessions.refreshAnnotations()).toBe(false);
-    expect(editor.store.stateEpoch()).toBe(4);
+    expect(editor.store.sessionId()).toBe('session-1');
+    expect(editor.store.annotationRevision()).toBe(expected.revision);
+    expect(editor.store.stateEpoch()).toBe(expected.epoch);
+    expect(editor.store.isInitialized()).toBe(expected.initialized);
+  });
+
+  it.each([
+    [
+      'an object label',
+      (info: VideoInfoResponse) => (info.annotations!.objects['1'].label = 'Renamed hand'),
+    ],
+    [
+      'a box input without any point change',
+      (info: VideoInfoResponse) => (info.annotations!.prompts[0].box = [0, 0, 30, 30]),
+    ],
+  ])('recovery refetches backend masks when %s changes', async (_change, mutate) => {
+    const { editor, backendMock } = fixture;
+    connect();
+    seedMasks(editor, new Map([[2, new Map([[1, [[true]]]])]]));
+    const changed = snapshot(2);
+    mutate(changed);
+    backendMock.getVideoInfo.mockReturnValue(of(changed));
+    expect(await editor.sessions.refreshAnnotations()).toBe(true);
+    expect(cachedMasks(editor.framePipeline).size).toBe(0);
   });
 
   it('preserves the last accepted cache when recovery fails', async () => {
@@ -336,29 +362,6 @@ describe('session annotation snapshots', () => {
     expect(await editor.sessions.refreshAnnotations()).toBe(false);
     expect(editor.store.annotations()).toBe(accepted);
     expect(editor.store.toasts()[0].title).toBe('Annotation refresh failed');
-  });
-
-  it('refetches backend masks when recovery changes an object label', async () => {
-    const { editor, backendMock } = fixture;
-    connect();
-    const masks = new Map([[2, new Map([[1, [[true]]]])]]);
-    seedMasks(editor, masks);
-    const renamed = snapshot(2);
-    renamed.annotations!.objects['1'].label = 'Renamed hand';
-    backendMock.getVideoInfo.mockReturnValue(of(renamed));
-    expect(await editor.sessions.refreshAnnotations()).toBe(true);
-    expect(cachedMasks(editor.framePipeline).size).toBe(0);
-  });
-
-  it('invalidates live masks when accepted box inputs change without changing points', async () => {
-    const { editor, backendMock } = fixture;
-    connect();
-    seedMasks(editor, new Map([[2, new Map([[1, [[true]]]])]]));
-    const boxed = snapshot(2);
-    boxed.annotations!.prompts[0].box = [0, 0, 30, 30];
-    backendMock.getVideoInfo.mockReturnValue(of(boxed));
-    expect(await editor.sessions.refreshAnnotations()).toBe(true);
-    expect(cachedMasks(editor.framePipeline).size).toBe(0);
   });
 
   it('refreshes once on reconnect and defers that recovery while editing', async () => {
