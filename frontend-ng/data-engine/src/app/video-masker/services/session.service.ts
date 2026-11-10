@@ -187,6 +187,7 @@ export class SessionService {
       this.framePipeline.clearFrameCaches();
       this.store.selectedObjectId.set(null);
       this.store.applyAnnotationSnapshot(info, backendUrl, true);
+      this.store.saveName.set(info.saved_state?.display_name ?? '');
       this.store.numFrames.set(info.num_frames);
       this.store.hasManifestMasks.set(Boolean(res.restored_session?.has_mask_manifest));
       this.restoreInteractiveSessionState(res.restored_session);
@@ -257,27 +258,48 @@ export class SessionService {
     };
   }
 
-  save(): void {
-    if (this.isBusy) return;
+  /**
+   * Publishes the working state. Without `saveAs`, a session with a checkpoint re-saves it (the
+   * typed name only renames it); a never-saved session, or `saveAs`, needs a name and creates a
+   * new checkpoint. Resolves true once the backend accepted the save.
+   */
+  async save(saveAs = false): Promise<boolean> {
+    if (this.isBusy || !this.store.isInitialized()) return false;
+    const saved = this.store.savedState();
     const name = this.store.saveName().trim();
-    if (!name) {
+    const needsName = saveAs || !saved?.checkpoint_id;
+    if (needsName && !name) {
       this.toast.show('warning', 'Missing save name', 'Enter a name for this saved session.');
-      return;
+      return false;
     }
-    const interactiveState = this.buildSnapshot();
+    const sendName = needsName || (name !== '' && name !== saved?.display_name);
+    const backendUrl = this.backend.getApiUrl();
+    const sessionId = this.store.sessionId();
     this.store.isLoading.set(true);
-    firstValueFrom(this.backend.saveVideoSession(name, interactiveState))
-      .then((response: VideoSaveResponse) => {
-        this.store.updateStateEpoch(response.state_epoch, 'save');
-        this.store.saveName.set(response.name);
-        this.toast.show('success', 'Session saved', `Saved to ${response.saved_path}`);
-      })
-      .catch((error: unknown) => {
-        console.error(error);
-        this.toast.show('error', 'Save failed', getErrorMessage(error, 'Session save failed'));
-      })
-      .finally(() => {
-        this.store.isLoading.set(false);
-      });
+    try {
+      const response: VideoSaveResponse = await firstValueFrom(
+        this.backend.saveVideoSession(
+          { name: sendName ? name : undefined, saveAs },
+          this.buildSnapshot(),
+        ),
+      );
+      if (
+        this.destroyRef.destroyed ||
+        backendUrl !== this.backend.getApiUrl() ||
+        sessionId !== this.store.sessionId()
+      )
+        return true;
+      this.store.updateStateEpoch(response.state_epoch, 'save');
+      this.store.savedState.set(response.saved_state);
+      this.store.saveName.set(response.name);
+      this.toast.show('success', 'Session saved', `Saved to ${response.saved_path}`);
+      return true;
+    } catch (error: unknown) {
+      console.error(error);
+      this.toast.show('error', 'Save failed', getErrorMessage(error, 'Session save failed'));
+      return false;
+    } finally {
+      this.store.isLoading.set(false);
+    }
   }
 }

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BackendService } from '../../services/backend.service';
 import { BackendConnectionService } from './backend-connection.service';
 import { FramePipelineService } from './frame-pipeline.service';
+import { SessionLeaveService } from './session-leave.service';
 import { VideoMaskerStateStore } from './video-masker-state.store';
 
 describe('BackendConnectionService health monitoring', () => {
@@ -13,17 +14,21 @@ describe('BackendConnectionService health monitoring', () => {
     setApiUrl: vi.fn((url: string) => url),
     resetApiUrl: vi.fn(() => 'http://default'),
   };
+  const leave = { confirmLeave: vi.fn(async (reason: string) => reason !== '') };
   beforeEach(() => {
     vi.useFakeTimers();
     backend.health.mockReset();
     backend.setApiUrl.mockClear();
     backend.resetApiUrl.mockClear();
+    leave.confirmLeave.mockReset();
+    leave.confirmLeave.mockResolvedValue(true);
     TestBed.configureTestingModule({
       providers: [
         BackendConnectionService,
         { provide: FramePipelineService, useValue: { clearFrameCaches: vi.fn() } },
         VideoMaskerStateStore,
         { provide: BackendService, useValue: backend },
+        { provide: SessionLeaveService, useValue: leave },
       ],
     });
   });
@@ -129,5 +134,76 @@ describe('BackendConnectionService health monitoring', () => {
     expect(store.sessionId()).toBeNull();
     expect(store.apiUrlInput()).toBe('http://default');
     expect(TestBed.inject(FramePipelineService).clearFrameCaches).toHaveBeenCalledOnce();
+  });
+
+  describe('unsaved changes', () => {
+    const openDirtySession = () => {
+      backend.health.mockReturnValue(of({}));
+      const service = TestBed.inject(BackendConnectionService);
+      const store = TestBed.inject(VideoMaskerStateStore);
+      store.isInitialized.set(true);
+      store.sessionId.set('old-session');
+      store.savedState.set({
+        checkpoint_id: 'cp-1',
+        display_name: 'Bedroom',
+        saved_at: 'then',
+        dirty: true,
+      });
+      return { service, store };
+    };
+
+    it('asks before a backend switch drops unsaved changes, then switches once confirmed', async () => {
+      const { service, store } = openDirtySession();
+      store.apiUrlInput.set('http://new');
+      service.applyApiUrl();
+      expect(leave.confirmLeave).toHaveBeenCalledWith('switch backends');
+      expect(backend.setApiUrl).not.toHaveBeenCalled();
+      expect(store.sessionId()).toBe('old-session');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(backend.setApiUrl).toHaveBeenCalledWith('http://new');
+      expect(store.sessionId()).toBeNull();
+    });
+
+    it('keeps the backend and the session when the switch is declined', async () => {
+      const { service, store } = openDirtySession();
+      leave.confirmLeave.mockResolvedValue(false);
+      store.apiUrlInput.set('http://new');
+      service.applyApiUrl();
+      service.resetApiUrl();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(backend.setApiUrl).not.toHaveBeenCalled();
+      expect(backend.resetApiUrl).not.toHaveBeenCalled();
+      expect(store.sessionId()).toBe('old-session');
+    });
+
+    it('asks before a reset to the default URL as well', async () => {
+      const { service, store } = openDirtySession();
+      service.resetApiUrl();
+      expect(leave.confirmLeave).toHaveBeenCalledWith('switch backends');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(backend.resetApiUrl).toHaveBeenCalledOnce();
+      expect(store.sessionId()).toBeNull();
+    });
+
+    it('does not ask when the URL would not change or nothing is unsaved', () => {
+      const { service, store } = openDirtySession();
+      store.apiUrlInput.set('http://old');
+      service.applyApiUrl();
+      expect(leave.confirmLeave).not.toHaveBeenCalled();
+      store.savedState.update((saved) => (saved ? { ...saved, dirty: false } : saved));
+      store.apiUrlInput.set('http://new');
+      service.applyApiUrl();
+      expect(leave.confirmLeave).not.toHaveBeenCalled();
+      expect(backend.setApiUrl).toHaveBeenCalledWith('http://new');
+    });
+
+    it('does not switch if work starts while the question is open', async () => {
+      const { service, store } = openDirtySession();
+      store.apiUrlInput.set('http://new');
+      service.applyApiUrl();
+      store.isLoading.set(true);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(backend.setApiUrl).not.toHaveBeenCalled();
+    });
   });
 });

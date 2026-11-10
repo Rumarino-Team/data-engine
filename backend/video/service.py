@@ -280,7 +280,6 @@ def initialize_video_state_from_resolved_input(
         metadata_updates["created_at"] = utc_now_iso()
     else:
         metadata_updates["interactive_state"] = restored_session_payload["interactive_state"]
-        session.saved_fingerprint = content_fingerprint(session)
 
     response_payload: dict[str, Any] = {
         "message": "Video state initialized successfully",
@@ -301,6 +300,8 @@ def initialize_video_state_from_resolved_input(
     sweep_unreferenced_artifacts(session)
     # A freshly opened working copy matches its checkpoint, so re-save can copy only differences.
     session.checkpoint_artifacts = set(session.committed_artifacts) if source_type == "saved_session" else set()
+    # A freshly loaded session has nothing to lose until its first edit, saved or not.
+    session.saved_fingerprint = content_fingerprint(session)
     return response_payload
 
 def start_video_init(request: VideoInitStateRequest):

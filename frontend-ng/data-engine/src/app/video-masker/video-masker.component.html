@@ -43,6 +43,14 @@
       >
         Load
       </button>
+      <button
+        *ngIf="store.isInitialized()"
+        (click)="leave.closeSession()"
+        [disabled]="store.isInteractionBusy()"
+        title="Close this session so another one can be loaded."
+      >
+        Close Session
+      </button>
     </div>
     <div class="api-url-controls">
       <div class="api-input-combo">
@@ -280,15 +288,32 @@
               [disabled]="!store.isInitialized() || store.isInteractionBusy()"
             />
           </label>
-          <button
-            class="action-button action-button-primary"
-            (click)="sessions.save()"
-            [disabled]="
-              !store.isInitialized() || store.isInteractionBusy() || !store.saveName().trim()
-            "
+          <span
+            class="save-status"
+            [class.save-status-unsaved]="store.saveStatus() === 'unsaved'"
+            [class.save-status-saved]="store.saveStatus() === 'saved'"
+            role="status"
+            data-testid="save-status"
           >
-            Save
-          </button>
+            {{ saveStatusLabel() }}
+          </span>
+          <div class="save-buttons">
+            <button
+              class="action-button action-button-primary"
+              (click)="sessions.save()"
+              [disabled]="!canSave()"
+            >
+              Save
+            </button>
+            <button
+              class="panel-action-btn"
+              (click)="sessions.save(true)"
+              [disabled]="!canSaveAs()"
+              title="Save a copy under the typed name; this session continues in the copy."
+            >
+              Save As
+            </button>
+          </div>
         </div>
       </div>
 
@@ -352,4 +377,9 @@
   ></app-job-status-panel>
 
   <app-toast-stack [toasts]="store.toasts()" (dismiss)="toast.dismiss($event)"></app-toast-stack>
+
+  <app-confirm-dialog
+    [request]="confirm.request()"
+    (answer)="confirm.answer($event)"
+  ></app-confirm-dialog>
 </div>

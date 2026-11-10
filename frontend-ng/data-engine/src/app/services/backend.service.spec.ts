@@ -211,10 +211,24 @@ describe('BackendService', () => {
     } as unknown as HttpClient;
     const service = new BackendService(http);
 
-    service.saveVideoSession('review-run').subscribe();
+    service.saveVideoSession({ name: 'review-run' }).subscribe();
 
     expect((http.post as any).mock.calls[0][0]).toBe('http://127.0.0.1:8000/video/save');
     expect((http.post as any).mock.calls[0][1]).toEqual({ name: 'review-run' });
+  });
+
+  it('re-saves without a name and requests Save As explicitly', () => {
+    const http = {
+      post: vi.fn(() => of({})),
+      get: vi.fn(),
+    } as unknown as HttpClient;
+    const service = new BackendService(http);
+
+    service.saveVideoSession({}).subscribe();
+    service.saveVideoSession({ name: 'copy', saveAs: true }).subscribe();
+
+    expect((http.post as any).mock.calls[0][1]).toEqual({});
+    expect((http.post as any).mock.calls[1][1]).toEqual({ name: 'copy', save_as: true });
   });
 
   it('sends interactive state when saving a session snapshot', () => {
@@ -225,12 +239,15 @@ describe('BackendService', () => {
     const service = new BackendService(http);
 
     service
-      .saveVideoSession('review-run', {
-        version: 1,
-        selected_object_id: 1,
-        interaction_mode: 'positive',
-        current_frame_idx: 3,
-      })
+      .saveVideoSession(
+        { name: 'review-run' },
+        {
+          version: 1,
+          selected_object_id: 1,
+          interaction_mode: 'positive',
+          current_frame_idx: 3,
+        },
+      )
       .subscribe();
 
     expect((http.post as any).mock.calls[0][0]).toBe('http://127.0.0.1:8000/video/save');

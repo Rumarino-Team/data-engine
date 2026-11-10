@@ -127,8 +127,13 @@ class SessionAnnotationsTests(unittest.TestCase):
         self.assertEqual(annotations["next_object_id"], 2)
         self.assertEqual(annotations["revision"], 1)
         self.assertEqual(annotations, self.metadata()["annotations"])
+        # A freshly loaded, never-saved session has nothing to lose until its first edit.
+        saved = self.client.get("/video/info").json()["saved_state"]
+        self.assertEqual((saved["checkpoint_id"], saved["dirty"]), (None, False))
+        edit = self.client.put("/video/objects/1", json={"label": "Renamed", "color": "#ff0000"})
+        self.assertTrue(edit.json()["saved_state"]["dirty"])
         self.reopen()
-        self.assertEqual(state.annotations.snapshot(), annotations)
+        self.assertEqual(state.annotations.snapshot(), self.client.get("/video/info").json()["annotations"])
 
     def test_accepted_prompt_is_persisted_and_snapshot_is_detached(self):
         before = state.annotations.snapshot()

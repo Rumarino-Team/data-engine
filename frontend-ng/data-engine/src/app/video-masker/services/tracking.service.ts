@@ -53,6 +53,7 @@ export class TrackingService {
       return;
     }
     this.store.updateStateEpoch(response.state_epoch, 'tracking restore');
+    if (response.saved_state !== undefined) this.store.savedState.set(response.saved_state);
     const loaded = await this.loadTrackingResult(response.tracking_result_id, 'Tracking');
     if (loaded && completedJobId) {
       try {

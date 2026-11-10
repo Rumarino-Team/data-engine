@@ -15,10 +15,13 @@ import {
   VideoMaskDataResponse,
   VideoAnnotations,
   VideoInfoResponse,
+  SavedState,
 } from '../../services/backend.service';
 import { DesktopBridgeService } from '../../services/desktop-bridge.service';
 import { BackendConnectionService } from '../services/backend-connection.service';
 import { CanvasViewportService } from '../services/canvas-viewport.service';
+import { ConfirmService } from '../services/confirm.service';
+import { SessionLeaveService } from '../services/session-leave.service';
 import { EditorJobService } from '../services/editor-job.service';
 import { FramePipelineService } from '../services/frame-pipeline.service';
 import { MaskPropagationService } from '../services/mask-propagation.service';
@@ -257,6 +260,18 @@ export function objectUpdate(store: VideoMaskerStateStore, objects: VideoObject[
   return toUpdate(store, objectSnapshot(store, objects));
 }
 
+/** Rename response that also carries the backend's saved state. */
+export function updateWithSavedState(
+  store: VideoMaskerStateStore,
+  object: VideoObject,
+  savedState: SavedState,
+) {
+  return {
+    ...objectUpdate(store, [...store.objects().filter((entry) => entry.id !== object.id), object]),
+    saved_state: savedState,
+  };
+}
+
 export function configureObjectMutationMocks(
   backend: ReturnType<typeof createBackendMocks>['backendMock'],
   store: VideoMaskerStateStore,
@@ -316,11 +331,13 @@ export function createWorkflowFixture() {
       VideoMaskerStateStore,
       BackendConnectionService,
       CanvasViewportService,
+      ConfirmService,
       EditorJobService,
       FramePipelineService,
       MaskPropagationService,
       ObjectOperationsService,
       PointEditingService,
+      SessionLeaveService,
       SessionService,
       ToastService,
       TrackingService,
@@ -336,7 +353,14 @@ export function createWorkflowFixture() {
   };
   initializeEditorStore(editor.store);
   configureObjectMutationMocks(mocks.backendMock, editor.store);
-  return { ...mocks, editor, objectOperations: TestBed.inject(ObjectOperationsService) };
+  return {
+    ...mocks,
+    editor,
+    objectOperations: TestBed.inject(ObjectOperationsService),
+    confirm: TestBed.inject(ConfirmService),
+    leave: TestBed.inject(SessionLeaveService),
+    connection: TestBed.inject(BackendConnectionService),
+  };
 }
 
 /** Seed accepted prompt inputs for workflow/rendering tests. */

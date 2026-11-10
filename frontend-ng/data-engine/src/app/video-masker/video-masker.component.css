@@ -392,6 +392,40 @@
   text-align: center;
 }
 
+.save-status {
+  margin-bottom: 8px;
+  padding: 2px 8px;
+  border: 1px solid #d0d0d0;
+  border-radius: 10px;
+  background: #fff;
+  color: #555;
+  font-size: 0.76rem;
+}
+
+.save-status-unsaved {
+  border-color: #d9b45f;
+  background: #fff8e6;
+  color: #7a5200;
+}
+
+.save-status-saved {
+  border-color: #9cc79c;
+  background: #f1faf1;
+  color: #2f6b2f;
+}
+
+.save-buttons {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+  max-width: 220px;
+}
+
+.save-buttons button {
+  flex: 1;
+  min-width: 0;
+}
+
 .debug-section {
   font-size: 0.85rem;
 }

@@ -123,11 +123,12 @@ export class BackendService {
   }
 
   saveVideoSession(
-    name: string,
+    options: { name?: string; saveAs?: boolean },
     interactiveState?: VideoSaveInteractiveState,
   ): Observable<VideoSaveResponse> {
     const payload: VideoSaveRequest = {
-      name,
+      ...(options.name !== undefined ? { name: options.name } : {}),
+      ...(options.saveAs ? { save_as: true } : {}),
       ...(interactiveState ? { interactive_state: interactiveState } : {}),
     };
     return this.http.post<VideoSaveResponse>(this.endpoint('/video/save'), payload);

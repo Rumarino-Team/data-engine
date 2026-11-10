@@ -6,6 +6,7 @@ import {
   VideoAnnotations,
   AnnotationSnapshot,
   AnnotationUpdate,
+  SavedState,
   TrackingValidity,
 } from '../../services/backend.service';
 import {
@@ -70,6 +71,14 @@ export class VideoMaskerStateStore {
     }
     return frames;
   });
+  /** Backend-owned checkpoint identity and dirty flag; the frontend only displays and forwards it. */
+  savedState = signal<SavedState | null>(null);
+  hasUnsavedChanges = computed(() => this.isInitialized() && this.savedState()?.dirty === true);
+  saveStatus = computed<'new' | 'saved' | 'unsaved'>(() => {
+    const saved = this.savedState();
+    if (saved?.dirty) return 'unsaved';
+    return saved?.checkpoint_id ? 'saved' : 'new';
+  });
   pendingObjectUpdates = signal(0);
   annotationRecoveryRequested = signal(false);
   isRecoveringAnnotations = signal(false);
@@ -100,6 +109,8 @@ export class VideoMaskerStateStore {
       info.state_epoch,
     );
     this.applyTrackingValidity(info.tracking_validity);
+    if (info.saved_state !== undefined || replaceSession)
+      this.savedState.set(info.saved_state ?? null);
     return true;
   }
 
@@ -152,6 +163,7 @@ export class VideoMaskerStateStore {
       update.state_epoch,
     );
     this.applyTrackingValidity(update.tracking_validity);
+    if (update.saved_state !== undefined) this.savedState.set(update.saved_state);
     return true;
   }
 
@@ -267,6 +279,7 @@ export class VideoMaskerStateStore {
     this.sessionId.set(null);
     this.annotationsBackendUrl.set(null);
     this.annotations.set(null);
+    this.savedState.set(null);
     this.objects.set([]);
     this.selectedObjectId.set(null);
     this.stateEpoch.set(0);

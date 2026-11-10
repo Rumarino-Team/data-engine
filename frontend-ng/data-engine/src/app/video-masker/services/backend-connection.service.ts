@@ -2,7 +2,9 @@ import { DestroyRef, Injectable, inject } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { Subject, catchError, defer, exhaustMap, map, of, startWith, switchMap, timer } from 'rxjs';
 import { BackendService } from '../../services/backend.service';
+import { DEFAULT_API_URL, normalizeApiUrl } from '../../services/backend-api-url';
 import { FramePipelineService } from './frame-pipeline.service';
+import { SessionLeaveService } from './session-leave.service';
 import { VideoMaskerStateStore } from './video-masker-state.store';
 
 /** Owns the backend URL and connectivity status. */
@@ -14,6 +16,7 @@ export class BackendConnectionService {
   private readonly framePipeline = inject(FramePipelineService);
   private readonly store = inject(VideoMaskerStateStore);
   private readonly backend = inject(BackendService);
+  private readonly leave = inject(SessionLeaveService);
 
   initApiUrlFromBackend(): void {
     this.store.apiUrlInput.set(this.backend.getApiUrl());
@@ -51,15 +54,30 @@ export class BackendConnectionService {
 
   applyApiUrl(): void {
     if (this.store.isInteractionBusy()) return;
-    const previous = this.backend.getApiUrl();
-    const next = this.backend.setApiUrl(this.store.apiUrlInput());
-    this.finishBackendSwitch(previous, next);
+    const mayChange = normalizeApiUrl(this.store.apiUrlInput()) !== this.backend.getApiUrl();
+    this.switchBackend(mayChange, () => this.backend.setApiUrl(this.store.apiUrlInput()));
   }
 
   resetApiUrl(): void {
     if (this.store.isInteractionBusy()) return;
-    const previous = this.backend.getApiUrl();
-    this.finishBackendSwitch(previous, this.backend.resetApiUrl());
+    this.switchBackend(this.backend.getApiUrl() !== DEFAULT_API_URL, () =>
+      this.backend.resetApiUrl(),
+    );
+  }
+
+  /** A switch drops the open session, so unsaved changes are saved or discarded first, on the old backend. */
+  private switchBackend(mayChange: boolean, change: () => string): void {
+    const run = () => {
+      const previous = this.backend.getApiUrl();
+      this.finishBackendSwitch(previous, change());
+    };
+    if (!mayChange || !this.store.hasUnsavedChanges()) {
+      run();
+      return;
+    }
+    void this.leave.confirmLeave('switch backends').then((proceed) => {
+      if (proceed && !this.destroyRef.destroyed && !this.store.isInteractionBusy()) run();
+    });
   }
 
   private finishBackendSwitch(previous: string, next: string): void {

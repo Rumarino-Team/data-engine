@@ -38,16 +38,31 @@ export interface VideoAddMaskRequest {
   mask: boolean[][];
 }
 
+/**
+ * Backend-owned save status. `dirty` means accepted state differs from the last load or save;
+ * a never-saved session has no checkpoint.
+ */
+export interface SavedState {
+  checkpoint_id: string | null;
+  display_name: string | null;
+  saved_at: string | null;
+  dirty: boolean;
+}
+
+/** `name` is required for a first save and Save As; re-save without one keeps the display name. */
 export interface VideoSaveRequest {
-  name: string;
+  name?: string;
+  save_as?: boolean;
   interactive_state?: VideoSaveInteractiveState;
 }
 
 export interface VideoSaveResponse {
   message: string;
   name: string;
+  checkpoint_id: string;
   saved_path: string;
   state_epoch: number;
+  saved_state: SavedState;
 }
 
 export interface VideoAddPointsResponse extends AnnotationUpdate {
@@ -136,6 +151,7 @@ export interface TrackingValidity {
 
 export interface AnnotationSnapshot {
   tracking_validity?: TrackingValidity | null;
+  saved_state?: SavedState | null;
   mask_data?: VideoMaskDataResponse;
   session_id: string | null;
   state_epoch: number;
@@ -145,6 +161,7 @@ export interface AnnotationSnapshot {
 /** Mutation response; full snapshots come only from /video/info and initialization. */
 export interface AnnotationUpdate {
   tracking_validity?: TrackingValidity | null;
+  saved_state?: SavedState | null;
   mask_data?: VideoMaskDataResponse;
   session_id: string | null;
   state_epoch: number;
@@ -186,6 +203,7 @@ export interface VideoPropagateResponse {
   tracked_points_seeded_count?: number;
   tracked_points_seeded_frames?: number;
   state_epoch?: number;
+  saved_state?: SavedState | null;
 }
 
 export interface VideoMaskObjectData {
@@ -235,6 +253,7 @@ export interface TrackPromptPointsJobResponse {
   streaming_frame_threshold?: number;
   tracking_result_id: string;
   state_epoch?: number;
+  saved_state?: SavedState | null;
 }
 
 export interface TrackPromptPointsResult {

@@ -65,6 +65,7 @@ export class MaskPropagationService {
       return;
     }
     this.store.updateStateEpoch(response.state_epoch, 'propagation');
+    if (response.saved_state !== undefined) this.store.savedState.set(response.saved_state);
     const maskManifestPath = response.mask_manifest_path || response['state.mask_manifest_path'];
     this.store.hasManifestMasks.set(Boolean(maskManifestPath));
     if (response.tracked_points_skipped_reason) {

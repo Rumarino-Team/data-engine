@@ -1,0 +1,75 @@
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.dialog {
+  width: min(420px, 100%);
+  padding: 16px 18px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #222;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.25);
+}
+
+h2 {
+  margin: 0 0 8px;
+  font-size: 1rem;
+}
+
+p {
+  margin: 0 0 14px;
+  color: #444;
+  font-size: 0.9rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.confirm-action {
+  padding: 6px 12px;
+  border: 1px solid #c4c4c4;
+  border-radius: 4px;
+  background: #f5f5f5;
+  color: #222;
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+
+.confirm-action:hover {
+  background: #ececec;
+}
+
+.confirm-action.primary {
+  border-color: #2a61ce;
+  background: #2f6fed;
+  color: #fff;
+  font-weight: 700;
+}
+
+.confirm-action.primary:hover {
+  background: #285fc9;
+}
+
+.confirm-action.danger {
+  border-color: #d17070;
+  background: #fff3f3;
+  color: #8f2f2f;
+}
+
+.confirm-action.danger:hover {
+  background: #ffe6e6;
+}

@@ -12,6 +12,7 @@ from core.state import state
 from schemas.video import VideoPropagateRequest
 from sessions.artifacts import sweep_unreferenced_artifacts
 from sessions.cache import clear_window_cache, bump_video_state_epoch
+from sessions.checkpoints import saved_state
 from sessions.metadata import current_masks_dir, write_session_metadata
 from utils import build_empty_mask_manifest, load_mask_manifest, prepare_video_masks_output, save_single_video_mask_frame, write_mask_manifest
 from video.io import build_window_dir
@@ -572,4 +573,5 @@ def run_propagation_job(request: VideoPropagateRequest, inputs=None) -> dict[str
         "mask_manifest_path": state.mask_manifest_path,
         "state.mask_manifest_path": state.mask_manifest_path,
         "state_epoch": int(state.video_state_epoch),
+        "saved_state": saved_state(),
     }

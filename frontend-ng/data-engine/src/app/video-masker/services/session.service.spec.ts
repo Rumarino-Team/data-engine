@@ -440,8 +440,15 @@ describe('session workflows', () => {
       of({
         message: 'Session saved successfully',
         name: 'review-run',
+        checkpoint_id: 'checkpoint-1',
         saved_path: 'C:/project/backend/saved/review-run',
         state_epoch: 3,
+        saved_state: {
+          checkpoint_id: 'checkpoint-1',
+          display_name: 'review-run',
+          saved_at: 'now',
+          dirty: false,
+        },
       }),
     );
     editor.store.isInitialized.set(true);
@@ -457,10 +464,10 @@ describe('session workflows', () => {
       expect.objectContaining({ session_id: 'session-1' }),
     );
 
-    editor.sessions.save();
-    await Promise.resolve();
+    await expect(editor.sessions.save()).resolves.toBe(true);
 
-    const [, interactiveState] = backendMock.saveVideoSession.mock.calls[0];
+    const [request, interactiveState] = backendMock.saveVideoSession.mock.calls[0];
+    expect(request).toEqual({ name: 'review-run', saveAs: false });
     expect(interactiveState).toEqual(
       expect.objectContaining({
         version: 1,

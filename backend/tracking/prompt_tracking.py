@@ -8,6 +8,7 @@ from core.config import DEFAULT_PROMPT_TRACK_BATCH_SIZE, DEFAULT_STREAMING_TRACK
 from core.jobs import capture_job_inputs, validate_job_inputs, foreground_operation, foreground_lock, queue_long_job, update_job
 from core.runtime import cleanup_cuda_memory
 from core.state import state
+from sessions.checkpoints import saved_state
 from schemas.tracking import TrackingPromptPointsRequest
 from tracking.results import save_prompt_tracking_result
 from tracking.service import ensure_tracker_model, load_tracking_video_from_current_video_state, should_stream_tracking
@@ -376,4 +377,5 @@ def run_prompt_tracking_job(
         "streaming_frame_threshold": int(DEFAULT_STREAMING_TRACK_FRAME_THRESHOLD),
         "tracking_result_id": tracking_result["result_id"],
         "state_epoch": int(state.video_state_epoch),
+        "saved_state": saved_state(),
     }

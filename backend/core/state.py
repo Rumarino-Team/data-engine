@@ -29,7 +29,7 @@ class BackendState:
     display_name: Optional[str] = None
     # Session-relative artifact files the checkpoint holds, so re-save copies and deletes only differences.
     checkpoint_artifacts: set[str] = field(default_factory=set)
-    # Content identity at the last open/save; None means the session was never saved.
+    # Content identity when the session was loaded or last saved; None only before initialization completes.
     saved_fingerprint: Optional[tuple] = None
 
 state = BackendState()
