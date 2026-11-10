@@ -206,6 +206,12 @@ class VideoEditTests(BackendStateTestCase):
 
     # --- masks ---------------------------------------------------------------------------------------------
 
+    def test_current_overlay_frame_is_served(self):
+        self.seed_manifest()
+        response = self.client.get("/video/mask_frame/0")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"overlay")
+
     def test_empty_override_wins_persists_and_replays_without_frontend_cache(self):
         self.seed_manifest()
         response = self.add_override()

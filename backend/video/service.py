@@ -25,7 +25,7 @@ from schemas.video import InteractiveState
 from sessions.artifacts import referenced_artifacts, sweep_unreferenced_artifacts
 from sessions.checkpoints import content_fingerprint, new_checkpoint_location, normalize_display_name, saved_state, write_checkpoint
 from sessions.metadata import current_masks_dir, current_session_path, interactive_state_projection, load_session_metadata, persisted_session_fields, session_metadata_document, write_session_metadata
-from sessions.paths import resolve_input_path, resolve_saved_session_layout, validate_video_input_path
+from sessions.paths import path_is_relative_to, resolve_input_path, resolve_saved_session_layout, validate_video_input_path
 from utils import load_mask_manifest
 from video.io import copy_frames_directory_to_session, create_active_session, discard_working_session, extract_video_to_session_frames, open_checkpoint_as_working_copy
 from video.masks import mask_logits_to_2d_bool, store_mask_override, override_pixels, retain_interactive_masks, effective_mask_data

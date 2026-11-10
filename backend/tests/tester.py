@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import os
 import signal
 import subprocess
@@ -64,6 +65,30 @@ def _env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
+# Tracking runs in memory below this frame count and streams at or above it. `--streaming` starts the
+# server with a threshold of 1 so the streaming path is exercised on the short test videos.
+STREAMING = "--streaming" in sys.argv
+DEFAULT_STREAMING_THRESHOLD = 256
+TRACK_STREAMING_THRESHOLD = 1 if STREAMING else DEFAULT_STREAMING_THRESHOLD
+SAVED_DIR = BACKEND_DIR / "saved"
+
+CHECK_FAILURES: list[str] = []
+
+
+def check(name, condition, detail=""):
+    """Records a pass or fail so a run can end with a non-zero exit code."""
+    if condition:
+        print(f"  ✓ {name}")
+    else:
+        print(f"  ✗ {name}" + (f": {detail}" if detail else ""))
+        CHECK_FAILURES.append(name)
+    return bool(condition)
+
+
+def expected_tracking_mode(num_frames):
+    return "streaming" if num_frames >= TRACK_STREAMING_THRESHOLD else "in_memory"
+
+
 ONLINE_MODE = _env_bool("DATA_ENGINE_ONLINE_MODE", True)
 ONLINE_BATCH_SIZE = int(os.getenv("DATA_ENGINE_BATCH_SIZE", "32"))
 OFFLOAD_VIDEO_TO_CPU = _env_bool("DATA_ENGINE_OFFLOAD_VIDEO_TO_CPU", True)
@@ -71,30 +96,54 @@ OFFLOAD_STATE_TO_CPU = _env_bool("DATA_ENGINE_OFFLOAD_STATE_TO_CPU", False)
 JOB_POLL_INTERVAL_SECONDS = float(os.getenv("DATA_ENGINE_JOB_POLL_INTERVAL", "0.5"))
 JOB_TIMEOUT_SECONDS = float(os.getenv("DATA_ENGINE_JOB_TIMEOUT", "1800"))
 
+SUITES = {
+    "video": lambda: run_video_tests(),
+    "modes": lambda: run_tracking_mode_tests(),
+    "sessions": lambda: run_session_tests(),
+    "apple-prompt": lambda: run_apple_prompt_tracking_test(),
+    "apple": lambda: run_apple_tracking_tests(),
+}
+
+
+def run_suites(names):
+    for name in names:
+        SUITES[name]()
+    print("\n" + "=" * 60)
+    if CHECK_FAILURES:
+        print(f"{len(CHECK_FAILURES)} CHECK(S) FAILED:")
+        for failure in CHECK_FAILURES:
+            print(f"  - {failure}")
+    else:
+        print("ALL CHECKS PASSED")
+    print("=" * 60)
+
+
 def test_chooser():
     print("Choose a test with a number")
     print("Video Masking Test: 1")
-    print("CoTracker Propagation Tests: 2")
+    print("CoTracker Propagation Tests (generic routes): 2")
     print("Run All Tests: 3")
+    print("Tracking modes (track only, track and feed): 4")
+    print("Save, Save As and reopen: 5")
+    print("Apple prompt tracking: 6")
     print("Quit: 0")
+    print("(Non-interactive: --run video|modes|sessions|apple-prompt|apple|all [--streaming])")
     choice = input()
 
     match choice:
         case "1":
-            run_video_tests()
-            return False
+            run_suites(["video"])
         case "2":
-            run_apple_tracking_tests()
-            return False
+            run_suites(["apple"])
         case "3":
-            run_video_tests()
-            run_apple_tracking_tests()
-            print("\n" + "=" * 60)
-            print("ALL TESTS COMPLETED")
-            print("=" * 60)
-            return False
-        case "0":
-            return False
+            run_suites(list(SUITES))
+        case "4":
+            run_suites(["modes"])
+        case "5":
+            run_suites(["sessions"])
+        case "6":
+            run_suites(["apple-prompt"])
+    return False
 
 
 def _print_job_progress(job):
@@ -364,7 +413,7 @@ def add_new_points_or_box(frame_idx, obj_id, points=None, labels=None, clear_old
     return response.status_code == 200, response.json() if response.status_code == 200 else None
 
 
-def propagate_in_video(start_frame_idx=None, max_frame_num_to_track=None, reverse=False):
+def propagate_in_video(start_frame_idx=None, max_frame_num_to_track=None, reverse=False, use_tracked_points=True):
     """Calls the /video/propagate_in_video endpoint."""
     url = f"{BASE_URL}/video/propagate_in_video"
     payload = {
@@ -373,6 +422,7 @@ def propagate_in_video(start_frame_idx=None, max_frame_num_to_track=None, revers
         "reverse": reverse,
         "online_mode": ONLINE_MODE,
         "batch_size": ONLINE_BATCH_SIZE,
+        "use_tracked_points": use_tracked_points,
         "include_masks_in_response": False,
         # Overlay PNGs are the visual output copied to tests/bedroom/masks.
         "export_overlay_frames": True,
@@ -583,26 +633,225 @@ def run_video_tests():
     print(f"\nPropagating masks through video...")
     success, result = propagate_in_video()
     
-    if success:
-        restore_bedroom_masks_output(result)
-        print("\n✓ Video masking test completed successfully!")
-    else:
-        print("\n✗ Video masking test failed.")
+    if not check("video masking: propagation completed", success):
         reset_video_state()
         return
+    restore_bedroom_masks_output(result)
+    check_overlay_frame(0)
 
     print(f"\nRunning prompt-point tracking from bedroom prompts...")
     success, tracking_result = track_prompt_points(add_support_grid=False)
+    check("bedroom prompt tracking completed", success)
     if success:
-        print(
-            "\n✓ Bedroom prompt tracking test passed "
-            f"({tracking_result.get('num_points', 0)} pts × {tracking_result.get('num_frames', 0)} frames)"
-        )
-    else:
-        print("\n✗ Bedroom prompt tracking test failed.")
-    
+        print(f"  ({tracking_result.get('num_points', 0)} pts × {tracking_result.get('num_frames', 0)} frames)")
+
     # Reset video state for cleanup
     reset_video_state()
+
+
+def get_video_info():
+    response = requests.get(f"{BASE_URL}/video/info")
+    response.raise_for_status()
+    return response.json()
+
+
+def check_overlay_frame(frame_idx):
+    """The frontend shows exported overlay frames through GET /video/mask_frame/{frame_idx}."""
+    response = requests.get(f"{BASE_URL}/video/mask_frame/{frame_idx}")
+    return check(
+        f"overlay frame {frame_idx} is served",
+        response.status_code == 200 and response.headers.get("content-type", "").startswith("image/"),
+        f"status {response.status_code}, {response.text[:120]!r}" if response.status_code != 200 else "",
+    )
+
+
+def add_first_bedroom_point():
+    success, _ = add_new_points_or_box(
+        frame_idx=0, obj_id=1,
+        points=np.array([[210, 350]], dtype=np.float32), labels=np.array([1], np.int32),
+    )
+    return success
+
+
+def run_tracking_mode_tests():
+    """Both ways to use tracking: track only, and track then feed the result into propagation."""
+    print("\n" + "=" * 60)
+    print("RUNNING TRACKING MODE TESTS")
+    print("=" * 60)
+    if not VIDEO_DIR.exists():
+        print(f"\nVideo directory '{VIDEO_DIR}' not found. Skipping.")
+        return
+    if not check("modes: video initialized", init_video_state(VIDEO_DIR)):
+        return
+    if not check("modes: first point accepted", add_first_bedroom_point()):
+        reset_video_state()
+        return
+
+    print("\n--- Track only ---")
+    success, tracking = track_prompt_points(add_support_grid=False)
+    if not check("track only: tracking result saved", success and (tracking or {}).get("num_points", 0) > 0):
+        reset_video_state()
+        return
+    check(
+        f"track only: mode is {expected_tracking_mode(tracking['num_frames'])}",
+        tracking.get("tracking_mode") == expected_tracking_mode(tracking["num_frames"]),
+        f"got {tracking.get('tracking_mode')!r}",
+    )
+    info = get_video_info()
+    check("track only: result is current for the accepted prompts", info.get("tracking_validity") is not None)
+
+    print("\n--- Track, then feed propagation ---")
+    success, result = propagate_in_video(use_tracked_points=True)
+    result = result or {}
+    check("track and feed: propagation completed", success)
+    check(
+        "track and feed: propagation used the tracked points",
+        success and result.get("tracked_points_used") is True and result.get("tracked_points_seeded_count", 0) > 0,
+        f"used={result.get('tracked_points_used')} seeded={result.get('tracked_points_seeded_count')} "
+        f"reason={result.get('tracked_points_skipped_reason')!r}",
+    )
+    check_overlay_frame(0)
+
+    print("\n--- Propagate without feeding ---")
+    success, result = propagate_in_video(use_tracked_points=False)
+    result = result or {}
+    check("no feed: propagation completed", success)
+    check("no feed: tracked points were not used", success and result.get("tracked_points_used") is False)
+
+    reset_video_state()
+
+
+def file_digest(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def save_session(name=None, save_as=False):
+    payload = {"save_as": save_as}
+    if name is not None:
+        payload["name"] = name
+    response = requests.post(f"{BASE_URL}/video/save", json=payload)
+    if response.status_code != 200:
+        print(f"Save failed. Status: {response.status_code}, Response: {response.text}")
+        return False, None
+    return True, response.json()
+
+
+def remove_saved_checkpoint(saved_path):
+    """Removes a checkpoint the test created, and only inside the backend's saved folder."""
+    if not saved_path:
+        return
+    path = Path(saved_path).resolve()
+    if path.parent == SAVED_DIR.resolve() and path.is_dir():
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def run_session_tests():
+    """Save, re-save, Save As and reopen a checkpoint, and check the checkpoint is never written by edits."""
+    print("\n" + "=" * 60)
+    print("RUNNING SAVE AND REOPEN TESTS")
+    print("=" * 60)
+    if not VIDEO_DIR.exists():
+        print(f"\nVideo directory '{VIDEO_DIR}' not found. Skipping.")
+        return
+    created = []
+    try:
+        if not check("sessions: video initialized", init_video_state(VIDEO_DIR)):
+            return
+        if not check("sessions: first point accepted", add_first_bedroom_point()):
+            return
+        success, _ = propagate_in_video(start_frame_idx=0, max_frame_num_to_track=20, use_tracked_points=False)
+        if not check("sessions: short propagation completed", success):
+            return
+
+        print("\n--- Save ---")
+        success, first = save_session("tester checkpoint")
+        if not check("save: first save succeeded", success):
+            return
+        created.append(first["saved_path"])
+        check("save: checkpoint folder exists", Path(first["saved_path"]).is_dir())
+        check("save: session is clean afterwards", first["saved_state"]["dirty"] is False)
+        check("save: the session has the checkpoint identity",
+              get_video_info()["saved_state"]["checkpoint_id"] == first["checkpoint_id"])
+
+        print("\n--- Edit makes the session dirty; re-save keeps the checkpoint ---")
+        success, _ = add_new_points_or_box(
+            frame_idx=0, obj_id=1,
+            points=np.array([[210, 350], [250, 220]], dtype=np.float32), labels=np.array([1, 1], np.int32),
+        )
+        check("edit: second point accepted", success)
+        check("edit: session is dirty", get_video_info()["saved_state"]["dirty"] is True)
+        success, resaved = save_session()
+        check("re-save: succeeded", success)
+        if success:
+            check("re-save: same checkpoint", resaved["checkpoint_id"] == first["checkpoint_id"])
+            check("re-save: session is clean afterwards", resaved["saved_state"]["dirty"] is False)
+
+        print("\n--- Save As ---")
+        success, copy = save_session("tester copy", save_as=True)
+        if not check("save as: succeeded", success):
+            return
+        created.append(copy["saved_path"])
+        check("save as: new checkpoint", copy["checkpoint_id"] != first["checkpoint_id"]
+              and copy["saved_path"] != first["saved_path"])
+
+        saved_annotations = get_video_info()["annotations"]
+
+        print("\n--- Reopen the first checkpoint ---")
+        if not check("reopen: init from the checkpoint folder", init_video_state(first["saved_path"])):
+            return
+        info = get_video_info()
+        check("reopen: checkpoint identity restored", info["saved_state"]["checkpoint_id"] == first["checkpoint_id"])
+        check("reopen: session is clean", info["saved_state"]["dirty"] is False)
+        check("reopen: annotations match the last save of that checkpoint",
+              info["annotations"]["prompts"] == saved_annotations["prompts"]
+              and info["annotations"]["objects"] == saved_annotations["objects"])
+        mask_data = requests.get(f"{BASE_URL}/video/mask_data/0")
+        check("reopen: saved masks are readable",
+              mask_data.status_code == 200 and bool(mask_data.json().get("objects")),
+              f"status {mask_data.status_code}")
+
+        print("\n--- Edits after reopening never write the checkpoint ---")
+        before = file_digest(Path(first["saved_path"]) / "session.json")
+        success, _ = add_new_points_or_box(
+            frame_idx=0, obj_id=1,
+            points=np.array([[210, 350]], dtype=np.float32), labels=np.array([1], np.int32),
+        )
+        check("reopen: edit accepted", success)
+        check("reopen: session is dirty after the edit", get_video_info()["saved_state"]["dirty"] is True)
+        check("reopen: checkpoint session.json unchanged by the edit",
+              file_digest(Path(first["saved_path"]) / "session.json") == before)
+    finally:
+        reset_video_state()
+        for saved_path in created:
+            remove_saved_checkpoint(saved_path)
+
+
+def run_apple_prompt_tracking_test():
+    """Prompt tracking on a real video file through the routes the frontend uses (replaces the generic apple routes)."""
+    print("\n" + "=" * 60)
+    print("RUNNING APPLE PROMPT TRACKING TEST")
+    print("=" * 60)
+    if not ensure_apple_test_video():
+        return
+    if not check("apple: video initialized", init_video_state(TRACKING_VIDEO_PATH)):
+        return
+    try:
+        points = np.array([[400, 350], [600, 500]], dtype=np.float32)
+        success, _ = add_new_points_or_box(frame_idx=0, obj_id=1, points=points, labels=np.array([1, 1], np.int32))
+        if not check("apple: points accepted", success):
+            return
+        success, tracking = track_prompt_points(add_support_grid=True)
+        if not check("apple: prompt tracking with support grid completed", success):
+            return
+        check("apple: one tracked point per positive prompt", tracking.get("num_points") == len(points),
+              f"got {tracking.get('num_points')}")
+        check(
+            f"apple: mode is {expected_tracking_mode(tracking['num_frames'])}",
+            tracking.get("tracking_mode") == expected_tracking_mode(tracking["num_frames"]),
+            f"got {tracking.get('tracking_mode')!r}",
+        )
+    finally:
+        reset_video_state()
 
 
 def load_tracking_video(video_path, model_name=None):
@@ -732,7 +981,7 @@ def run_apple_tracking_tests():
     print(f"\n--- Apple Test 1: Load tracking video ---")
     success, result = load_tracking_video(TRACKING_VIDEO_PATH)
 
-    if not success:
+    if not check("apple generic: load video", success):
         print("Failed to load apple tracking video. Skipping remaining tests.")
         return
 
@@ -746,9 +995,9 @@ def run_apple_tracking_tests():
         num_frames = result.get("num_frames", 0)
         if result.get("output_video_path"):
             generated_outputs.append(result.get("output_video_path"))
-        print(f"\n✓ Apple grid tracking test passed  ({num_points} pts × {num_frames} frames)")
+        check(f"apple generic: grid tracking ({num_points} pts × {num_frames} frames)", num_points > 0)
     else:
-        print(f"\n✗ Apple grid tracking test failed.")
+        check("apple generic: grid tracking", False)
 
     time.sleep(1)
 
@@ -775,9 +1024,9 @@ def run_apple_tracking_tests():
                 "output_video_path": result.get("output_video_path"),
             },
         )
-        print(f"\n✓ Apple legacy point tracking test passed  ({num_points} pts × {num_frames} frames)")
+        check(f"apple generic: legacy point tracking ({num_points} pts × {num_frames} frames)", num_points > 0)
     else:
-        print(f"\n✗ Apple legacy point tracking test failed.")
+        check("apple generic: legacy point tracking", False)
 
     time.sleep(1)
 
@@ -792,9 +1041,9 @@ def run_apple_tracking_tests():
         num_frames = result.get("num_frames", 0)
         if result.get("output_video_path"):
             generated_outputs.append(result.get("output_video_path"))
-        print(f"\n✓ Apple point tracking (+ support grid) test passed  ({num_points} pts × {num_frames} frames)")
+        check(f"apple generic: point tracking with support grid ({num_points} pts × {num_frames} frames)", num_points > 0)
     else:
-        print(f"\n✗ Apple point tracking (+ support grid) test failed.")
+        check("apple generic: point tracking with support grid", False)
 
     if generated_outputs:
         print(f"\nApple generated outputs:")
@@ -815,10 +1064,26 @@ if __name__ == "__main__":
         print(f"API file not found: {API_FILE}")
         exit(1)
     
+    requested_suites = None
+    if "--run" in sys.argv:
+        requested = sys.argv[sys.argv.index("--run") + 1] if sys.argv.index("--run") + 1 < len(sys.argv) else ""
+        if requested != "all" and requested not in SUITES:
+            print(f"Unknown suite '{requested}'. Use one of: {', '.join(SUITES)}, all.")
+            exit(2)
+        requested_suites = list(SUITES) if requested == "all" else [requested]
+
+    # PYTHONUTF8 lets the server print non-ASCII output when its console is redirected on Windows.
+    server_env = {
+        **os.environ,
+        "PYTHONUTF8": "1",
+        "TRACK_STREAMING_FRAME_THRESHOLD": str(TRACK_STREAMING_THRESHOLD),
+    }
+
     # Start the FastAPI server as a background process
     server_process = subprocess.Popen(
         [sys.executable, "-m", "fastapi", "dev", str(API_FILE)],
         cwd=str(BACKEND_DIR),
+        env=server_env,
         start_new_session=(os.name != "nt"),
     )
     print(f"\nStarting FastAPI server with PID: {server_process.pid}...")
@@ -826,16 +1091,21 @@ if __name__ == "__main__":
     try:
         # Wait for the server to be ready
         # The root endpoint in api.py returns a simple message
-        if wait_for_server(f"{BASE_URL}/", timeout=30):
-            # Run test chooser
-            active = True
-            while (active):
-                active = test_chooser()
-
+        if wait_for_server(f"{BASE_URL}/", timeout=60):
+            if requested_suites is not None:
+                run_suites(requested_suites)
+            else:
+                active = True
+                while (active):
+                    active = test_chooser()
         else:
             print("Could not connect to the server. Aborting tests.")
+            CHECK_FAILURES.append("server did not start")
 
     finally:
         # Stop the server
         print("\nShutting down the server...")
         stop_server_process(server_process)
+
+    if requested_suites is not None and CHECK_FAILURES:
+        exit(1)
