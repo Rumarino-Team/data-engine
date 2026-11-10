@@ -17,7 +17,6 @@ from video.service import (
     add_new_points_or_box,
     clear_all_prompts_in_frame,
     get_mask_data,
-    get_mask_manifest,
     get_video_frame,
     get_video_info,
     get_video_mask_frame,
@@ -127,11 +126,6 @@ def remove_object_route(
 @router.get("/video/info")
 def get_video_info_route(ctx: AppContext = Depends(get_context)):
     return get_video_info(ctx)
-
-
-@router.get("/video/mask_manifest")
-def get_mask_manifest_route(ctx: AppContext = Depends(get_context)):
-    return get_mask_manifest(ctx)
 
 
 @router.get("/video/mask_data/{frame_idx}")

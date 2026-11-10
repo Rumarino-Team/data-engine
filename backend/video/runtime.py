@@ -49,17 +49,13 @@ class VideoMaskerRuntime:
     session: BackendState
     create_masker: MaskerFactory
     replay_inputs: Callable[[BackendState], None]
-    persist_session: Callable[[BackendState], None]
     release_memory: Callable[[], None]
 
     def initialize(
         self, settings: MaskerSettings, *, async_loading_frames: bool = False,
         progress_callback: ProgressCallback | None = None,
     ) -> None:
-        """Build the model if absent, load the session's frames and replay its accepted inputs.
-
-        Epoch and persistence stay with the caller: a new session publishes both itself.
-        """
+        """Build the model if absent, load the session's frames and replay its accepted inputs."""
         if self.session.video_masker is None:
             self.session.video_masker = self.create_masker(progress_callback=progress_callback)
         self.session.video_masker.init_state(
@@ -75,14 +71,10 @@ class VideoMaskerRuntime:
 
     def restore(
         self, settings: MaskerSettings, *, progress_callback: ProgressCallback | None = None,
-        increment_epoch: bool = True,
     ) -> None:
         if self.session.video_dir is None:
             return
         self.initialize(settings, progress_callback=progress_callback)
-        if increment_epoch:
-            self.session.video_state_epoch += 1
-            self.persist_session(self.session)
 
     def rebuild_inputs(self) -> None:
         """Reset the predictor and replay accepted inputs, e.g. after a rejected edit.
@@ -96,8 +88,6 @@ class VideoMaskerRuntime:
             self.session.video_masker = None
             logging.getLogger(__name__).exception("Prompt runtime recovery failed")
             raise MaskerRestorationError(str(error)) from error
-        finally:
-            self.session.video_state_epoch += 1
 
     def _settings_for_restoration(self) -> MaskerSettings | None:
         masker = self.session.video_masker
@@ -120,7 +110,6 @@ class VideoMaskerRuntime:
             self.restore(settings, progress_callback=progress_callback)
         except Exception as error:
             self.session.video_masker = None
-            self.session.video_state_epoch += 1
             logging.getLogger(__name__).exception("Failed to restore interactive video masker state")
             if raise_on_error:
                 raise MaskerRestorationError(str(error)) from error
@@ -149,7 +138,6 @@ class VideoMaskerRuntime:
         settings = self._settings_for_restoration()
         if self.session.video_masker is not None:
             self.session.video_masker = None
-            self.session.video_state_epoch += 1
             self.release_memory()
         with self._restoring(settings, progress_callback):
             yield

@@ -48,8 +48,7 @@ class VideoAddPointsOrBoxRequest(VideoPrompt):
 
 class VideoPropagateRequest(BaseModel):
     start_frame_idx: Optional[int] = None
-    max_frame_num_to_track: Optional[int] = None
-    reverse: bool = False
+    max_frame_num_to_track: Optional[int] = Field(default=None, ge=1)
     batch_size: Optional[int] = None
     online_mode: Optional[bool] = None
     use_tracked_points: bool = True
@@ -59,8 +58,6 @@ class VideoPropagateRequest(BaseModel):
     # Also write frame_XXXXX_masks.png copies of each frame with masks drawn on (served by /video/mask_frame).
     export_overlay_frames: bool = False
     include_saved_mask_paths: bool = False
-    max_frames_in_response: Optional[int] = None
-    max_mask_values_in_response: Optional[int] = None
 
 class VideoAddMaskRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")

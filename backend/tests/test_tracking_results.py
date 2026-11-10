@@ -8,15 +8,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core.errors import OperationError
 from support import state
 from core.annotations import SessionAnnotations
-from sessions.metadata import write_session_metadata
+from sessions.metadata import session_metadata_document
 from tracking.results import (
     load_prompt_tracking_result,
     restored_tracking_result_payload,
     save_prompt_tracking_result,
 )
 from tracking.guidance import TrackingGuidance, TrackedGuidancePoint, load_latest_tracking_guidance
-from support import BackendStateTestCase
-from utils import load_mask_manifest
+from support import BackendStateTestCase, commit_session
 
 
 class TrackingResultTests(BackendStateTestCase):
@@ -26,7 +25,6 @@ class TrackingResultTests(BackendStateTestCase):
         state.active_session_dir = self.session_path
         state.active_session_id = "session-1"
         state.video_frame_files = ["00000.jpg", "00001.jpg"]
-        state.video_state_epoch = 1
         state.annotations = SessionAnnotations(objects={1: {"id": 1, "label": "Object 1", "color": "#ff0000"}},
             prompts=[{"frame_idx": 0, "obj_id": 1, "points": [[10, 20]], "labels": [1]}])
 
@@ -48,28 +46,35 @@ class TrackingResultTests(BackendStateTestCase):
         self.assertTrue(result_path.exists())
         loaded = load_prompt_tracking_result(state, saved["result_id"])
         self.assertEqual(loaded["version"], 3)
-        self.assertEqual(loaded["state_epoch"], 1)
         self.assertEqual(loaded["tracked_prompt_keys"], ["obj:1|frame:0|x:10.000|y:20.000"])
         self.assertEqual(loaded["tracks"], [[[10, 20], [11, 21]]])
         self.assertEqual(loaded["visibility"], [[True, True]])
 
-    def test_failed_publication_keeps_previous_reference_and_hides_orphan(self):
+    def test_failed_result_write_keeps_the_previous_reference(self):
         kwargs = dict(model_name="cotracker3_online", num_points=1, num_frames=2,
             add_support_grid_used=False, tracking_mode="streaming", streaming_frame_threshold=256,
             points=[{"point_id": "p0", "obj_id": 1, "source_frame_idx": 0, "source_x": 10, "source_y": 20}],
             tracks=[[[10, 20], [11, 21]]], visibility=[[True, True]])
         old = save_prompt_tracking_result(state, **kwargs)
         old_metadata = dict(state.session_metadata)
-        def fail(session, extra):
-            session.session_metadata.update(extra)
-            raise OSError("disk full")
-        with patch("tracking.results.write_session_metadata", side_effect=fail):
+        with patch("tracking.results.write_mask_manifest", side_effect=OSError("disk full")):
             with self.assertRaises(OSError):
                 save_prompt_tracking_result(state, **kwargs)
         self.assertEqual(state.session_metadata, old_metadata)
         self.assertEqual(load_prompt_tracking_result(state, old["result_id"])["num_points"], 1)
-        # The rejected result was never published, so its file is reclaimed immediately.
+        # The rejected result was never written or named, so only the previous file remains.
         self.assertEqual([path.stem for path in (self.session_path / "tracking").glob("*.json")], [old["result_id"]])
+
+    def test_a_new_result_supersedes_the_previous_file(self):
+        kwargs = dict(model_name="cotracker3_online", num_points=1, num_frames=2,
+            add_support_grid_used=False, tracking_mode="streaming", streaming_frame_threshold=256,
+            points=[{"point_id": "p0", "obj_id": 1, "source_frame_idx": 0, "source_x": 10, "source_y": 20}],
+            tracks=[[[10, 20], [11, 21]]], visibility=[[True, True]])
+        first = save_prompt_tracking_result(state, **kwargs)
+        second = save_prompt_tracking_result(state, **kwargs)
+        self.assertNotEqual(first["result_id"], second["result_id"])
+        self.assertEqual(state.session_metadata["latest_tracking_result_id"], second["result_id"])
+        self.assertEqual([path.stem for path in (self.session_path / "tracking").glob("*.json")], [second["result_id"]])
 
     def test_same_validity_for_retrieval_guidance_and_restore(self):
         saved = save_prompt_tracking_result(state, model_name="cotracker3_online", num_points=1, num_frames=2,
@@ -283,8 +288,8 @@ class TrackingResultTests(BackendStateTestCase):
             load_prompt_tracking_result(state, "missing")
         self.assertEqual(context.exception.status_code, 404)
 
-    def test_metadata_preserves_latest_tracking_keys(self):
-        write_session_metadata(
+    def test_saved_metadata_document_keeps_the_latest_tracking_keys(self):
+        commit_session(
             state, {
                 "latest_tracking_result_id": "abc",
                 "latest_tracking_result_path": "tracking/abc.json",
@@ -292,9 +297,9 @@ class TrackingResultTests(BackendStateTestCase):
                 "latest_tracking_result_summary": {"num_points": 1},
             }
         )
-        write_session_metadata(state, {"schema_version": 2})
+        commit_session(state, {"created_at": "then"})
 
-        metadata = load_mask_manifest(self.session_path / "session.json")
+        metadata = session_metadata_document(state)
         self.assertEqual(metadata["latest_tracking_result_id"], "abc")
         self.assertEqual(metadata["latest_tracking_result_summary"], {"num_points": 1})
 

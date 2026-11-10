@@ -47,10 +47,6 @@ def release_active_session(session: BackendState, *, clear_video_masker: bool = 
         session.annotations.clear_prompts()
     cleanup_cuda_memory()
 
-def bump_video_state_epoch(session: BackendState) -> int:
-    session.video_state_epoch += 1
-    return session.video_state_epoch
-
 def reset_video_session_state(session: BackendState):
     session.interactive_mask_files = {}
     session.annotations.clear_prompts()

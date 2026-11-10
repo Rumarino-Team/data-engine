@@ -58,7 +58,7 @@ class PromptTrackingStatusTests(BackendStateTestCase):
         self.tmp_dir = str(self.temp_dir())
         self.working_session(
             Path(self.tmp_dir) / "session", session_id="session-1", frames=("00000.jpg", "00001.jpg"),
-            video_dir=self.tmp_dir, video_state_epoch=1, tracker=_FakeTracker(),
+            video_dir=self.tmp_dir, tracker=_FakeTracker(),
             video_masker=_FakeInteractiveMasker(),
             annotations=SessionAnnotations(
                 objects={1: {"id": 1, "label": "Object 1", "color": "#ff0000"}},
@@ -68,10 +68,8 @@ class PromptTrackingStatusTests(BackendStateTestCase):
         self.restored_masker = _FakeRestoreMasker()
         self.factory = Mock(return_value=self.restored_masker)
         self.replay = Mock()
-        self.persist = Mock()
         self.runtime = VideoMaskerRuntime(
-            session=state, create_masker=self.factory, replay_inputs=self.replay,
-            persist_session=self.persist, release_memory=Mock(),
+            session=state, create_masker=self.factory, replay_inputs=self.replay, release_memory=Mock(),
         )
 
     def run_tracking(self):
@@ -96,7 +94,6 @@ class PromptTrackingStatusTests(BackendStateTestCase):
         def publish_after_restoration(*args, **kwargs):
             self.assertIs(state.video_masker, self.restored_masker)
             self.replay.assert_called_once_with(state)
-            self.persist.assert_called_once_with(state)
             return {"result_id": "track-1", "summary": {}}
 
         with (
@@ -124,7 +121,6 @@ class PromptTrackingStatusTests(BackendStateTestCase):
         self.assertNotIn("Restoring masking state", labels)
         self.factory.assert_called_once()
         self.replay.assert_called_once_with(state)
-        self.persist.assert_called_once_with(state)
         self.assertEqual(self.restored_masker.init_args, (self.tmp_dir,))
         self.assertEqual(self.restored_masker.init_kwargs["batch_size"], 32)
         self.assertEqual(result["tracking_result_id"], "track-1")
@@ -149,7 +145,6 @@ class PromptTrackingStatusTests(BackendStateTestCase):
 
         self.assertEqual(failure.exception.status_code, 400)
         self.assertIs(state.video_masker, self.restored_masker)
-        self.persist.assert_called_once_with(state)
         publish.assert_not_called()
 
     def test_computation_errors_keep_their_status_when_restoration_fails(self):

@@ -170,64 +170,6 @@ def get_colors(num_colors: int) -> List[Tuple[int, int, int]]:
   random.shuffle(colors)
   return colors
 
-def get_points_on_a_grid(
-    size: int,
-    extent: Tuple[float, ...],
-    center: Optional[Tuple[float, ...]] = None,
-    device: Optional[torch.device] = torch.device("cpu"),
-):
-    r"""Get a grid of points covering a rectangular region
-
-    `get_points_on_a_grid(size, extent)` generates a :attr:`size` by
-    :attr:`size` grid fo points distributed to cover a rectangular area
-    specified by `extent`.
-
-    The `extent` is a pair of integer :math:`(H,W)` specifying the height
-    and width of the rectangle.
-
-    Optionally, the :attr:`center` can be specified as a pair :math:`(c_y,c_x)`
-    specifying the vertical and horizontal center coordinates. The center
-    defaults to the middle of the extent.
-
-    Points are distributed uniformly within the rectangle leaving a margin
-    :math:`m=W/64` from the border.
-
-    It returns a :math:`(1, \text{size} \times \text{size}, 2)` tensor of
-    points :math:`P_{ij}=(x_i, y_i)` where
-
-    .. math::
-        P_{ij} = \left(
-             c_x + m -\frac{W}{2} + \frac{W - 2m}{\text{size} - 1}\, j,~
-             c_y + m -\frac{H}{2} + \frac{H - 2m}{\text{size} - 1}\, i
-        \right)
-
-    Points are returned in row-major order.
-
-    Args:
-        size (int): grid size.
-        extent (tuple): height and with of the grid extent.
-        center (tuple, optional): grid center.
-        device (str, optional): Defaults to `"cpu"`.
-
-    Returns:
-        Tensor: grid.
-    """
-    if size == 1:
-        return torch.tensor([extent[1] / 2, extent[0] / 2], device=device)[None, None]
-
-    if center is None:
-        center = [extent[0] / 2, extent[1] / 2]
-
-    margin = extent[1] / 64
-    range_y = (margin - extent[0] / 2 + center[0], extent[0] / 2 + center[0] - margin)
-    range_x = (margin - extent[1] / 2 + center[1], extent[1] / 2 + center[1] - margin)
-    grid_y, grid_x = torch.meshgrid(
-        torch.linspace(*range_y, size, device=device),
-        torch.linspace(*range_x, size, device=device),
-        indexing="ij",
-    )
-    return torch.stack([grid_x, grid_y], dim=-1).reshape(1, -1, 2)
-
 def paint_point_track(
     frames: np.ndarray,
     point_tracks: np.ndarray,
@@ -545,24 +487,3 @@ class CoTracker:
 
         return pred_tracks, pred_visibility, (height, width)
 
-if __name__ == '__main__':
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--video_path", type=str, default="./videos/bear.mp4", help="path to a video")
-    parser.add_argument("--output_path", type=str, default="./output.mp4", help="path to save the output video")
-    parser.add_argument("--grid_size", type=int, default=15, help="grid size for tracking")
-    args = parser.parse_args()
-
-    # Load video
-    video = read_video_rgb(args.video_path)
-    
-    # Initialize tracker
-    tracker = CoTracker()
-
-    # Track points
-    tracks, visibility = tracker.track(video, grid_size=args.grid_size)
-
-    # Visualize and save video
-    painted_video = paint_point_track(video, tracks, visibility)
-    write_video_rgb(args.output_path, painted_video, fps=read_video_fps(args.video_path))
-    print(f"Saved tracking video to {args.output_path}")

@@ -34,13 +34,7 @@ def build_window_dir(
     for local_idx, source_path in enumerate(frame_paths):
         target_name = f"{local_idx:05d}{source_path.suffix.lower()}"
         target_path = window_dir / target_name
-        try:
-            os.symlink(source_path, target_path)
-        except OSError:
-            try:
-                os.link(source_path, target_path)
-            except OSError:
-                shutil.copy2(source_path, target_path)
+        link_or_copy_file(source_path, target_path)
         if progress_callback is not None:
             progress_callback(local_idx + 1, total, source_path)
 

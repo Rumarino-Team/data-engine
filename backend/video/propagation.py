@@ -10,10 +10,10 @@ from core.context import AppContext
 from core.jobs import JobHandle, capture_job_inputs, validate_job_inputs
 from core.runtime import cleanup_cuda_memory
 from schemas.video import VideoPropagateRequest
-from sessions.artifacts import sweep_unreferenced_artifacts
+from sessions.artifacts import reclaim_superseded_artifacts, sweep_unreferenced_artifacts
 from sessions.cache import clear_window_cache
 from sessions.checkpoints import saved_state
-from sessions.metadata import current_masks_dir, write_session_metadata
+from sessions.metadata import current_masks_dir
 from utils import build_empty_mask_manifest, load_mask_manifest, prepare_video_masks_output, save_single_video_mask_frame, write_mask_manifest
 from video.io import build_window_dir
 from video.masks import manifest_frame_payload, override_pixels
@@ -78,9 +78,6 @@ def run_propagation_job(ctx: AppContext, request: VideoPropagateRequest, job: Jo
     if session.video_dir is None:
         raise OperationError(400, "Video directory not set. Call /video/init_state first.")
 
-    if request.reverse:
-        raise OperationError(400, "Reverse propagation is not supported in half-window mode.")
-
     if not session.video_frame_files:
         raise OperationError(400, "No video frames available. Call /video/init_state first.")
 
@@ -104,27 +101,7 @@ def run_propagation_job(ctx: AppContext, request: VideoPropagateRequest, job: Jo
     if request.max_frame_num_to_track is None:
         end_frame_idx = num_frames - 1
     else:
-        requested = int(request.max_frame_num_to_track)
-        if requested <= 0:
-            return {
-                "video_segments": {},
-                "video_segments_total_frames": 0,
-                "video_segments_returned_frames": 0,
-                "video_segments_returned_mask_values": 0,
-                "video_segments_truncated": False,
-                "saved_mask_frame_count": 0,
-                "saved_mask_save_failures": 0,
-                "saved_mask_paths": {},
-                "online_mode": effective_online_mode,
-                "batch_size": effective_batch_size,
-                "tracked_points_used": False,
-                "tracked_points_skipped_reason": None,
-                "tracked_points_seeded_count": 0,
-                "tracked_points_seeded_frames": 0,
-                "session.mask_manifest_path": session.mask_manifest_path,
-                "state_epoch": int(session.video_state_epoch),
-            }
-        end_frame_idx = min(num_frames - 1, start_frame_idx + requested - 1)
+        end_frame_idx = min(num_frames - 1, start_frame_idx + int(request.max_frame_num_to_track) - 1)
 
     if end_frame_idx < start_frame_idx:
         raise OperationError(400, "Invalid propagation frame range.")
@@ -498,13 +475,14 @@ def run_propagation_job(ctx: AppContext, request: VideoPropagateRequest, job: Jo
             session.interactive_mask_files = {key: value for key, value in previous_masks.items()
                                             if int(key) not in processed_frames}
             session.mask_manifest_path = str(manifest_file_path)
-            write_session_metadata(session)
         except BaseException:
             session.interactive_mask_files = previous_masks
             session.mask_manifest_path = previous_path
             # The unpublished manifest and overlays are unreachable; the previous run stays intact.
             sweep_unreferenced_artifacts(session)
             raise
+        # The previous run's files are deleted once the new manifest is accepted.
+        reclaim_superseded_artifacts(session)
 
     return {
         "session_id": inputs["session_id"],
@@ -512,8 +490,6 @@ def run_propagation_job(ctx: AppContext, request: VideoPropagateRequest, job: Jo
         "video_segments": video_segments_serializable if request.include_masks_in_response else {},
         "video_segments_total_frames": len(processed_frames),
         "video_segments_returned_frames": len(video_segments_serializable),
-        "video_segments_returned_mask_values": 0,
-        "video_segments_truncated": False,
         "saved_mask_frame_count": saved_mask_frame_count,
         "saved_mask_save_failures": save_failures,
         "saved_mask_paths": saved_mask_paths_serializable,
@@ -528,7 +504,5 @@ def run_propagation_job(ctx: AppContext, request: VideoPropagateRequest, job: Jo
         "tracked_points_seeded_count": total_tracked_points_seeded,
         "tracked_points_seeded_frames": len(tracked_points_seeded_frames),
         "mask_manifest_path": session.mask_manifest_path,
-        "session.mask_manifest_path": session.mask_manifest_path,
-        "state_epoch": int(session.video_state_epoch),
         "saved_state": saved_state(session),
     }

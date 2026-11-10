@@ -1,10 +1,9 @@
-import json, logging, os, re, tempfile
+import json, logging, os, tempfile
 from pathlib import Path
 from typing import Any, Optional
 from core.errors import OperationError
 from core.jobs import utc_now_iso
 from core.state import BackendState
-from sessions.artifacts import reclaim_superseded_artifacts
 from utils import load_mask_manifest
 
 logger = logging.getLogger(__name__)
@@ -12,15 +11,11 @@ logger = logging.getLogger(__name__)
 def current_session_path(session: BackendState) -> Optional[Path]:
     return session.active_session_dir.resolve() if session.active_session_dir is not None else None
 
-def current_frames_dir(session: BackendState) -> Optional[Path]:
-    session_path = current_session_path(session)
-    return session_path / "frames" if session_path is not None else None
-
 def current_masks_dir(session: BackendState) -> Optional[Path]:
     session_path = current_session_path(session)
     return session_path / "masks" if session_path is not None else None
 
-# Session fields owned outside annotations; kept in memory so writes never re-read session.json.
+# Session fields owned outside annotations; they live in memory and are restored from a checkpoint's session.json.
 PERSISTED_METADATA_KEYS = (
     "interactive_state",
     "created_at",
@@ -50,10 +45,8 @@ def session_metadata_document(session: BackendState, overrides: Optional[dict[st
         "display_name": session.display_name,
         "source_video_path": session.video_source_path,
         "resolved_video_frames_dir": session.video_dir,
-        "state.mask_manifest_path": session.mask_manifest_path,
         "mask_manifest_file": Path(session.mask_manifest_path).name if session.mask_manifest_path else None,
         "num_frames": len(session.video_frame_files),
-        "state_epoch": int(session.video_state_epoch),
         "updated_at": utc_now_iso(),
     }
     if session.video_masker is not None:
@@ -88,16 +81,6 @@ def write_metadata_file(directory: Path, metadata: dict[str, Any]) -> None:
     finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
-
-def write_session_metadata(session: BackendState, extra: Optional[dict[str, Any]] = None) -> None:
-    session_path = current_session_path(session)
-    if session_path is None:
-        return
-    if extra:
-        session.session_metadata.update(extra)
-    write_metadata_file(session_path, session_metadata_document(session))
-    # Files become garbage only after committed metadata stops naming them.
-    reclaim_superseded_artifacts(session)
 
 def load_session_metadata(session_root: Path) -> dict[str, Any]:
     session_json_path = session_root / "session.json"

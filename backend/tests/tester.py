@@ -498,7 +498,7 @@ def restore_bedroom_masks_output(result_payload):
     if not isinstance(result_payload, dict):
         return False
 
-    manifest_path_raw = result_payload.get("mask_manifest_path") or result_payload.get("state.mask_manifest_path")
+    manifest_path_raw = result_payload.get("mask_manifest_path")
     if not manifest_path_raw:
         print("No mask manifest path returned; cannot restore bedroom mask output folder.")
         return False

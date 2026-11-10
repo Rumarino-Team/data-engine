@@ -1,6 +1,5 @@
 import asyncio
 from contextlib import contextmanager
-import json
 from pathlib import Path
 import sys
 import threading
@@ -15,7 +14,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.factory import create_app
 from support import state
 from routers import video as video_routes
-from sessions.metadata import write_session_metadata
 from support import BackendStateFixtures
 from video import service
 
@@ -31,7 +29,6 @@ class RequestConcurrencyTests(BackendStateFixtures, unittest.IsolatedAsyncioTest
             video_masker=self.make_masker(),
         )
         state.annotations.create_object()
-        write_session_metadata(state)
         self.job_id = self.finished_job({"message": "previous job"})
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=create_app(self.ctx)), base_url="http://test",
@@ -55,6 +52,15 @@ class RequestConcurrencyTests(BackendStateFixtures, unittest.IsolatedAsyncioTest
         # accidentally executes this blocking operation itself.
         if not self.release.wait(timeout=5):
             raise TimeoutError("The blocked worker was never released.")
+
+    def hold_edit_open(self):
+        """Block inside an edit that is still holding the foreground lock."""
+        real_update = service.annotation_update
+
+        def hold(*args):
+            self.block_worker()
+            return real_update(*args)
+        return patch.object(service, "annotation_update", side_effect=hold)
 
     def start_request(self, method, path, **kwargs):
         task = asyncio.create_task(self.client.request(method, path, **kwargs))
@@ -95,14 +101,10 @@ class RequestConcurrencyTests(BackendStateFixtures, unittest.IsolatedAsyncioTest
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["annotation_delta"]["revision"], 2)
 
-    async def test_concurrent_mutation_and_snapshot_wait_for_metadata_acceptance(self):
+    async def test_concurrent_mutation_and_snapshot_wait_for_the_edit_to_finish(self):
         second_entered, read_entered = asyncio.Event(), asyncio.Event()
         original_operation = self.ctx.edit
         original_info = video_routes.get_video_info
-
-        def persist(*args):
-            self.block_worker()
-            write_session_metadata(state)
 
         @contextmanager
         def observed_operation():
@@ -114,7 +116,7 @@ class RequestConcurrencyTests(BackendStateFixtures, unittest.IsolatedAsyncioTest
             self.loop.call_soon_threadsafe(read_entered.set)
             return original_info(*args)
 
-        with patch.object(service, "write_session_metadata", side_effect=persist):
+        with self.hold_edit_open():
             first = self.start_create()
             try:
                 await asyncio.wait_for(self.entered.wait(), timeout=1)
@@ -126,8 +128,6 @@ class RequestConcurrencyTests(BackendStateFixtures, unittest.IsolatedAsyncioTest
                     await self.assert_control_requests_respond()
                     self.assertFalse(second.done())
                     self.assertFalse(snapshot.done())
-                    persisted = json.loads((self.session_path / "session.json").read_text())
-                    self.assertEqual(persisted["annotations"]["revision"], 1)
                     self.release.set()
                     responses = await asyncio.wait_for(asyncio.gather(first, second, snapshot), timeout=5)
             finally:
@@ -144,16 +144,12 @@ class RequestConcurrencyTests(BackendStateFixtures, unittest.IsolatedAsyncioTest
         read_entered = asyncio.Event()
         original_info = video_routes.get_video_info
 
-        def persist(*args):
-            self.block_worker()
-            write_session_metadata(state)
-
         def observed_info(*args):
             self.loop.call_soon_threadsafe(read_entered.set)
             return original_info(*args)
 
         try:
-            with (patch.object(service, "write_session_metadata", side_effect=persist),
+            with (self.hold_edit_open(),
                   patch.object(video_routes, "get_video_info", observed_info)):
                 first = self.start_create()
                 await asyncio.wait_for(self.entered.wait(), timeout=1)
@@ -170,12 +166,8 @@ class RequestConcurrencyTests(BackendStateFixtures, unittest.IsolatedAsyncioTest
             await asyncio.wait_for(asyncio.gather(*self.requests, return_exceptions=True), timeout=5)
             limiter.total_tokens = previous_tokens
 
-    async def test_disconnected_request_does_not_release_mutation_lock_before_commit(self):
-        def persist(*args):
-            self.block_worker()
-            write_session_metadata(state)
-
-        with patch.object(service, "write_session_metadata", side_effect=persist):
+    async def test_disconnected_request_does_not_release_mutation_lock_before_the_edit_finishes(self):
+        with self.hold_edit_open():
             edit = self.start_create()
             try:
                 await asyncio.wait_for(self.entered.wait(), timeout=1)
@@ -188,8 +180,7 @@ class RequestConcurrencyTests(BackendStateFixtures, unittest.IsolatedAsyncioTest
             finally:
                 self.release.set()
             # The HTTP waiter was cancelled; the synchronous edit still owns
-            # its lock through persistence, so the snapshot observes acceptance.
+            # its lock until it finishes, so the snapshot observes acceptance.
             response = await asyncio.wait_for(snapshot, timeout=5)
         self.assertEqual(response.status_code, 200)
-        persisted = json.loads((self.session_path / "session.json").read_text())
-        self.assertEqual(persisted["annotations"]["revision"], 2)
+        self.assertEqual(response.json()["annotations"]["revision"], 2)

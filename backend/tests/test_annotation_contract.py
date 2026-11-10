@@ -1,6 +1,5 @@
 """The editing contract between a client and the backend: object lifecycle, preconditions and serialization."""
 from concurrent.futures import ThreadPoolExecutor
-import json
 from pathlib import Path
 import sys
 import threading
@@ -13,7 +12,7 @@ from core.errors import OperationError
 from support import state
 from pydantic import ValidationError
 from schemas.video import AnnotationPrecondition, VideoPrompt
-from sessions.metadata import write_session_metadata
+from sessions.metadata import session_metadata_document
 from annotation_delta import apply_delta, same_annotations
 from support import BackendStateTestCase
 from video import service
@@ -28,7 +27,8 @@ class ObjectLifecycleTests(BackendStateTestCase):
         self.client = self.make_client()
 
     def session_objects(self):
-        annotations = json.loads((self.session_path / "session.json").read_text())["annotations"]
+        # What Save would write: the accepted state, built from memory.
+        annotations = session_metadata_document(state)["annotations"]
         return sorted(annotations["objects"].values(), key=lambda obj: obj["id"])
 
     def info(self):
@@ -80,7 +80,7 @@ class ObjectLifecycleTests(BackendStateTestCase):
         self.assertEqual(self.client.post("/video/objects").json()["created_object_id"], 8)
         state.video_masker = self.make_masker()
         self.assertEqual(self.client.post("/video/remove_object", params={"obj_id": 8}).status_code, 200)
-        metadata = json.loads((self.session_path / "session.json").read_text())
+        metadata = session_metadata_document(state)
         state.annotations = SessionAnnotations.model_validate(metadata["annotations"])
         self.assertEqual(state.annotations.objects, {})
         self.assertEqual(self.client.post("/video/objects").json()["created_object_id"], 9)
@@ -96,8 +96,8 @@ class ObjectLifecycleTests(BackendStateTestCase):
         self.assertEqual(delta["revision"], 4)
         self.assertEqual(list(delta["objects"]), ["1"])
         self.assertEqual(delta["prompts"], [])
-        persisted = json.loads((self.session_path / "session.json").read_text())
-        self.assertTrue(same_annotations(apply_delta(before, delta), persisted["annotations"]))
+        saved = session_metadata_document(state)
+        self.assertTrue(same_annotations(apply_delta(before, delta), saved["annotations"]))
         self.assertNotIn("annotations", snapshot)
         self.assertNotIn("frame_files", snapshot)
 
@@ -129,7 +129,6 @@ class PreconditionTests(BackendStateTestCase):
         state.active_session_id = "current"
         state.annotations.create_object()
         state.video_masker = self.make_masker(offload_video_to_cpu=False)
-        write_session_metadata(state)
         self.client = self.make_client(preconditions=False)
 
     def headers(self, session="current", revision=1):
@@ -137,7 +136,7 @@ class PreconditionTests(BackendStateTestCase):
 
     def test_all_object_mutations_reject_stale_identity_or_revision_before_side_effects(self):
         before = state.annotations.snapshot()
-        metadata = (state.active_session_dir / "session.json").read_bytes()
+        metadata = dict(state.session_metadata)
         for headers in [self.headers(session="previous"), self.headers(revision=0)]:
             for method, url, body in [
                 ("POST", "/video/objects", None),
@@ -153,7 +152,7 @@ class PreconditionTests(BackendStateTestCase):
                     response = self.client.request(method, url, headers=headers, json=body)
                     self.assertEqual(response.status_code, 409)
                     self.assertEqual(state.annotations.snapshot(), before)
-                    self.assertEqual((state.active_session_dir / "session.json").read_bytes(), metadata)
+                    self.assertEqual(state.session_metadata, metadata)
         state.video_masker.remove_object.assert_not_called()
         state.video_masker.add_new_points_or_box.assert_not_called()
         state.video_masker.clear_all_prompts_in_frame.assert_not_called()
@@ -209,26 +208,26 @@ class PreconditionTests(BackendStateTestCase):
         self.assertEqual(sorted(results), [200, 409])
         self.assertEqual(state.annotations.revision, 2)
         self.assertEqual(state.annotations.next_object_id, 3)
-        persisted = json.loads((state.active_session_dir / "session.json").read_text())
-        self.assertEqual(persisted["annotations"], state.annotations.snapshot())
 
-    def test_job_admission_waits_for_edit_persistence_and_snapshot(self):
+    def test_job_admission_waits_for_an_edit_and_its_snapshot(self):
         entered = threading.Event()
         release = threading.Event()
         admission_attempted = threading.Event()
 
-        def persist(*args):
+        real_update = service.annotation_update
+
+        def hold_the_edit(*args):
             entered.set()
             self.assertTrue(release.wait(timeout=5))
             self.assertFalse(self.ctx.jobs.is_active())
-            write_session_metadata(state)
+            return real_update(*args)
 
         def admit():
             admission_attempted.set()
             self.activate_job("queued")
             return self.ctx.jobs.snapshot()
         with ThreadPoolExecutor(max_workers=2) as pool:
-            with patch.object(service, "write_session_metadata", side_effect=persist):
+            with patch.object(service, "annotation_update", side_effect=hold_the_edit):
                 edit = pool.submit(service.create_object, self.ctx,
                                    AnnotationPrecondition(session_id="current", expected_revision=1))
                 self.assertTrue(entered.wait(timeout=5))
@@ -242,8 +241,13 @@ class PreconditionTests(BackendStateTestCase):
                 self.assertEqual(admission.result(timeout=5)["status"], "queued")
         self.assertEqual(self.client.post("/video/objects", headers=self.headers(revision=2)).status_code, 409)
 
-    def test_lock_is_released_after_persistence_failure_and_snapshot_can_recover(self):
-        with patch.object(service, "write_session_metadata", side_effect=OSError("disk error")):
+    def test_lock_is_released_after_a_failed_edit_and_snapshot_can_recover(self):
+        real_create = SessionAnnotations.create_object
+
+        def create_then_fail(annotations):
+            real_create(annotations)
+            raise OSError("disk error")
+        with patch.object(SessionAnnotations, "create_object", create_then_fail):
             with self.assertRaises(OSError):
                 self.client.post("/video/objects", headers=self.headers())
         # Rejected creates leave the accepted revision and ID high-water mark intact.

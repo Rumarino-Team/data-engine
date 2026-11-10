@@ -53,8 +53,7 @@ def load_tracking_video(ctx: AppContext, request: TrackingLoadVideoRequest):
         if tracker is None or tracker.model_name != requested_model:
             tracker = cot.CoTracker(model_name=requested_model)
         candidate = BackendState(tracker=tracker, tracking_video=video,
-                                 tracking_video_path=str(resolved_video_path),
-                                 video_state_epoch=session.video_state_epoch + 1)
+                                 tracking_video_path=str(resolved_video_path))
         response = {
             "message": "Video loaded successfully",
             "model_name": tracker.model_name,

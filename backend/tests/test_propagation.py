@@ -57,8 +57,7 @@ class PartialPropagationTests(unittest.TestCase):
                     )
                     ctx = AppContext(SessionManager(state))
                     runtime = VideoMaskerRuntime(
-                        session=state, create_masker=Mock(), replay_inputs=Mock(),
-                        persist_session=Mock(), release_memory=Mock(),
+                        session=state, create_masker=Mock(), replay_inputs=Mock(), release_memory=Mock(),
                     )
                     if explicit_override:
                         state.annotations.set_mask(store_mask_override(root, 1, 1, np.ones((8, 8), dtype=bool)))
@@ -66,7 +65,6 @@ class PartialPropagationTests(unittest.TestCase):
                     for name, value in {
                         "WINDOW_FRAMES_ROOT": root / "windows",
                         "current_masks_dir": lambda session: masks, "clear_window_cache": Mock(),
-                        "write_session_metadata": Mock(),
                         "create_masker_runtime": lambda session: runtime,
                     }.items():
                         patches.enter_context(patch.object(propagation, name, value))
@@ -102,7 +100,7 @@ class PartialPropagationTests(unittest.TestCase):
                     previous_manifest = Path(previous_path).read_bytes()
                     request = VideoPropagateRequest(start_frame_idx=1, max_frame_num_to_track=2,
                                                     use_tracked_points=False, export_overlay_frames=False)
-                    with patch.object(propagation, "write_session_metadata", side_effect=OSError("disk full")):
+                    with patch.object(propagation, "write_mask_manifest", side_effect=OSError("disk full")):
                         with self.assertRaises(OSError):
                             propagation.run_propagation_job(ctx, request, Mock(spec=JobHandle))
                     self.assertEqual(state.mask_manifest_path, previous_path)

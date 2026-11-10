@@ -19,6 +19,7 @@ from app.factory import create_app
 from core.context import AppContext, SessionManager
 from core.jobs import JobHandle, JobManager
 from core.state import BackendState
+from sessions.artifacts import reclaim_superseded_artifacts
 
 _active: Optional[AppContext] = None
 
@@ -113,6 +114,12 @@ class BackendStateFixtures:
     def job_handle(self) -> Mock:
         """A stand-in for the handle a job worker receives; progress calls are recorded, not stored."""
         return Mock(spec=JobHandle)
+
+
+def commit_session(session, extra=None) -> None:
+    """What an accepted change does to a working copy: record in-memory metadata, reclaim superseded files."""
+    session.session_metadata.update(extra or {})
+    reclaim_superseded_artifacts(session)
 
 
 def _deactivate() -> None:

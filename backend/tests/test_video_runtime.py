@@ -22,14 +22,12 @@ class FakeMasker:
 
 class VideoMaskerRuntimeTests(unittest.TestCase):
     def make_runtime(self):
-        session = BackendState(
-            video_dir="frames", active_session_id="session", video_masker=FakeMasker(), video_state_epoch=5,
-        )
+        session = BackendState(video_dir="frames", active_session_id="session", video_masker=FakeMasker())
         session.annotations.create_object()
         restored = FakeMasker()
         runtime = VideoMaskerRuntime(
             session=session, create_masker=Mock(return_value=restored), replay_inputs=Mock(),
-            persist_session=Mock(), release_memory=Mock(),
+            release_memory=Mock(),
         )
         return runtime, restored
 
@@ -42,18 +40,15 @@ class VideoMaskerRuntimeTests(unittest.TestCase):
         runtime.release_memory.side_effect = lambda: events.append("release")
         restored.init_state.side_effect = lambda *args, **kwargs: events.append("initialize")
         runtime.replay_inputs.side_effect = lambda active: events.append("replay")
-        runtime.persist_session.side_effect = lambda active: events.append("persist")
         progress = Mock()
 
         with runtime.suspended(progress_callback=progress):
             self.assertIsNone(session.video_masker)
             self.assertIsNone(original())
-            self.assertEqual(session.video_state_epoch, 6)
             events.append("compute")
 
-        self.assertEqual(events, ["release", "compute", "initialize", "replay", "persist"])
+        self.assertEqual(events, ["release", "compute", "initialize", "replay"])
         self.assertIs(session.video_masker, restored)
-        self.assertEqual(session.video_state_epoch, 7)
         self.assertEqual(session.annotations.snapshot(), accepted)
         runtime.create_masker.assert_called_once_with(progress_callback=progress)
         restored.init_state.assert_called_once_with(
@@ -62,10 +57,9 @@ class VideoMaskerRuntimeTests(unittest.TestCase):
             async_loading_frames=False, progress_callback=progress,
         )
         runtime.replay_inputs.assert_called_once_with(session)
-        runtime.persist_session.assert_called_once_with(session)
 
     def test_successful_computation_requires_successful_restoration(self):
-        for failure_stage in ("construction", "initialization", "replay", "persistence"):
+        for failure_stage in ("construction", "initialization", "replay"):
             with self.subTest(stage=failure_stage):
                 runtime, restored = self.make_runtime()
                 before = runtime.session.annotations.snapshot()
@@ -74,7 +68,6 @@ class VideoMaskerRuntimeTests(unittest.TestCase):
                     "construction": runtime.create_masker,
                     "initialization": restored.init_state,
                     "replay": runtime.replay_inputs,
-                    "persistence": runtime.persist_session,
                 }[failure_stage]
                 collaborator.side_effect = failure
 
@@ -86,7 +79,6 @@ class VideoMaskerRuntimeTests(unittest.TestCase):
                 self.assertIs(caught.exception.__cause__, failure)
                 self.assertIsNone(runtime.session.video_masker)
                 self.assertEqual(runtime.session.annotations.snapshot(), before)
-                self.assertEqual(runtime.session.video_state_epoch, 8 if failure_stage == "persistence" else 7)
 
     def test_computation_error_survives_failed_restoration(self):
         runtime, _ = self.make_runtime()
@@ -111,7 +103,6 @@ class VideoMaskerRuntimeTests(unittest.TestCase):
 
         self.assertIs(caught.exception, computation_error)
         self.assertIs(runtime.session.video_masker, restored)
-        runtime.persist_session.assert_called_once_with(runtime.session)
 
     def test_absent_masker_is_not_loaded_on_exit(self):
         runtime, _ = self.make_runtime()
@@ -122,14 +113,13 @@ class VideoMaskerRuntimeTests(unittest.TestCase):
 
         runtime.create_masker.assert_not_called()
         runtime.release_memory.assert_not_called()
-        self.assertEqual(runtime.session.video_state_epoch, 5)
 
-    def test_restore_uses_explicit_session_and_can_preserve_epoch(self):
+    def test_restore_acts_on_the_runtimes_own_session_only(self):
         runtime, _ = self.make_runtime()
         original = runtime.session.video_masker
-        other = BackendState(video_masker=FakeMasker(), video_state_epoch=100)
+        other = BackendState(video_masker=FakeMasker())
 
-        runtime.restore(MaskerSettings(True, 3, False, True), increment_epoch=False)
+        runtime.restore(MaskerSettings(True, 3, False, True))
 
         runtime.create_masker.assert_not_called()
         original.init_state.assert_called_once_with(
@@ -138,13 +128,9 @@ class VideoMaskerRuntimeTests(unittest.TestCase):
             async_loading_frames=False, progress_callback=None,
         )
         runtime.replay_inputs.assert_called_once_with(runtime.session)
-        runtime.persist_session.assert_not_called()
-        self.assertEqual(runtime.session.video_state_epoch, 5)
-        self.assertEqual(other.video_state_epoch, 100)
         other.video_masker.init_state.assert_not_called()
 
-
-    def test_initialization_builds_the_model_once_and_leaves_epoch_and_persistence_to_the_caller(self):
+    def test_initialization_builds_the_model_once(self):
         runtime, restored = self.make_runtime()
         session = runtime.session
         session.video_masker = None
@@ -162,8 +148,6 @@ class VideoMaskerRuntimeTests(unittest.TestCase):
         runtime.replay_inputs.assert_called_once_with(session)
         runtime.initialize(settings)
         runtime.create_masker.assert_called_once()
-        self.assertEqual(session.video_state_epoch, 5)
-        runtime.persist_session.assert_not_called()
 
     def test_borrowed_masker_returns_to_the_sessions_own_frames_and_inputs(self):
         runtime, _ = self.make_runtime()
@@ -178,8 +162,6 @@ class VideoMaskerRuntimeTests(unittest.TestCase):
         self.assertIs(session.video_masker, lent)
         self.assertEqual(lent.init_state.call_args.args, ("frames",))
         runtime.replay_inputs.assert_called_once_with(session)
-        self.assertEqual(session.video_state_epoch, 6)
-        runtime.persist_session.assert_called_once_with(session)
 
         runtime.replay_inputs.side_effect = RuntimeError("restoration failed")
         with self.assertLogs("video.runtime", level="ERROR"):
@@ -210,7 +192,6 @@ class VideoMaskerRuntimeTests(unittest.TestCase):
         masker.reset_state.assert_called_once_with()
         runtime.replay_inputs.assert_called_once_with(session)
         self.assertIs(session.video_masker, masker)
-        self.assertEqual(session.video_state_epoch, 6)
 
         failure = RuntimeError("replay failed")
         runtime.replay_inputs.side_effect = failure
@@ -219,7 +200,6 @@ class VideoMaskerRuntimeTests(unittest.TestCase):
                 runtime.rebuild_inputs()
         self.assertIs(caught.exception.__cause__, failure)
         self.assertIsNone(session.video_masker)
-        self.assertEqual(session.video_state_epoch, 7)
 
 
 if __name__ == "__main__":

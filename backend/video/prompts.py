@@ -1,11 +1,10 @@
 from contextlib import contextmanager
-from sessions.artifacts import sweep_unreferenced_artifacts
+from sessions.artifacts import reclaim_superseded_artifacts, sweep_unreferenced_artifacts
 from video.masks import override_pixels
 from core.errors import OperationError
 import sam2_video_masker as svm
 from core.runtime import cleanup_cuda_memory
 from core.state import BackendState
-from sessions.metadata import write_session_metadata
 from schemas.video import VideoPrompt
 from video.runtime import MaskerRestorationError, VideoMaskerRuntime
 
@@ -37,7 +36,6 @@ def create_masker_runtime(session: BackendState) -> VideoMaskerRuntime:
         session=session,
         create_masker=svm.SAM2VideoMasker,
         replay_inputs=replay_annotation_prompts,
-        persist_session=write_session_metadata,
         release_memory=cleanup_cuda_memory,
     )
 
@@ -46,7 +44,8 @@ def create_masker_runtime(session: BackendState) -> VideoMaskerRuntime:
 def annotation_edit(session: BackendState, *, restore_runtime: bool = True):
     """Stage accepted inputs and restore them when an edit fails.
 
-    Caller holds `ctx.edit()`. Encode results before persisting acceptance.
+    Caller holds `ctx.edit()`. The edit is accepted when the block exits without error, and files its
+    new state no longer names are deleted then.
     Set restore_runtime=False for changes that never touch the predictor.
     """
     # Frame entries are replaced, never mutated by foreground edits.
@@ -72,3 +71,6 @@ def annotation_edit(session: BackendState, *, restore_runtime: bool = True):
                 503, "The edit was rejected and the predictor could not be restored. Reload the video."
             ) from recovery_error
         raise
+    else:
+        # Files become garbage only after the accepted state stops naming them.
+        reclaim_superseded_artifacts(session)

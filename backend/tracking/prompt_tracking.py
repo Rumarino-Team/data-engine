@@ -372,6 +372,5 @@ def run_prompt_tracking_job(
         "tracking_mode": tracking_mode,
         "streaming_frame_threshold": int(DEFAULT_STREAMING_TRACK_FRAME_THRESHOLD),
         "tracking_result_id": tracking_result["result_id"],
-        "state_epoch": int(session.video_state_epoch),
         "saved_state": saved_state(session),
     }

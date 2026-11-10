@@ -15,7 +15,7 @@ from core.errors import OperationError
 from support import state
 from schemas.video import VideoPrompt
 from sessions.cache import release_active_session
-from sessions.metadata import interactive_state_projection, write_session_metadata
+from sessions.metadata import interactive_state_projection, session_metadata_document
 from video import service
 from video.mask_encoding import encode_live_mask_payload
 from video.prompts import create_masker_runtime
@@ -53,7 +53,10 @@ class VideoEditTests(BackendStateTestCase):
         state.video_masker = self.masker
 
     def metadata(self):
-        return json.loads((state.active_session_dir / "session.json").read_text())
+        """The document Save would write: the accepted state, built from memory."""
+        document = json.loads(json.dumps(session_metadata_document(state)))
+        document.pop("updated_at")
+        return document
 
     def save_checkpoint(self, name="checkpoint"):
         with patch.object(service, "SAVED_ROOT", self.root / "saved"):
@@ -88,6 +91,16 @@ class VideoEditTests(BackendStateTestCase):
         write_mask_manifest(self.session / "masks" / "manifest.json", {"num_frames": 1, "frames": {"0": payload}})
         (self.session / "masks" / "frame_00000_masks.png").write_bytes(b"overlay")
 
+    @staticmethod
+    def failing_after(owner, name):
+        """Let a real step run, then fail, as an edit that breaks after changing staged state."""
+        real = getattr(owner, name)
+
+        def run(*args, **kwargs):
+            real(*args, **kwargs)
+            raise OSError("disk full")
+        return patch.object(owner, name, run)
+
     def add_override(self, foreground=False):
         with patch.object(service.cv2, "imread", return_value=np.zeros((3, 3, 3))):
             return self.client.post("/video/add_new_mask", json={
@@ -107,7 +120,7 @@ class VideoEditTests(BackendStateTestCase):
 
     # --- accepting prompts -------------------------------------------------------------------------------
 
-    def test_accepted_prompt_is_persisted_and_snapshot_is_detached(self):
+    def test_accepted_prompt_is_in_the_saved_document_and_snapshot_is_detached(self):
         before = state.annotations.snapshot()
         with patch.object(service, "mask_logits_to_2d_bool", side_effect=lambda mask: mask > 0):
             response = self.client.post("/video/add_new_points_or_box", json=PROMPT)
@@ -162,7 +175,6 @@ class VideoEditTests(BackendStateTestCase):
                 self.assertEqual(body["mask_data"]["objects"]["1"], encode_live_mask_payload(mask))
                 self.assertEqual(body["mask_shapes"], {"1": list(mask.shape)})
                 self.assertEqual(body["mask_pixel_counts"], {"1": int(mask.sum())})
-                self.assertEqual(body["state_epoch"], state.video_state_epoch)
                 self.assertFalse(body["single_frame_fallback_used"])
         self.assertEqual(self.client.get("/video/mask_data/0").json()["objects"]["1"]["rle"], [])
         self.assertEqual(self.post_point(fragmented).json()["mask_data"]["objects"]["1"]["encoding"], "packed-bits")
@@ -212,7 +224,7 @@ class VideoEditTests(BackendStateTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.content, b"overlay")
 
-    def test_empty_override_wins_persists_and_replays_without_frontend_cache(self):
+    def test_empty_override_wins_and_replays_without_frontend_cache(self):
         self.seed_manifest()
         response = self.add_override()
         self.assertEqual(response.status_code, 200)
@@ -299,20 +311,16 @@ class VideoEditTests(BackendStateTestCase):
 
     def test_a_failed_prompt_edit_is_rejected_and_the_predictor_rebuilt(self):
         state.annotations.set_prompt(VideoPrompt(**PROMPT))
-        write_session_metadata(state)
         before = state.annotations.snapshot()
         accepted_result = (0, [1], [np.ones((3, 3))])
         failures = [
             ("inference fails", RuntimeError, [], [RuntimeError("partial inference"), accepted_result]),
             ("mask encoding fails", ValueError,
              [patch.object(service, "encode_live_mask_payload", side_effect=ValueError("bad mask"))], None),
-            ("persistence fails", OSError,
-             [patch("video.service.write_session_metadata", side_effect=OSError("disk full"))], None),
         ]
         for name, error, patches, inference in failures:
             with self.subTest(name), ExitStack() as stack:
                 self.masker.reset_mock(side_effect=True)
-                epoch = state.video_state_epoch
                 for active in patches:
                     stack.enter_context(active)
                 stack.enter_context(patch.object(service, "mask_logits_to_2d_bool", side_effect=lambda mask: mask > 0))
@@ -325,7 +333,6 @@ class VideoEditTests(BackendStateTestCase):
                 self.masker.reset_state.assert_called_once()
                 # The predictor was rebuilt from the accepted prompt, not the rejected one.
                 self.assertEqual(self.masker.add_new_points_or_box.call_args.kwargs["points"], [[1.0, 2.0]])
-                self.assertEqual(state.video_state_epoch, epoch + 1)
                 self.assertTrue(self.client.get("/video/info").json()["predictor_ready"])
 
     def test_failed_runtime_recovery_disables_predictor_and_preserves_annotations(self):
@@ -352,11 +359,11 @@ class VideoEditTests(BackendStateTestCase):
         self.assertEqual(state.annotations.snapshot(), before)
         self.assertEqual(self.masker.add_new_points_or_box.call_args.kwargs["points"], [[1.0, 2.0]])
 
-    def test_failed_override_persistence_restores_previous_mask_predictor_and_files(self):
+    def test_failed_override_edit_restores_previous_mask_predictor_and_files(self):
         self.add_override(True)
         before = self.metadata()
         accepted_files = self.override_files()
-        with patch.object(service, "write_session_metadata", side_effect=OSError("disk full")):
+        with patch.object(service, "effective_mask_data", side_effect=OSError("disk full")):
             with self.assertRaises(OSError):
                 self.add_override(False)
         self.assertEqual(state.annotations.snapshot(), before["annotations"])
@@ -368,18 +375,18 @@ class VideoEditTests(BackendStateTestCase):
     def test_rejected_object_mutations_preserve_inputs_artifacts_and_metadata(self):
         self.add_override(True)
         before = state.annotations.snapshot()
-        metadata = (self.session / "session.json").read_bytes()
+        metadata = self.metadata()
         artifacts = self.override_files()
-        for method, path, body in [
-            ("post", "/video/objects", None),
-            ("put", "/video/objects/1", {"label": "Rejected", "color": "#00ff00"}),
-            ("post", "/video/remove_object?obj_id=1", None),
+        for method, path, body, step in [
+            ("post", "/video/objects", None, "create_object"),
+            ("put", "/video/objects/1", {"label": "Rejected", "color": "#00ff00"}, "upsert_object"),
+            ("post", "/video/remove_object?obj_id=1", None, "remove_object"),
         ]:
-            with self.subTest(path=path), patch.object(service, "write_session_metadata", side_effect=OSError("disk full")):
+            with self.subTest(path=path), self.failing_after(SessionAnnotations, step):
                 with self.assertRaises(OSError):
                     getattr(self.client, method)(path, json=body)
             self.assertEqual(state.annotations.snapshot(), before)
-            self.assertEqual((self.session / "session.json").read_bytes(), metadata)
+            self.assertEqual(self.metadata(), metadata)
             self.assertEqual(self.override_files(), artifacts)
         self.masker.reset_state.assert_called_once()
         self.assertTrue(self.masker.add_new_mask.call_args.kwargs["mask"].all())
@@ -387,19 +394,20 @@ class VideoEditTests(BackendStateTestCase):
     def test_rejected_deletion_disables_failed_runtime_but_preserves_accepted_state(self):
         self.add_override(True)
         before = state.annotations.snapshot()
-        metadata = (self.session / "session.json").read_bytes()
+        metadata = self.metadata()
         self.masker.remove_object.side_effect = RuntimeError("partial deletion")
         self.masker.reset_state.side_effect = RuntimeError("recovery failed")
         response = self.client.post("/video/remove_object?obj_id=1")
         self.assertEqual(response.status_code, 503)
         self.assertIsNone(state.video_masker)
         self.assertEqual(state.annotations.snapshot(), before)
-        self.assertEqual((self.session / "session.json").read_bytes(), metadata)
+        # The document drops the predictor's own settings once it is disabled; the accepted inputs are unchanged.
+        self.assertEqual(self.metadata()["annotations"], metadata["annotations"])
         self.assertFalse(self.client.get("/video/info").json()["predictor_ready"])
 
     # --- persistence and reopening -----------------------------------------------------------------------
 
-    def test_new_session_initializes_and_persists_first_object(self):
+    def test_new_session_initializes_its_first_object(self):
         source = self.root / "source"
         source.mkdir()
         (source / "00000.jpg").touch()
@@ -432,7 +440,6 @@ class VideoEditTests(BackendStateTestCase):
         selected = original.with_name("manifest-run.json")
         selected.write_bytes(original.read_bytes())
         state.mask_manifest_path = str(selected)
-        write_session_metadata(state)
         checkpoint = self.save_checkpoint("result")
         self.assertEqual(Path(state.mask_manifest_path).name, "manifest-run.json")
         self.reopen(checkpoint)
@@ -441,7 +448,6 @@ class VideoEditTests(BackendStateTestCase):
 
     def test_save_without_frontend_annotations_preserves_backend_annotations(self):
         state.annotations.set_prompt(VideoPrompt(**PROMPT))
-        write_session_metadata(state)
         checkpoint = self.save_checkpoint("review")
         expected = state.annotations.snapshot()
         restored = self.reopen(checkpoint)
@@ -453,7 +459,6 @@ class VideoEditTests(BackendStateTestCase):
 
     def test_save_persists_editor_preferences_and_rejects_client_supplied_inputs(self):
         state.annotations.set_prompt(VideoPrompt(**PROMPT))
-        write_session_metadata(state)
         with patch.object(service, "SAVED_ROOT", self.root / "saved"):
             # Editor state carries preferences only; client copies of accepted inputs are rejected outright.
             rejected = self.client.post("/video/save", json={"name": "review", "interactive_state": {
@@ -468,7 +473,6 @@ class VideoEditTests(BackendStateTestCase):
     def test_clear_reset_and_delete_stay_applied_after_reopen(self):
         def seed_prompt():
             state.annotations.set_prompt(VideoPrompt(**PROMPT))
-            write_session_metadata(state)
 
         for kind, seed in [("prompt", seed_prompt), ("override", self.add_override)]:
             for endpoint, params in [CLEAR, RESET, REMOVE]:
@@ -533,25 +537,11 @@ class VideoEditTests(BackendStateTestCase):
                 with self.assertRaisesRegex(OperationError, message):
                     self.reopen(checkpoint)
 
-    def test_failed_metadata_replacement_keeps_previous_complete_annotations(self):
-        write_session_metadata(state)
-        previous = self.metadata()
+    def test_session_metadata_survives_save_and_reopen(self):
+        state.session_metadata.update({"created_at": "then", "latest_tracking_result_id": "abc"})
         state.annotations.set_prompt(VideoPrompt(**PROMPT))
-        with patch("sessions.metadata.os.replace", side_effect=OSError("disk unavailable")):
-            with self.assertRaises(OSError):
-                write_session_metadata(state)
-        self.assertEqual(self.metadata(), previous)
-        self.assertEqual(list(self.session.glob(".session-*.json")), [])
-
-    def test_metadata_writes_never_reread_session_json(self):
-        write_session_metadata(state, {"created_at": "then", "latest_tracking_result_id": "abc"})
-        with patch("sessions.metadata.load_mask_manifest", side_effect=AssertionError("re-read")):
-            state.annotations.set_prompt(VideoPrompt(**PROMPT))
-            write_session_metadata(state)
-        self.assertEqual(self.metadata()["created_at"], "then")
-        self.assertEqual(self.metadata()["latest_tracking_result_id"], "abc")
-        self.assertEqual(self.metadata()["annotations"], state.annotations.snapshot())
         self.reopen()
+        self.assertEqual(state.session_metadata["created_at"], "then")
         self.assertEqual(state.session_metadata["latest_tracking_result_id"], "abc")
 
     def test_release_clears_annotations_and_snapshot_reports_no_session(self):

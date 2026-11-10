@@ -6,8 +6,8 @@ from typing import Any
 from core.errors import OperationError
 from core.state import BackendState
 from core.jobs import utc_now_iso
-from sessions.artifacts import sweep_unreferenced_artifacts
-from sessions.metadata import current_session_path, write_session_metadata
+from sessions.artifacts import reclaim_superseded_artifacts
+from sessions.metadata import current_session_path
 from tracking.guidance import tracked_prompt_keys, positive_prompt_keys
 from utils import load_mask_manifest, write_mask_manifest
 
@@ -54,7 +54,6 @@ def save_prompt_tracking_result(
         "input_revision": session.annotations.revision,
         "result_id": result_id,
         "created_at": created_at,
-        "state_epoch": int(session.video_state_epoch),
         "model_name": model_name,
         "num_points": int(num_points),
         "num_frames": int(num_frames),
@@ -80,19 +79,14 @@ def save_prompt_tracking_result(
         "tracking_mode": tracking_mode,
         "streaming_frame_threshold": int(streaming_frame_threshold),
     }
-    previous_metadata = dict(session.session_metadata)
-    try:
-        write_session_metadata(session, {
-            "latest_tracking_result_id": result_id,
-            "latest_tracking_result_path": f"tracking/{result_id}.json",
-            "latest_tracking_result_updated_at": created_at,
-            "latest_tracking_result_summary": summary,
-        })
-    except Exception:
-        session.session_metadata = previous_metadata
-        # The rejected result file is unreachable; the previously published one stays intact.
-        sweep_unreferenced_artifacts(session)
-        raise
+    session.session_metadata.update({
+        "latest_tracking_result_id": result_id,
+        "latest_tracking_result_path": f"tracking/{result_id}.json",
+        "latest_tracking_result_updated_at": created_at,
+        "latest_tracking_result_summary": summary,
+    })
+    # The previous result file is deleted once the new one is named.
+    reclaim_superseded_artifacts(session)
     return {"result_id": result_id, "path": str(result_path), "summary": summary}
 
 
@@ -132,7 +126,7 @@ def current_tracking_result(session: BackendState, result: dict[str, Any]) -> di
     indices = [i for i, point in enumerate(points)
                if point["obj_id"] in session.annotations.objects and tracked_prompt_keys([point])[0] in keys]
     return {**result, "annotation_revision": session.annotations.revision,
-            "state_epoch": session.video_state_epoch, "num_points": len(indices),
+            "num_points": len(indices),
             "points": [points[i] for i in indices], "tracks": [tracks[i] for i in indices],
             "visibility": [visibility[i] for i in indices]}
 

@@ -15,12 +15,11 @@ class BackendState:
     video_source_path: Optional[str] = None
     annotations: SessionAnnotations = field(default_factory=SessionAnnotations)
     interactive_mask_files: dict[str, str] = field(default_factory=dict)
-    # Non-annotation session.json fields kept in memory so writes never re-read the file.
+    # Non-annotation session fields, held in memory; Save writes them into the checkpoint's session.json.
     session_metadata: dict[str, Any] = field(default_factory=dict)
     # Session-relative artifact paths the last metadata commit named.
     committed_artifacts: set[str] = field(default_factory=set)
     mask_manifest_path: Optional[str] = None
-    video_state_epoch: int = 0
     active_session_dir: Optional[Path] = None
     active_session_id: Optional[str] = None
     # Checkpoint this working copy was opened from or last saved to; the working directory is never one.

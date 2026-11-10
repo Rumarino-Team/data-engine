@@ -19,7 +19,7 @@ _POSITION_FIELDS = (
 # A finished job keeps its position only as a count; the rest is meaningless once it is done.
 _CLEARED_ON_COMPLETION = tuple(name for name in _POSITION_FIELDS if name not in ("current", "total"))
 _RESULT_KEYS_KEPT_AFTER_CLEAR = (
-    "message", "model_name", "num_points", "num_frames", "tracking_result_id", "state_epoch",
+    "message", "model_name", "num_points", "num_frames", "tracking_result_id",
 )
 
 

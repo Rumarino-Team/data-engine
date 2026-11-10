@@ -32,7 +32,6 @@ class AppWiringTests(BackendStateTestCase):
             ("PUT", "/video/objects/1", {"label": "x", "color": "#ffffff"}, {409}),
             ("POST", "/video/remove_object?obj_id=1", None, {409}),
             ("GET", "/video/info", None, {200}),
-            ("GET", "/video/mask_manifest", None, {400}),
             ("GET", "/video/mask_data/0", None, {400}),
             ("GET", "/video/frame/0", None, {400}),
             ("GET", "/video/mask_frame/0", None, {404}),

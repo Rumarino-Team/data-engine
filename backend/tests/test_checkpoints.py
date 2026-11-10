@@ -11,7 +11,7 @@ from core.annotations import SessionAnnotations
 from core.errors import OperationError
 from support import state
 from sessions import checkpoints
-from sessions.metadata import write_session_metadata
+from support import commit_session
 from support import BackendStateTestCase
 from video import service
 
@@ -26,7 +26,6 @@ class CheckpointTests(BackendStateTestCase):
         self.working = self.working_session(
             self.root / "working", session_id="first-session", frame_bytes=b"frame",
             annotations=SessionAnnotations(objects={1: OBJECT}), video_masker=self.make_masker())
-        write_session_metadata(state)
         for active in (patch.object(service, "SAVED_ROOT", self.saved_root),
                        patch("video.io.SESSION_CACHE_ROOT", self.root / "cache")):
             active.start()
@@ -122,7 +121,7 @@ class CheckpointTests(BackendStateTestCase):
         self.assertEqual((working / "frames" / "00000.jpg").read_bytes(), b"frame")
         self.edit("Working change")
         (working / "masks" / "new-result.json").write_text("{}")
-        write_session_metadata(state, {"latest_tracking_result_id": "abc"})
+        commit_session(state, {"latest_tracking_result_id": "abc"})
         self.assertEqual(
             {path.relative_to(checkpoint): path.read_bytes() for path in checkpoint.rglob("*") if path.is_file()},
             artifacts)
@@ -132,7 +131,7 @@ class CheckpointTests(BackendStateTestCase):
     def test_reclaiming_working_artifacts_never_removes_the_checkpoints_copy(self):
         from video.masks import retain_interactive_masks
         retain_interactive_masks(state, 0, [1], [{"size": [1, 1], "rle": []}])
-        write_session_metadata(state)
+        commit_session(state)
         artifact = state.interactive_mask_files["0"]
         checkpoint = Path(self.save(name="Bedroom").json()["saved_path"])
         self.open_checkpoint(checkpoint)
@@ -140,7 +139,7 @@ class CheckpointTests(BackendStateTestCase):
         self.assertTrue(working_file.exists())
         # The working copy stops referencing the result; only its own link is reclaimed.
         state.interactive_mask_files = {}
-        write_session_metadata(state)
+        commit_session(state)
         self.assertFalse(working_file.exists())
         self.assertTrue((checkpoint / "masks" / "interactive" / artifact).exists())
         self.assertIn(artifact, json.dumps(self.metadata(checkpoint)))
@@ -161,7 +160,7 @@ class CheckpointTests(BackendStateTestCase):
     def commit_result(self, frame=0):
         from video.masks import retain_interactive_masks
         retain_interactive_masks(state, frame, [1], [{"size": [1, 1], "rle": []}])
-        write_session_metadata(state)
+        commit_session(state)
         return state.interactive_mask_files[str(frame)]
 
     def files(self, checkpoint):
@@ -194,7 +193,7 @@ class CheckpointTests(BackendStateTestCase):
         first = self.commit_result()
         checkpoint = Path(self.save(name="Bedroom").json()["saved_path"])
         self.open_checkpoint(checkpoint)
-        write_session_metadata(state, {"latest_tracking_result_path": "tracking/new.json"})
+        commit_session(state, {"latest_tracking_result_path": "tracking/new.json"})
         (state.active_session_dir / "tracking").mkdir()
         (state.active_session_dir / "tracking" / "new.json").write_text("{}")
         with patch.object(checkpoints, "_link_or_copy", wraps=checkpoints._link_or_copy) as link:

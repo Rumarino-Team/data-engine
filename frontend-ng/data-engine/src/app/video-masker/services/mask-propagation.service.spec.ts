@@ -21,9 +21,7 @@ describe('mask-propagation workflows', () => {
           saved_mask_paths: {},
           video_segments_total_frames: 2,
           video_segments_returned_frames: 0,
-          video_segments_returned_mask_values: 0,
-          video_segments_truncated: false,
-          'state.mask_manifest_path': '/tmp/session/masks/manifest.json',
+          mask_manifest_path: '/tmp/session/masks/manifest.json',
           saved_state: {
             checkpoint_id: 'cp-1',
             display_name: 'Bedroom',

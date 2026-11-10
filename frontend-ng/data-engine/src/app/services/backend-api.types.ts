@@ -19,7 +19,6 @@ export interface VideoAddPointsOrBoxRequest {
 export interface VideoPropagateRequest {
   start_frame_idx?: number;
   max_frame_num_to_track?: number;
-  reverse?: boolean;
   batch_size?: number;
   online_mode?: boolean;
   use_tracked_points?: boolean;
@@ -28,8 +27,6 @@ export interface VideoPropagateRequest {
   include_masks_in_response?: boolean;
   export_overlay_frames?: boolean;
   include_saved_mask_paths?: boolean;
-  max_frames_in_response?: number;
-  max_mask_values_in_response?: number;
 }
 
 export interface VideoAddMaskRequest {
@@ -189,10 +186,7 @@ export interface VideoPropagateResponse {
   saved_mask_frame_count?: number;
   video_segments_total_frames?: number;
   video_segments_returned_frames?: number;
-  video_segments_returned_mask_values?: number;
-  video_segments_truncated?: boolean;
   mask_manifest_path?: string;
-  'state.mask_manifest_path'?: string;
   tracked_points_used?: boolean;
   tracked_points_skipped_reason?: string | null;
   tracked_points_seeded_count?: number;

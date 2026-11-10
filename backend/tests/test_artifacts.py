@@ -9,7 +9,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core.annotations import SessionAnnotations
 from support import state
 from sessions import artifacts
-from sessions.metadata import write_session_metadata
 from support import BackendStateTestCase
 from video.masks import retain_interactive_masks
 
@@ -22,6 +21,11 @@ class ArtifactLifecycleTests(BackendStateTestCase):
         self.session = self.working_session(annotations=SessionAnnotations(objects={1: OBJECT}))
         self.masks = self.session / "masks"
         artifacts._read_manifest_overlays.cache_clear()
+
+    def commit(self, extra=None):
+        """What an accepted edit does: record in-memory metadata, then reclaim superseded files."""
+        state.session_metadata.update(extra or {})
+        artifacts.reclaim_superseded_artifacts(state)
 
     def names(self, directory):
         return sorted(path.relative_to(self.session).as_posix() for path in (self.session / directory).rglob("*") if path.is_file())
@@ -38,26 +42,23 @@ class ArtifactLifecycleTests(BackendStateTestCase):
 
     def test_replaced_interactive_masks_are_deleted_only_after_commit(self):
         retain_interactive_masks(state, 0, [1], [{"size": [1, 1], "rle": []}])
-        write_session_metadata(state)
+        self.commit()
         first = state.interactive_mask_files["0"]
         self.assertEqual(self.names("masks/interactive"), [f"masks/interactive/{first}"])
         retain_interactive_masks(state, 0, [1], [{"size": [1, 1], "rle": []}])
         # The new artifact exists beside the old one until metadata names it.
         self.assertEqual(len(self.names("masks/interactive")), 2)
-        write_session_metadata(state)
+        self.commit()
         second = state.interactive_mask_files["0"]
         self.assertNotEqual(first, second)
         self.assertEqual(self.names("masks/interactive"), [f"masks/interactive/{second}"])
 
-    def test_failed_commit_keeps_committed_artifacts_and_rejected_edit_reclaims_new_one(self):
+    def test_rejected_edit_keeps_committed_artifacts_and_a_sweep_reclaims_the_new_one(self):
         retain_interactive_masks(state, 0, [1], [{"size": [1, 1], "rle": []}])
-        write_session_metadata(state)
+        self.commit()
         committed = dict(state.interactive_mask_files)
         retain_interactive_masks(state, 1, [1], [{"size": [1, 1], "rle": []}])
-        with patch("sessions.metadata.os.replace", side_effect=OSError("disk full")):
-            with self.assertRaises(OSError):
-                write_session_metadata(state)
-        # Nothing was committed, so nothing was reclaimed.
+        # The edit was rejected before acceptance, so nothing was reclaimed.
         self.assertEqual(len(self.names("masks/interactive")), 2)
         state.interactive_mask_files = committed
         artifacts.sweep_unreferenced_artifacts(state)
@@ -68,11 +69,11 @@ class ArtifactLifecycleTests(BackendStateTestCase):
         self.manifest("manifest-a.json", ["overlays_a/f0.png"])
         self.touch("masks/overlays_a/f0.png")
         state.mask_manifest_path = str(self.masks / "manifest-a.json")
-        write_session_metadata(state)
+        self.commit()
         self.assertEqual(len(self.names("masks")), 3)
         state.interactive_mask_files = {}
         state.mask_manifest_path = None
-        write_session_metadata(state)
+        self.commit()
         self.assertEqual(self.names("masks"), [])
 
     def test_new_run_reclaims_previous_manifest_but_keeps_carried_forward_overlays(self):
@@ -80,12 +81,12 @@ class ArtifactLifecycleTests(BackendStateTestCase):
         for name in ("f0", "f1"):
             self.touch(f"masks/overlays_a/{name}.png")
         state.mask_manifest_path = str(self.masks / "manifest-a.json")
-        write_session_metadata(state)
+        self.commit()
         # Run B reprocessed frame 1 only and carries frame 0 forward from run A.
         self.manifest("manifest-b.json", ["overlays_a/f0.png", "overlays_b/f1.png"])
         self.touch("masks/overlays_b/f1.png")
         state.mask_manifest_path = str(self.masks / "manifest-b.json")
-        write_session_metadata(state)
+        self.commit()
         self.assertEqual(self.names("masks"), ["masks/manifest-b.json", "masks/overlays_a/f0.png",
                                                "masks/overlays_b/f1.png"])
 
@@ -100,7 +101,7 @@ class ArtifactLifecycleTests(BackendStateTestCase):
         self.touch("tracking/dead.json")
         self.touch("masks/manifest.json")
         state.mask_manifest_path = str(self.masks / "manifest-a.json")
-        write_session_metadata(state)
+        self.commit()
         # Commits only reclaim what an earlier commit named, so leftovers survive until a sweep.
         self.assertGreater(len(self.names("masks")), 3)
         artifacts.sweep_unreferenced_artifacts(state)
@@ -112,7 +113,7 @@ class ArtifactLifecycleTests(BackendStateTestCase):
         self.touch("masks/overlays_a/f0.png")
         self.touch("masks/overlays_a/stray.png")
         state.mask_manifest_path = str(self.masks / "manifest-a.json")
-        write_session_metadata(state)
+        self.commit()
         artifacts.sweep_unreferenced_artifacts(state)
         self.assertEqual(self.names("masks/overlays_a"), ["masks/overlays_a/f0.png"])
 
@@ -121,7 +122,7 @@ class ArtifactLifecycleTests(BackendStateTestCase):
         self.manifest("manifest-old.json", ["overlays_old/f0.png"])
         self.touch("masks/overlays_old/f0.png")
         state.mask_manifest_path = str(self.masks / "manifest-a.json")
-        write_session_metadata(state)
+        self.commit()
         artifacts.sweep_unreferenced_artifacts(state)
         self.assertEqual(len(self.names("masks")), 3)
 
@@ -129,21 +130,21 @@ class ArtifactLifecycleTests(BackendStateTestCase):
         self.touch("masks/manifest.json")
         self.touch("masks/frame_00000_masks.png")
         self.touch("notes.txt")
-        write_session_metadata(state)
+        self.commit()
         artifacts.sweep_unreferenced_artifacts(state)
         self.assertEqual(self.names("masks"), ["masks/frame_00000_masks.png", "masks/manifest.json"])
         self.assertTrue((self.session / "notes.txt").exists())
 
     def test_superseded_tracking_results_are_deleted(self):
         self.touch("tracking/old.json")
-        write_session_metadata(state, {"latest_tracking_result_path": "tracking/old.json"})
+        self.commit({"latest_tracking_result_path": "tracking/old.json"})
         self.touch("tracking/new.json")
-        write_session_metadata(state, {"latest_tracking_result_path": "tracking/new.json"})
+        self.commit({"latest_tracking_result_path": "tracking/new.json"})
         self.assertEqual(self.names("tracking"), ["tracking/new.json"])
 
     def test_reclamation_never_fails_an_accepted_commit(self):
         self.touch("tracking/old.json")
-        write_session_metadata(state, {"latest_tracking_result_path": "tracking/old.json"})
+        self.commit({"latest_tracking_result_path": "tracking/old.json"})
         self.touch("tracking/new.json")
         real_unlink = Path.unlink
 
@@ -152,11 +153,10 @@ class ArtifactLifecycleTests(BackendStateTestCase):
                 raise PermissionError("in use")
             return real_unlink(path, *args, **kwargs)
         with patch.object(Path, "unlink", unlink):
-            write_session_metadata(state, {"latest_tracking_result_path": "tracking/new.json"})
+            self.commit({"latest_tracking_result_path": "tracking/new.json"})
         # The commit is accepted even though the superseded file could not be removed.
         self.assertEqual(self.names("tracking"), ["tracking/new.json", "tracking/old.json"])
-        self.assertEqual(json.loads((self.session / "session.json").read_text())["latest_tracking_result_path"],
-                         "tracking/new.json")
+        self.assertEqual(state.session_metadata["latest_tracking_result_path"], "tracking/new.json")
 
 
 if __name__ == "__main__":

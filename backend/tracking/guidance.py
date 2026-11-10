@@ -128,17 +128,8 @@ class TrackingGuidance:
         return batches, seeded_count, seeded_frames
 
 
-def _latest_tracking_result_path(session_path: Path) -> Optional[Path]:
-    session_metadata_path = session_path / "session.json"
-    if not session_metadata_path.exists():
-        return None
-    try:
-        metadata = load_mask_manifest(session_metadata_path)
-    except Exception:
-        return None
-    if not isinstance(metadata, dict):
-        return None
-    relative_path = metadata.get("latest_tracking_result_path")
+def _latest_tracking_result_path(session: BackendState, session_path: Path) -> Optional[Path]:
+    relative_path = session.session_metadata.get("latest_tracking_result_path")
     if not relative_path:
         return None
     result_path = (session_path / str(relative_path)).resolve()
@@ -154,7 +145,7 @@ def load_latest_tracking_guidance(session: BackendState, *, num_frames: int) -> 
     if session_path is None:
         return TrackingGuidance(points=[], skipped_reason="No active session for tracking guidance.")
 
-    result_path = _latest_tracking_result_path(session_path)
+    result_path = _latest_tracking_result_path(session, session_path)
     if result_path is None or not result_path.exists():
         return TrackingGuidance(points=[], skipped_reason="No CoTracker result available for propagation.", should_warn=False)
 
