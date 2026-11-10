@@ -426,38 +426,6 @@
   min-width: 0;
 }
 
-.debug-section {
-  font-size: 0.85rem;
-}
-
-.debug-grid {
-  display: grid;
-  grid-template-columns: minmax(96px, 1fr) minmax(84px, auto);
-  gap: 4px 8px;
-  align-items: start;
-}
-
-.debug-grid span {
-  color: #555;
-}
-
-.debug-grid strong {
-  justify-self: end;
-  text-align: right;
-  word-break: break-word;
-}
-
-.debug-discard {
-  margin: 8px 0 0;
-  padding: 6px 8px;
-  border-radius: 4px;
-  background: #fff2f2;
-  color: #b42318;
-  font-size: 0.8rem;
-  line-height: 1.3;
-  word-break: break-word;
-}
-
 .bottom-bar {
   padding: 10px;
   background-color: #f0f0f0;

@@ -23,11 +23,9 @@ export class MaskPropagationService {
 
   async propagate(): Promise<void> {
     if (this.isBusy) return;
-    const backendUrl = this.backend.getApiUrl();
     const sessionId = this.store.sessionId();
     const revision = this.store.annotationRevision();
-    if (!sessionId || revision === null || backendUrl !== this.store.annotationsBackendUrl())
-      return;
+    if (!sessionId || revision === null) return;
     const precondition = { session_id: sessionId, expected_revision: revision };
     const startFrameIdx = this.store.propagationStartFrameIdx();
     const endFrameIdx = this.store.propagationEndFrameIdx();
@@ -54,20 +52,12 @@ export class MaskPropagationService {
           ),
         ),
     );
-    if (
-      this.destroyRef.destroyed ||
-      backendUrl !== this.backend.getApiUrl() ||
-      sessionId !== this.store.sessionId()
-    )
-      return;
+    if (this.destroyRef.destroyed) return;
     if (!response) {
       this.store.annotationRecoveryRequested.set(true);
       return;
     }
-    this.store.updateStateEpoch(response.state_epoch, 'propagation');
     if (response.saved_state !== undefined) this.store.savedState.set(response.saved_state);
-    const maskManifestPath = response.mask_manifest_path || response['state.mask_manifest_path'];
-    this.store.hasManifestMasks.set(Boolean(maskManifestPath));
     if (response.tracked_points_skipped_reason) {
       this.toast.show(
         'warning',
@@ -81,16 +71,9 @@ export class MaskPropagationService {
 
   clearMasks(): void {
     if (this.isBusy) return;
-    const backendUrl = this.backend.getApiUrl();
     const sessionId = this.store.sessionId();
     const revision = this.store.annotationRevision();
-    if (!sessionId || revision === null || backendUrl !== this.store.annotationsBackendUrl())
-      return;
-    const ownsContext = () =>
-      !this.destroyRef.destroyed &&
-      backendUrl === this.backend.getApiUrl() &&
-      sessionId === this.store.sessionId() &&
-      backendUrl === this.store.annotationsBackendUrl();
+    if (!sessionId || revision === null) return;
     this.store.isLoading.set(true);
     this.backend
       .resetVideoState({ session_id: sessionId, expected_revision: revision })
@@ -100,18 +83,14 @@ export class MaskPropagationService {
       )
       .subscribe({
         next: (response) => {
-          if (!ownsContext()) return;
-          if (!this.store.applyAnnotationUpdate(response, backendUrl)) {
+          if (!this.store.applyAnnotationUpdate(response)) {
             this.store.annotationRecoveryRequested.set(true);
             return;
           }
-          this.store.hasManifestMasks.set(false);
-          this.store.resetInteractiveMaps();
           this.framePipeline.clearMaskDataCache();
           this.framePipeline.scheduleFrameLoad(this.store.targetFrameIdx());
         },
         error: (error) => {
-          if (!ownsContext()) return;
           const status = (error as { status?: number })?.status;
           if (status === undefined || status === 0 || status === 409 || status >= 500)
             this.store.annotationRecoveryRequested.set(true);

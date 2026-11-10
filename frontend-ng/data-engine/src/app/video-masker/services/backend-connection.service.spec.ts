@@ -84,25 +84,27 @@ describe('BackendConnectionService health monitoring', () => {
     const store = TestBed.inject(VideoMaskerStateStore);
     store.isInitialized.set(true);
     store.sessionId.set('old-session');
-    store.annotationsBackendUrl.set('http://old');
-    store.objects.set([{ id: 1, label: 'Old', color: '#ff0000' }]);
+    store.annotations.set({
+      version: 1,
+      revision: 1,
+      next_object_id: 2,
+      objects: { '1': { id: 1, label: 'Old', color: '#ff0000' } },
+      prompts: [],
+    });
     store.selectedObjectId.set(1);
     store.numFrames.set(12);
     store.displayedFrameIdx.set(7);
-    store.hasManifestMasks.set(true);
     store.pendingPointEdit.set({ frameIdx: 7, objId: 1, points: [] });
     store.trackingResultId = 'old-tracks';
     store.apiUrlInput.set('http://new');
     service.applyApiUrl();
     expect(store.isInitialized()).toBe(false);
     expect(store.sessionId()).toBeNull();
-    expect(store.annotationsBackendUrl()).toBeNull();
     expect(store.objects()).toEqual([]);
     expect(store.numFrames()).toBe(0);
     expect(store.displayedFrameIdx()).toBe(-1);
     expect(store.pendingPointEdit()).toBeNull();
     expect(store.trackingResultId).toBeNull();
-    expect(store.hasManifestMasks()).toBe(false);
     expect(TestBed.inject(FramePipelineService).clearFrameCaches).toHaveBeenCalledOnce();
   });
 

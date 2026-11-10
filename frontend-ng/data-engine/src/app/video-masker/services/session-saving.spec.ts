@@ -1,4 +1,4 @@
-import { Subject, of, throwError } from 'rxjs';
+import { of, throwError } from 'rxjs';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { SavedState, VideoSaveResponse } from '../../services/backend.service';
 import {
@@ -21,7 +21,6 @@ const saveResponse = (overrides: Partial<VideoSaveResponse> = {}): VideoSaveResp
   name: 'Bedroom',
   checkpoint_id: 'cp-1',
   saved_path: 'C:/saved/bedroom-1234',
-  state_epoch: 3,
   saved_state: saved(),
   ...overrides,
 });
@@ -47,11 +46,7 @@ describe('saving workflows', () => {
   });
 
   it('follows the backend dirty flag through snapshots and mutation responses', () => {
-    editor.store.applyAnnotationSnapshot(
-      makeInfo({ saved_state: saved() }),
-      'http://127.0.0.1:8000',
-      true,
-    );
+    editor.store.applyAnnotationSnapshot(makeInfo({ saved_state: saved() }), true);
     expect(editor.store.saveStatus()).toBe('saved');
     expect(editor.store.hasUnsavedChanges()).toBe(false);
 
@@ -149,23 +144,6 @@ describe('saving workflows', () => {
     expect(editor.store.isLoading()).toBe(false);
   });
 
-  it('does not apply a save response to a session that was replaced meanwhile', async () => {
-    editor.store.savedState.set(saved({ dirty: true }));
-    editor.store.saveName.set('Bedroom');
-    const response = new Subject<VideoSaveResponse>();
-    backendMock.saveVideoSession.mockReturnValue(response);
-
-    const pending = editor.sessions.save();
-    editor.store.sessionId.set('replacement');
-    editor.store.savedState.set(saved({ checkpoint_id: null, dirty: false }));
-    response.next(saveResponse());
-    response.complete();
-    await pending;
-
-    expect(editor.store.savedState()?.checkpoint_id).toBeNull();
-    expect(editor.store.toasts()).toHaveLength(0);
-  });
-
   it('blocks saving while another workflow is busy', async () => {
     editor.store.savedState.set(saved({ dirty: true }));
     editor.store.isLoading.set(true);
@@ -174,7 +152,7 @@ describe('saving workflows', () => {
   });
 
   it('adopts the saved name and state of a loaded session', async () => {
-    mockInitJob(backendMock, { num_frames: 10, state_epoch: 3, source_type: 'saved_session' });
+    mockInitJob(backendMock, { num_frames: 10, source_type: 'saved_session' });
     backendMock.getVideoInfo.mockReturnValue(of(makeInfo({ saved_state: saved() })));
     editor.store.isInitialized.set(false);
     editor.store.saveName.set('stale');

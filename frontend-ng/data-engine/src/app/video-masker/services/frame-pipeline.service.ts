@@ -46,7 +46,6 @@ export class FramePipelineService {
   // Estimated decoded RGBA pixels, excluding browser overhead and mask textures.
   private readonly maxFrameCacheBytes = 128 * 1024 * 1024;
   private maskContext = '';
-  private readonly maskSources = new Map<number, VideoMaskDataResponse['sources']>();
   private readonly state: FramePipelineState = {
     frameLoadToken: 0,
     pendingFrameIdx: null,
@@ -76,7 +75,6 @@ export class FramePipelineService {
 
   clearMaskDataCache(): void {
     this.maskGeneration++;
-    this.maskSources.clear();
     for (const pending of this.pendingMasks.values()) pending.cancel();
     this.pendingMasks.clear();
     this.state.maskDataCache.clear();
@@ -84,12 +82,7 @@ export class FramePipelineService {
   }
 
   private context(): string {
-    return JSON.stringify([
-      this.backend.getApiUrl(),
-      this.store.sessionId(),
-      this.store.annotationRevision(),
-      this.store.stateEpoch(),
-    ]);
+    return JSON.stringify([this.store.sessionId(), this.store.annotationRevision()]);
   }
 
   private ensureMaskContext(): void {
@@ -107,28 +100,19 @@ export class FramePipelineService {
       response.frame_idx !== frameIdx ||
       response.session_id !== this.store.sessionId() ||
       response.annotation_revision !== this.store.annotationRevision() ||
-      response.state_epoch !== this.store.stateEpoch() ||
-      this.backend.getApiUrl() !== this.store.annotationsBackendUrl() ||
-      !response.objects ||
-      !response.sources
+      !response.objects
     )
       return false;
     try {
       for (const [id, mask] of Object.entries(response.objects)) {
-        if (
-          !this.store.annotations()?.objects[id] ||
-          !['live', 'manifest', 'override'].includes(response.sources[id])
-        )
-          return false;
+        if (!this.store.annotations()?.objects[id]) return false;
         encodedMaskPixelCount(mask);
       }
     } catch {
       return false;
     }
     this.state.maskDataCache.set(frameIdx, response.objects);
-    this.maskSources.set(frameIdx, response.sources);
     evictWithLimit(this.state.maskDataCache, this.state.maxFrameCacheSize);
-    evictWithLimit(this.maskSources, this.state.maxFrameCacheSize);
     if (frameIdx === this.store.displayedFrameIdx())
       this.state.currentMaskObjects = response.objects;
     return true;
@@ -228,10 +212,6 @@ export class FramePipelineService {
       const object = this.store.objects().find((candidate) => candidate.id === Number(id));
       if (object) overlays.push({ objectId: object.id, source: mask, color: object.color });
     }
-    const selected = this.store.selectedObjectId();
-    this.store.lastMaskSource.set(
-      selected === null ? 'none' : (this.maskSources.get(frameIdx)?.[selected] ?? 'none'),
-    );
 
     const points = Array.from(this.store.previewPoints().get(frameIdx)?.values() ?? []).flat();
     const tracks = this.store.trackedPoints();

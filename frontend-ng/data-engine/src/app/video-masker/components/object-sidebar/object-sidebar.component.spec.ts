@@ -83,10 +83,16 @@ describe('ObjectSidebarComponent', () => {
   });
 
   it('shows separately placed points under their owning object and navigates to their frame', () => {
-    component.store.objects.set([
-      { id: 1, label: 'Car', color: '#ff0000' },
-      { id: 2, label: 'Person', color: '#00ff00' },
-    ]);
+    component.store.annotations.set({
+      version: 1,
+      revision: 0,
+      next_object_id: 3,
+      objects: {
+        '1': { id: 1, label: 'Car', color: '#ff0000' },
+        '2': { id: 2, label: 'Person', color: '#00ff00' },
+      },
+      prompts: [],
+    });
     component.store.numFrames.set(20);
     setAcceptedPoints(
       component.store,

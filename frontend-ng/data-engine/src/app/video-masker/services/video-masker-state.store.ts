@@ -9,14 +9,9 @@ import {
   SavedState,
   TrackingValidity,
 } from '../../services/backend.service';
-import {
-  DebugMaskSource,
-  LoadSourceMode,
-  TrackingOverlayStyle,
-} from '../state/video-masker-ui.types';
+import { LoadSourceMode, TrackingOverlayStyle } from '../state/video-masker-ui.types';
 
 import { ToastService } from './toast.service';
-import { resolveStateEpoch } from '../video-masker.util';
 
 export interface MaskObject {
   id: number;
@@ -46,16 +41,14 @@ export class VideoMaskerStateStore {
   displayedFrameIdx = signal<number>(-1);
   propagationStartFrameIdx = signal<number>(0);
   propagationEndFrameIdx = signal<number>(0);
-  stateEpoch = signal<number>(0);
 
   sessionId = signal<string | null>(null);
-  annotationsBackendUrl = signal<string | null>(null);
   annotations = signal<VideoAnnotations | null>(null);
   annotationRevision = computed(() => this.annotations()?.revision ?? null);
-  acceptedObjects = computed(() =>
+  objects = computed(() =>
     Object.values(this.annotations()?.objects ?? {}).sort((a, b) => a.id - b.id),
   );
-  acceptedPoints = computed(() => {
+  points = computed(() => {
     const frames = new Map<number, Map<number, Point[]>>();
     for (const prompt of this.annotations()?.prompts ?? []) {
       let objects = frames.get(prompt.frame_idx);
@@ -84,30 +77,12 @@ export class VideoMaskerStateStore {
   isRecoveringAnnotations = signal(false);
 
   /** Replaces accepted inputs without changing navigation or other presentation state. */
-  applyAnnotationSnapshot(
-    info: AnnotationSnapshot,
-    backendUrl: string,
-    replaceSession = false,
-  ): boolean {
+  applyAnnotationSnapshot(info: AnnotationSnapshot, replaceSession = false): boolean {
     if (!info.session_id || !info.annotations) return false;
-    if (
-      !replaceSession &&
-      (this.sessionId() !== info.session_id || this.annotationsBackendUrl() !== backendUrl)
-    )
-      return false;
-    if (
-      !replaceSession &&
-      (info.annotations.revision < (this.annotationRevision() ?? 0) ||
-        info.state_epoch < this.stateEpoch())
-    )
+    if (!replaceSession && info.annotations.revision < (this.annotationRevision() ?? 0))
       return false;
 
-    this.acceptAnnotations(
-      info.session_id,
-      backendUrl,
-      structuredClone(info.annotations),
-      info.state_epoch,
-    );
+    this.acceptAnnotations(info.session_id, structuredClone(info.annotations));
     this.applyTrackingValidity(info.tracking_validity);
     if (info.saved_state !== undefined || replaceSession)
       this.savedState.set(info.saved_state ?? null);
@@ -115,13 +90,11 @@ export class VideoMaskerStateStore {
   }
 
   /** Patches the accepted snapshot; a delta for any other revision requires recovery. */
-  applyAnnotationUpdate(update: AnnotationUpdate, backendUrl: string): boolean {
+  applyAnnotationUpdate(update: AnnotationUpdate): boolean {
     const current = this.annotations();
     const delta = update.annotation_delta;
     if (!update.session_id || !delta || !current) return false;
-    if (this.sessionId() !== update.session_id || this.annotationsBackendUrl() !== backendUrl)
-      return false;
-    if (current.revision !== delta.base_revision || update.state_epoch < this.stateEpoch())
+    if (this.sessionId() !== update.session_id || current.revision !== delta.base_revision)
       return false;
 
     const key = (entry: { frame_idx: number; obj_id: number }) =>
@@ -144,41 +117,28 @@ export class VideoMaskerStateStore {
     for (const id of delta.removed_input_revisions) delete inputRevisions[id];
     Object.assign(inputRevisions, delta.input_revisions);
 
-    this.acceptAnnotations(
-      update.session_id,
-      backendUrl,
-      {
-        ...current,
-        revision: delta.revision,
-        next_object_id: delta.next_object_id,
-        objects,
-        prompts: replace(current.prompts, delta.removed_prompts, delta.prompts),
-        mask_overrides: replace(
-          current.mask_overrides ?? [],
-          delta.removed_mask_overrides,
-          delta.mask_overrides,
-        ),
-        input_revisions: inputRevisions,
-      },
-      update.state_epoch,
-    );
+    this.acceptAnnotations(update.session_id, {
+      ...current,
+      revision: delta.revision,
+      next_object_id: delta.next_object_id,
+      objects,
+      prompts: replace(current.prompts, delta.removed_prompts, delta.prompts),
+      mask_overrides: replace(
+        current.mask_overrides ?? [],
+        delta.removed_mask_overrides,
+        delta.mask_overrides,
+      ),
+      input_revisions: inputRevisions,
+    });
     this.applyTrackingValidity(update.tracking_validity);
     if (update.saved_state !== undefined) this.savedState.set(update.saved_state);
     return true;
   }
 
-  private acceptAnnotations(
-    sessionId: string,
-    backendUrl: string,
-    annotations: VideoAnnotations,
-    stateEpoch: number,
-  ): void {
+  private acceptAnnotations(sessionId: string, annotations: VideoAnnotations): void {
     this.sessionId.set(sessionId);
-    this.annotationsBackendUrl.set(backendUrl);
     this.annotations.set(annotations);
-    this.objects.set(this.acceptedObjects());
     this.pendingPointEdit.set(null);
-    this.updateStateEpoch(stateEpoch, 'annotation snapshot');
     if (!this.objects().some((object) => object.id === this.selectedObjectId())) {
       this.selectedObjectId.set(this.objects()[0]?.id ?? null);
     }
@@ -200,11 +160,9 @@ export class VideoMaskerStateStore {
     this.trackedPoints.set([]);
   }
 
-  objects = signal<MaskObject[]>([]);
   selectedObjectId = signal<number | null>(null);
   interactionMode = signal<'positive' | 'negative'>('positive');
 
-  readonly points = this.acceptedPoints;
   pendingPointEdit = signal<{ frameIdx: number; objId: number; points: Point[] } | null>(null);
   previewPoints = computed(() => {
     const pending = this.pendingPointEdit();
@@ -230,7 +188,6 @@ export class VideoMaskerStateStore {
       ),
     }));
   });
-  hasManifestMasks = signal<boolean>(false);
   saveName = signal<string>('');
 
   trackingOverlayStyle = signal<TrackingOverlayStyle>('short');
@@ -251,38 +208,12 @@ export class VideoMaskerStateStore {
   activeJob = signal<BackendJob | null>(null);
   activeJobTitle = signal<string>('');
   readonly toasts = inject(ToastService).toasts;
-  lastClickRequestFrameIdx = signal<number | null>(null);
-  lastBackendResponseFrameIdx = signal<number | null>(null);
-  lastBackendResponseFrameFile = signal<string>('n/a');
-  lastBackendResponseStateEpoch = signal<number | null>(null);
-  lastDebugObjectId = signal<number | null>(null);
-  lastMaskPixelCount = signal<number | null>(null);
-  lastFallbackUsed = signal<boolean>(false);
-  lastMaskSource = signal<DebugMaskSource>('none');
-  lastDiscardReason = signal<string | null>(null);
-
-  updateStateEpoch(nextEpoch: number | undefined, source: string): void {
-    const resolution = resolveStateEpoch(this.stateEpoch(), nextEpoch);
-    if (!resolution) {
-      return;
-    }
-    if (resolution.shouldClearLiveState) {
-      this.lastDiscardReason.set(
-        `State epoch changed (${this.stateEpoch()} -> ${resolution.normalizedEpoch}) during ${source}; invalidated mask cache.`,
-      );
-    }
-    this.stateEpoch.set(resolution.normalizedEpoch);
-  }
-
   resetSession(): void {
     this.isInitialized.set(false);
     this.sessionId.set(null);
-    this.annotationsBackendUrl.set(null);
     this.annotations.set(null);
     this.savedState.set(null);
-    this.objects.set([]);
     this.selectedObjectId.set(null);
-    this.stateEpoch.set(0);
     this.numFrames.set(0);
     this.targetFrameIdx.set(0);
     this.displayedFrameIdx.set(-1);
@@ -290,26 +221,8 @@ export class VideoMaskerStateStore {
     this.propagationEndFrameIdx.set(0);
     this.videoDir.set('');
     this.saveName.set('');
-    this.hasManifestMasks.set(false);
     this.annotationRecoveryRequested.set(false);
     this.invalidateTracking();
-    this.resetInteractiveMaps();
-    this.resetDebugState();
-  }
-
-  resetInteractiveMaps(): void {
     this.pendingPointEdit.set(null);
-  }
-
-  resetDebugState(): void {
-    this.lastClickRequestFrameIdx.set(null);
-    this.lastBackendResponseFrameIdx.set(null);
-    this.lastBackendResponseFrameFile.set('n/a');
-    this.lastBackendResponseStateEpoch.set(null);
-    this.lastDebugObjectId.set(null);
-    this.lastMaskPixelCount.set(null);
-    this.lastFallbackUsed.set(false);
-    this.lastMaskSource.set('none');
-    this.lastDiscardReason.set(null);
   }
 }

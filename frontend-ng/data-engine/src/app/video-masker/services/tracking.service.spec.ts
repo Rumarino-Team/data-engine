@@ -12,19 +12,19 @@ describe('tracking workflows', () => {
     ({ editor, backendMock } = createWorkflowFixture());
   });
 
-  it('does not restore an old tracking result after a successful prompt edit', async () => {
+  it('keeps the editor busy while the finished result loads', async () => {
     vi.spyOn(TestBed.inject(VideoJobsService), 'run').mockResolvedValue({
-      result: { tracking_result_id: 'old-tracks', state_epoch: 3 },
+      result: { tracking_result_id: 'tracks-1' },
       completedJobId: null,
     });
     const result$ = new Subject<unknown>();
     backendMock.getTrackingResult.mockReturnValue(result$);
     const tracking = editor.tracking.runTracking();
-    await vi.waitFor(() =>
-      expect(backendMock.getTrackingResult).toHaveBeenCalledWith('old-tracks'),
-    );
+    await vi.waitFor(() => expect(backendMock.getTrackingResult).toHaveBeenCalledWith('tracks-1'));
+    expect(editor.store.isInteractionBusy()).toBe(true);
     backendMock.addNewPointsOrBox.mockReturnValue(of(makeResponse({})));
     await editor.prompts.addPoint(10, 20, 1, 5);
+    expect(backendMock.addNewPointsOrBox).not.toHaveBeenCalled();
     result$.next({
       result: {
         points: [{ point_id: 'p1', obj_id: 1, source_frame_idx: 0, source_x: 1, source_y: 2 }],
@@ -34,7 +34,8 @@ describe('tracking workflows', () => {
     });
     result$.complete();
     await tracking;
-    expect(editor.store.trackedPoints()).toEqual([]);
+    expect(editor.store.trackedPoints()).toHaveLength(1);
+    expect(editor.store.isInteractionBusy()).toBe(false);
   });
 
   it('runs CoTracker without sending a model selector value', async () => {
@@ -52,7 +53,6 @@ describe('tracking workflows', () => {
           tracking_mode: 'streaming',
           streaming_frame_threshold: 256,
           tracking_result_id: 'track-1',
-          state_epoch: 3,
         },
       },
       'job-track',
@@ -63,7 +63,6 @@ describe('tracking workflows', () => {
           version: 3,
           session_id: 'session-1',
           annotation_revision: editor.store.annotationRevision(),
-          state_epoch: 3,
           result_id: 'track-1',
           message: 'Prompt-point tracking completed',
           model_name: 'cotracker3_online',
@@ -119,45 +118,17 @@ describe('tracking workflows', () => {
     };
     editor.store.trackingResultId = 'tracks';
     editor.store.trackedPoints.set([point, { ...point, point_id: 'remove' }]);
-    editor.store.applyAnnotationSnapshot(
-      {
-        session_id: editor.store.sessionId(),
-        state_epoch: editor.store.stateEpoch(),
-        annotations: editor.store.annotations(),
-        tracking_validity: { result_id: 'tracks', point_ids: ['keep'] },
-      },
-      backendMock.getApiUrl(),
-    );
-    expect(editor.store.trackedPoints()).toEqual([point]);
-    editor.store.applyAnnotationSnapshot(
-      {
-        session_id: editor.store.sessionId(),
-        state_epoch: editor.store.stateEpoch(),
-        annotations: editor.store.annotations(),
-        tracking_validity: null,
-      },
-      backendMock.getApiUrl(),
-    );
-    expect(editor.store.trackedPoints()).toEqual([]);
-  });
-
-  it('rejects a tracking response after switching backend', async () => {
-    const result$ = new Subject<unknown>();
-    backendMock.getTrackingResult.mockReturnValue(result$);
-    const pending = editor.tracking.loadTrackingResult('tracks', 'Tracking');
-    backendMock.getApiUrl.mockReturnValue('http://another-backend');
-    result$.next({
-      result: {
-        session_id: 'session-1',
-        annotation_revision: 0,
-        state_epoch: 3,
-        points: [],
-        tracks: [],
-        visibility: [],
-      },
+    editor.store.applyAnnotationSnapshot({
+      session_id: editor.store.sessionId(),
+      annotations: editor.store.annotations(),
+      tracking_validity: { result_id: 'tracks', point_ids: ['keep'] },
     });
-    result$.complete();
-    expect(await pending).toBe(false);
-    expect(editor.store.trackingResultId).toBeNull();
+    expect(editor.store.trackedPoints()).toEqual([point]);
+    editor.store.applyAnnotationSnapshot({
+      session_id: editor.store.sessionId(),
+      annotations: editor.store.annotations(),
+      tracking_validity: null,
+    });
+    expect(editor.store.trackedPoints()).toEqual([]);
   });
 });

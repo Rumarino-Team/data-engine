@@ -26,11 +26,9 @@ export class TrackingService {
 
   async runTracking(): Promise<void> {
     if (this.isBusy) return;
-    const backendUrl = this.backend.getApiUrl();
     const sessionId = this.store.sessionId();
     const revision = this.store.annotationRevision();
-    if (!sessionId || revision === null || backendUrl !== this.store.annotationsBackendUrl())
-      return;
+    if (!sessionId || revision === null) return;
     const precondition = { session_id: sessionId, expected_revision: revision };
     const { result: response, completedJobId } = await this.jobs.run<TrackPromptPointsJobResponse>(
       'Tracking prompt points',
@@ -42,19 +40,20 @@ export class TrackingService {
           ),
         ),
     );
-    if (
-      this.destroyRef.destroyed ||
-      backendUrl !== this.backend.getApiUrl() ||
-      sessionId !== this.store.sessionId()
-    )
-      return;
+    if (this.destroyRef.destroyed) return;
     if (!response) {
       this.store.annotationRecoveryRequested.set(true);
       return;
     }
-    this.store.updateStateEpoch(response.state_epoch, 'tracking restore');
     if (response.saved_state !== undefined) this.store.savedState.set(response.saved_state);
-    const loaded = await this.loadTrackingResult(response.tracking_result_id, 'Tracking');
+    // Fetching the finished result is part of the operation, so edits wait for it.
+    this.store.isLoading.set(true);
+    let loaded: boolean;
+    try {
+      loaded = await this.loadTrackingResult(response.tracking_result_id, 'Tracking');
+    } finally {
+      this.store.isLoading.set(false);
+    }
     if (loaded && completedJobId) {
       try {
         await firstValueFrom(this.backend.clearJobResult(completedJobId));
@@ -65,25 +64,10 @@ export class TrackingService {
   }
 
   async loadTrackingResult(resultId: string, sourceLabel: string): Promise<boolean> {
-    const revision = this.store.annotationRevision();
-    const sessionId = this.store.sessionId();
-    const backendUrl = this.backend.getApiUrl();
-    const epoch = this.store.stateEpoch();
     try {
       const response = await firstValueFrom(this.backend.getTrackingResult(resultId));
       const result: TrackPromptPointsResult = response.result;
-      if (
-        this.destroyRef.destroyed ||
-        revision !== this.store.annotationRevision() ||
-        epoch !== this.store.stateEpoch() ||
-        sessionId !== this.store.sessionId() ||
-        backendUrl !== this.backend.getApiUrl() ||
-        result.session_id !== sessionId ||
-        result.annotation_revision !== revision ||
-        result.state_epoch !== epoch ||
-        result.result_id !== resultId
-      )
-        return false;
+      if (this.destroyRef.destroyed) return false;
       const trackedSeries: TrackedPointSeries[] = result.points.map((point, index) => ({
         ...point,
         tracks: result.tracks[index] || [],

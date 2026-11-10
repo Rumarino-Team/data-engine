@@ -22,25 +22,6 @@ export function clampFrameIndex(value: number, maxFrame: number): number {
   return Math.min(Math.max(Math.trunc(value), 0), Math.max(maxFrame, 0));
 }
 
-// --- epoch / live-edit helpers (from MaskStateService) ---
-
-export function resolveStateEpoch(
-  currentEpoch: number,
-  nextEpoch: number | undefined,
-): { normalizedEpoch: number; shouldClearLiveState: boolean } | null {
-  if (typeof nextEpoch !== 'number' || !Number.isFinite(nextEpoch)) {
-    return null;
-  }
-  const normalizedEpoch = Math.trunc(nextEpoch);
-  if (normalizedEpoch <= 0) {
-    return null;
-  }
-  return {
-    normalizedEpoch,
-    shouldClearLiveState: currentEpoch !== 0 && currentEpoch !== normalizedEpoch,
-  };
-}
-
 export function normalizeMask2d(mask: unknown): boolean[][] | null {
   let candidate: unknown = mask;
   while (
@@ -99,24 +80,6 @@ export function loadModeHint(mode: LoadSourceMode): string {
 }
 
 // --- misc shared helpers ---
-
-export function getMaskPixelCount(
-  pixelCounts: Record<number, number> | undefined,
-  objId: number,
-): number | null {
-  if (!pixelCounts) {
-    return null;
-  }
-  const direct = (pixelCounts as Record<number, number>)[objId];
-  if (typeof direct === 'number' && Number.isFinite(direct)) {
-    return Math.trunc(direct);
-  }
-  const stringLookup = (pixelCounts as unknown as Record<string, number>)[String(objId)];
-  if (typeof stringLookup === 'number' && Number.isFinite(stringLookup)) {
-    return Math.trunc(stringLookup);
-  }
-  return null;
-}
 
 export function getErrorMessage(error: any, fallback: string): string {
   return error?.error?.detail || error?.message || fallback;

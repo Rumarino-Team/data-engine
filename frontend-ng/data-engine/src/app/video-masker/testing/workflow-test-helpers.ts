@@ -124,7 +124,6 @@ export const makeResponse = (
   mask_data: {
     session_id: 'session-1',
     annotation_revision: 1,
-    state_epoch: 3,
     frame_idx: 5,
     objects: { '1': { size: [2, 2], rle: [[0, 1]], bbox: [0, 0, 1, 1] } },
     sources: { '1': 'live' },
@@ -134,14 +133,12 @@ export const makeResponse = (
   frame_file: '00005.jpg',
   mask_pixel_counts: { 1: 1 },
   mask_shapes: { 1: [2, 2] },
-  state_epoch: 3,
   ...overrides,
 });
 
 /** /video/info after the default point response was accepted. */
 export const makeInfo = (overrides: Partial<VideoInfoResponse> = {}): VideoInfoResponse => ({
   session_id: 'session-1',
-  state_epoch: 3,
   annotations: structuredClone(ACCEPTED_POINT_ANNOTATIONS),
   predictor_ready: true,
   num_frames: 10,
@@ -200,7 +197,6 @@ export function initResult(
     batch_size: 32,
     offload_video_to_cpu: true,
     offload_state_to_cpu: true,
-    state_epoch: 7,
     ...overrides,
   };
 }
@@ -255,7 +251,6 @@ export function createBackendMocks() {
       map(({ job: { result } }) => ({
         predictor_ready: true,
         session_id: 'session-1',
-        state_epoch: result.state_epoch,
         num_frames: result.num_frames,
         frame_files: Array.from({ length: result.num_frames }, (_, frame) => `${frame}.jpg`),
         annotations: result.restored_session?.annotations ?? {
@@ -288,10 +283,8 @@ export function initializeEditorStore(store: VideoMaskerStateStore): void {
   store.applyAnnotationSnapshot(
     {
       session_id: 'session-1',
-      state_epoch: 3,
       annotations: structuredClone(INITIAL_ANNOTATIONS),
     },
-    'http://127.0.0.1:8000',
     true,
   );
   store.displayedFrameIdx.set(5);
@@ -304,7 +297,6 @@ export function objectSnapshot(
   const ids = new Set(objects.map((object) => object.id));
   return {
     session_id: store.sessionId(),
-    state_epoch: store.stateEpoch(),
     annotations: {
       version: 1,
       revision: (store.annotationRevision() ?? 0) + 1,
@@ -355,7 +347,6 @@ export function configureObjectMutationMocks(
     snapshot.mask_data = {
       session_id: snapshot.session_id!,
       annotation_revision: snapshot.annotations!.revision,
-      state_epoch: snapshot.state_epoch,
       frame_idx: frame,
       objects: {},
       sources: {},
@@ -366,7 +357,6 @@ export function configureObjectMutationMocks(
     of(
       toUpdate(store, {
         ...objectSnapshot(store, store.objects()),
-        state_epoch: 4,
         annotations: {
           ...objectSnapshot(store, store.objects()).annotations!,
           prompts: [],
@@ -504,7 +494,6 @@ export function seedMasks(
       {
         session_id: editor.store.sessionId()!,
         annotation_revision: editor.store.annotationRevision()!,
-        state_epoch: editor.store.stateEpoch(),
         frame_idx: frame,
         objects: encoded,
         sources: Object.fromEntries([...objects.keys()].map((id) => [id, 'live'])),

@@ -61,7 +61,6 @@ export interface VideoSaveResponse {
   name: string;
   checkpoint_id: string;
   saved_path: string;
-  state_epoch: number;
   saved_state: SavedState;
 }
 
@@ -72,7 +71,6 @@ export interface VideoAddPointsResponse extends AnnotationUpdate {
   mask_pixel_counts: Record<number, number>;
   mask_shapes: Record<number, [number, number]>;
   single_frame_fallback_used?: boolean;
-  state_epoch: number;
 }
 
 export interface VideoInitStateResponse {
@@ -84,7 +82,6 @@ export interface VideoInitStateResponse {
   batch_size: number;
   offload_video_to_cpu: boolean;
   offload_state_to_cpu: boolean;
-  state_epoch: number;
   source_type?: 'frames_dir' | 'video_file' | 'saved_session';
   restored_session?: RestoredSessionPayload;
 }
@@ -154,7 +151,6 @@ export interface AnnotationSnapshot {
   saved_state?: SavedState | null;
   mask_data?: VideoMaskDataResponse;
   session_id: string | null;
-  state_epoch: number;
   annotations: VideoAnnotations | null;
 }
 
@@ -164,7 +160,6 @@ export interface AnnotationUpdate {
   saved_state?: SavedState | null;
   mask_data?: VideoMaskDataResponse;
   session_id: string | null;
-  state_epoch: number;
   annotation_delta: AnnotationDelta;
 }
 
@@ -202,7 +197,6 @@ export interface VideoPropagateResponse {
   tracked_points_skipped_reason?: string | null;
   tracked_points_seeded_count?: number;
   tracked_points_seeded_frames?: number;
-  state_epoch?: number;
   saved_state?: SavedState | null;
 }
 
@@ -225,7 +219,6 @@ export type LiveMask = VideoMaskObjectData | PackedBitMask | boolean[][];
 export interface VideoMaskDataResponse {
   session_id: string;
   annotation_revision: number;
-  state_epoch: number;
   sources: Record<string, 'live' | 'manifest' | 'override'>;
   frame_idx: number;
   objects: { [obj_id: string]: VideoMaskObjectData | PackedBitMask };
@@ -252,14 +245,12 @@ export interface TrackPromptPointsJobResponse {
   tracking_mode?: 'streaming' | 'in_memory';
   streaming_frame_threshold?: number;
   tracking_result_id: string;
-  state_epoch?: number;
   saved_state?: SavedState | null;
 }
 
 export interface TrackPromptPointsResult {
   session_id: string;
   annotation_revision: number;
-  state_epoch: number;
   version: number;
   result_id: string;
   model_name: string;

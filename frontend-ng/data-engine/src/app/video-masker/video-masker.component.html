@@ -316,29 +316,6 @@
           </div>
         </div>
       </div>
-
-      <div class="section debug-section" *ngIf="store.isInitialized() && showDebugUi">
-        <h3>Sync Debug</h3>
-        <div class="debug-grid">
-          <span>Target frame</span><strong>{{ store.targetFrameIdx() }}</strong>
-          <span>Displayed frame</span><strong>{{ store.displayedFrameIdx() }}</strong>
-          <span>Last request frame</span
-          ><strong>{{ store.lastClickRequestFrameIdx() ?? 'n/a' }}</strong>
-          <span>Last response frame</span
-          ><strong>{{ store.lastBackendResponseFrameIdx() ?? 'n/a' }}</strong>
-          <span>Response frame file</span
-          ><strong>{{ store.lastBackendResponseFrameFile() }}</strong> <span>State epoch</span
-          ><strong>{{ store.stateEpoch() }}</strong> <span>Response epoch</span
-          ><strong>{{ store.lastBackendResponseStateEpoch() ?? 'n/a' }}</strong>
-          <span>Last object</span><strong>{{ store.lastDebugObjectId() ?? 'n/a' }}</strong>
-          <span>Last pixel count</span><strong>{{ store.lastMaskPixelCount() ?? 'n/a' }}</strong>
-          <span>Fallback used</span><strong>{{ store.lastFallbackUsed() ? 'yes' : 'no' }}</strong>
-          <span>Last mask source</span><strong>{{ store.lastMaskSource() }}</strong>
-        </div>
-        <p class="debug-discard" *ngIf="store.lastDiscardReason()">
-          {{ store.lastDiscardReason() }}
-        </p>
-      </div>
     </div>
   </div>
 

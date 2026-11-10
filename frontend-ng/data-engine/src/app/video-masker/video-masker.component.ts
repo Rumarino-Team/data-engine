@@ -7,7 +7,6 @@ import {
   ViewChild,
   effect,
   inject,
-  isDevMode,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
@@ -89,7 +88,6 @@ export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
   private readonly desktopBridge = inject(DesktopBridgeService);
   readonly framePipeline = inject(FramePipelineService);
   readonly viewport = inject(CanvasViewportService);
-  readonly showDebugUi = isDevMode();
   apiUrlInputHasFocus = false;
 
   constructor() {

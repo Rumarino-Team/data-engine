@@ -235,20 +235,6 @@ describe('object-operations workflows', () => {
     expect(editor.store.objects()).toBe(previous);
   });
 
-  it('ignores an older accepted response without rolling back a newer snapshot', () => {
-    const pending = new Subject<AnnotationUpdate>();
-    backendMock.updateObject.mockReturnValue(pending);
-    const older = objectUpdate(editor.store, [{ id: 1, label: 'Older', color: '#ff0000' }]);
-    objectOperations.renameObject(1, 'Older');
-    const newer = objectSnapshot(editor.store, [{ id: 1, label: 'Newer', color: '#ff0000' }]);
-    newer.annotations!.revision = 10;
-    editor.store.applyAnnotationSnapshot(newer, backendMock.getApiUrl());
-    pending.next(older);
-    expect(editor.store.objects()[0].label).toBe('Newer');
-    expect(editor.store.annotationRevision()).toBe(10);
-    expect(editor.store.isInteractionBusy()).toBe(false);
-  });
-
   it('takes remaining prompts from the deletion response instead of cleaning local point maps', () => {
     objectOperations.addObject();
     editor.store.selectedObjectId.set(1);

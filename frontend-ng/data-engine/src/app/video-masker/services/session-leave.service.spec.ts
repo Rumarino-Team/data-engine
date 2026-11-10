@@ -47,7 +47,6 @@ describe('SessionLeaveService', () => {
         name: 'Bedroom',
         checkpoint_id: 'cp-1',
         saved_path: 'C:/saved/bedroom',
-        state_epoch: 3,
         saved_state: saved({ dirty: false }),
       }),
     );

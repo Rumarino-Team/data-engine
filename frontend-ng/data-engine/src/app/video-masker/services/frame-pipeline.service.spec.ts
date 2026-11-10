@@ -41,7 +41,6 @@ describe('FramePipelineService', () => {
   const maskResponse = (frameIdx: number): VideoMaskDataResponse => ({
     session_id: 'session-1',
     annotation_revision: store.annotationRevision()!,
-    state_epoch: 3,
     sources: { '1': 'manifest' },
     frame_idx: frameIdx,
     objects: { '1': { size: [1, 2], rle: [[0, 1]], bbox: [0, 0, 1, 1] } },
@@ -70,8 +69,6 @@ describe('FramePipelineService', () => {
     store.displayedFrameIdx.set(-1);
     store.selectedObjectId.set(null);
     service.attach(document.createElement('div'), () => {});
-    store.objects.set([{ id: 1, label: 'Object 1', color: '#ff0000' }]);
-    store.hasManifestMasks.set(true);
   });
 
   afterEach(() => {
@@ -116,24 +113,16 @@ describe('FramePipelineService', () => {
       { x: 12, y: 24, label: 1 },
       { x: 30, y: 40, label: 0 },
     ]);
-    expect(store.lastMaskSource()).toBe('none');
   });
 
-  it.each(['live', 'override', 'manifest'] as const)(
-    'renders the backend-selected %s source without local precedence',
-    async (source) => {
-      const response = maskResponse(0);
-      response.sources = { '1': source };
-      backend.getVideoMaskData.mockReturnValue(of(response));
-      store.selectedObjectId.set(1);
-      const image = await startFrame(0);
-      await image.onload?.();
-      expect(viewport.render.mock.lastCall![1]).toEqual([
-        { objectId: 1, color: '#ff0000', source: response.objects['1'] },
-      ]);
-      expect(store.lastMaskSource()).toBe(source);
-    },
-  );
+  it('renders the masks the backend selected without local precedence', async () => {
+    store.selectedObjectId.set(1);
+    const image = await startFrame(0);
+    await image.onload?.();
+    expect(viewport.render.mock.lastCall![1]).toEqual([
+      { objectId: 1, color: '#ff0000', source: maskResponse(0).objects['1'] },
+    ]);
+  });
 
   it('retains a backend-selected empty override on refetch', async () => {
     const response = maskResponse(0);
@@ -152,21 +141,18 @@ describe('FramePipelineService', () => {
     const image = await startFrame(0);
     await image.onload?.();
     store.annotations.set({ ...store.annotations()!, revision: 2, objects: {} });
-    store.objects.set([]);
     service.redraw();
     expect(service.acceptMaskData(old, 0)).toBe(false);
     expect(viewport.render.mock.lastCall![1]).toEqual([]);
   });
 
-  it.each(['session', 'revision', 'epoch', 'frame', 'backend'])(
+  it.each(['session', 'revision', 'frame'])(
     'rejects masks with stale %s identity',
     async (kind) => {
       const response = maskResponse(0);
       if (kind === 'session') response.session_id = 'other';
       if (kind === 'revision') response.annotation_revision++;
-      if (kind === 'epoch') response.state_epoch++;
       if (kind === 'frame') response.frame_idx++;
-      if (kind === 'backend') backend.getApiUrl.mockReturnValue('other');
       expect(service.acceptMaskData(response, 0)).toBe(false);
     },
   );
@@ -314,7 +300,6 @@ describe('FramePipelineService', () => {
   });
 
   it('keeps recently accessed images and evicts older images at the byte budget', async () => {
-    store.hasManifestMasks.set(false);
     for (const index of [0, 1]) {
       const image = await startFrame(index);
       image.width = image.height = 4096; // 64 MiB each: two fill the 128 MiB budget.

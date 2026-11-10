@@ -24,7 +24,6 @@ describe('mask-propagation workflows', () => {
           video_segments_returned_mask_values: 0,
           video_segments_truncated: false,
           'state.mask_manifest_path': '/tmp/session/masks/manifest.json',
-          state_epoch: 3,
           saved_state: {
             checkpoint_id: 'cp-1',
             display_name: 'Bedroom',
@@ -37,7 +36,6 @@ describe('mask-propagation workflows', () => {
     );
     editor.store.isInitialized.set(true);
     editor.store.numFrames.set(5);
-    editor.store.stateEpoch.set(2);
     editor.store.propagationStartFrameIdx.set(1);
     editor.store.propagationEndFrameIdx.set(2);
     const originalMask = [[true, false]];
@@ -45,8 +43,6 @@ describe('mask-propagation workflows', () => {
 
     await editor.propagation.propagate();
 
-    expect(editor.store.hasManifestMasks()).toBe(true);
-    expect(editor.store.stateEpoch()).toBe(3);
     expect(editor.store.savedState()?.dirty).toBe(true);
     expect([...cachedMasks(editor.framePipeline).keys()]).toEqual([]);
     expect(backendMock.propagateInVideo).toHaveBeenCalledWith(

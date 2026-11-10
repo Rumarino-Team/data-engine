@@ -6,7 +6,6 @@ import {
   clampFrameIndex,
   evictWithLimit,
   normalizeMask2d,
-  resolveStateEpoch,
 } from './video-masker.util';
 
 import { VideoMaskObjectData } from '../services/backend-api.types';
@@ -30,19 +29,6 @@ describe('video-masker.util', () => {
   it('clamps frame index to [0,max]', () => {
     expect(clampFrameIndex(-1, 10)).toBe(0);
     expect(clampFrameIndex(11, 10)).toBe(10);
-  });
-
-  it('flags epoch mismatch for live state clear', () => {
-    expect(resolveStateEpoch(3, 4)).toEqual({ normalizedEpoch: 4, shouldClearLiveState: true });
-  });
-
-  it('does not clear when epoch is unchanged', () => {
-    expect(resolveStateEpoch(3, 3)).toEqual({ normalizedEpoch: 3, shouldClearLiveState: false });
-  });
-
-  it('ignores non-positive / non-finite epochs', () => {
-    expect(resolveStateEpoch(3, 0)).toBeNull();
-    expect(resolveStateEpoch(3, undefined)).toBeNull();
   });
 
   it('normalizes nested mask arrays', () => {

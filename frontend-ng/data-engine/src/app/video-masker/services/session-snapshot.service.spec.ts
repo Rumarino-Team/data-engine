@@ -3,19 +3,13 @@ import { setAcceptedPoints } from '../testing/workflow-test-helpers';
 import { TestBed } from '@angular/core/testing';
 import { Subject, of, throwError } from 'rxjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { VideoInfoResponse, AnnotationUpdate } from '../../services/backend.service';
-import {
-  annotationDelta,
-  createWorkflowFixture,
-  objectUpdate,
-} from '../testing/workflow-test-helpers';
+import { VideoInfoResponse } from '../../services/backend.service';
+import { annotationDelta, createWorkflowFixture } from '../testing/workflow-test-helpers';
 import { CanvasViewportService } from './canvas-viewport.service';
 
-const apiUrl = 'http://127.0.0.1:8000';
 const snapshot = (revision = 1): VideoInfoResponse => ({
   predictor_ready: true,
   session_id: 'session-1',
-  state_epoch: 3,
   num_frames: 10,
   frame_files: Array.from({ length: 10 }, (_, frame) => `${frame}.jpg`),
   annotations: {
@@ -47,7 +41,7 @@ describe('session annotation snapshots', () => {
 
   function connect(revision = 1) {
     const { editor, backendMock } = fixture;
-    editor.store.applyAnnotationSnapshot(snapshot(revision), apiUrl, true);
+    editor.store.applyAnnotationSnapshot(snapshot(revision), true);
     editor.store.isInitialized.set(true);
     backendMock.getVideoInfo.mockReturnValue(of(snapshot(revision)));
   }
@@ -61,7 +55,6 @@ describe('session annotation snapshots', () => {
         job: {
           status: 'completed',
           result: {
-            state_epoch: 3,
             num_frames: 5,
             restored_session: {
               annotations: snapshot().annotations,
@@ -84,7 +77,6 @@ describe('session annotation snapshots', () => {
 
     expect(backendMock.getVideoInfo).toHaveBeenCalledTimes(1);
     expect(editor.store.sessionId()).toBe('session-1');
-    expect(editor.store.annotationsBackendUrl()).toBe(apiUrl);
     expect(editor.store.annotationRevision()).toBe(8);
     expect(editor.store.numFrames()).toBe(10);
     expect(editor.store.objects()[0].label).toBe('Accepted hand');
@@ -110,7 +102,6 @@ describe('session annotation snapshots', () => {
     connect();
     const viewport = TestBed.inject(CanvasViewportService);
     const reset = vi.spyOn(viewport, 'reset');
-    editor.store.objects.set([]);
     setAcceptedPoints(editor.store, new Map());
     editor.store.annotations.set(null);
     editor.store.selectedObjectId.set(2);
@@ -123,7 +114,7 @@ describe('session annotation snapshots', () => {
     expect(await editor.sessions.refreshAnnotations()).toBe(true);
 
     expect(editor.store.objects().map(({ id }) => id)).toEqual([1, 2]);
-    expect(editor.store.acceptedPoints().get(2)?.get(1)).toEqual([{ x: 10, y: 20, label: 1 }]);
+    expect(editor.store.points().get(2)?.get(1)).toEqual([{ x: 10, y: 20, label: 1 }]);
     expect(editor.store.selectedObjectId()).toBe(2);
     expect(editor.store.targetFrameIdx()).toBe(7);
     expect(editor.store.displayedFrameIdx()).toBe(7);
@@ -151,14 +142,14 @@ describe('session annotation snapshots', () => {
       point,
       { ...point, frame_idx: 1, points: [], labels: [], box: [0, 0, 2, 2] },
     ];
-    editor.store.applyAnnotationSnapshot(accepted, apiUrl, true);
+    editor.store.applyAnnotationSnapshot(accepted, true);
     expect(editor.store.points().get(0)?.get(1)).toEqual([
       { x: 1, y: 1, label: 1 },
       { x: 2, y: 2, label: 0 },
     ]);
     expect(editor.store.points().has(1)).toBe(false);
     accepted.annotations!.prompts[0].points[0][0] = 999;
-    expect(editor.store.acceptedPoints().get(0)?.get(1)?.[0].x).toBe(1);
+    expect(editor.store.points().get(0)?.get(1)?.[0].x).toBe(1);
   });
 
   it('patches accepted annotations from a mutation delta', () => {
@@ -167,23 +158,19 @@ describe('session annotation snapshots', () => {
     accepted.annotations!.mask_overrides = [
       { frame_idx: 3, obj_id: 2, artifact: `${'a'.repeat(32)}.json` },
     ];
-    editor.store.applyAnnotationSnapshot(accepted, apiUrl, true);
-    const applied = editor.store.applyAnnotationUpdate(
-      {
-        session_id: 'session-1',
-        state_epoch: 3,
-        annotation_delta: {
-          ...annotationDelta(accepted.annotations!, accepted.annotations!),
-          revision: 2,
-          objects: { '1': { id: 1, label: 'Left hand', color: '#ff0000' } },
-          removed_objects: [],
-          prompts: [{ frame_idx: 2, obj_id: 1, points: [[5, 6]], labels: [0], box: null }],
-          removed_mask_overrides: [[3, 2]],
-          input_revisions: { '1': 2 },
-        },
+    editor.store.applyAnnotationSnapshot(accepted, true);
+    const applied = editor.store.applyAnnotationUpdate({
+      session_id: 'session-1',
+      annotation_delta: {
+        ...annotationDelta(accepted.annotations!, accepted.annotations!),
+        revision: 2,
+        objects: { '1': { id: 1, label: 'Left hand', color: '#ff0000' } },
+        removed_objects: [],
+        prompts: [{ frame_idx: 2, obj_id: 1, points: [[5, 6]], labels: [0], box: null }],
+        removed_mask_overrides: [[3, 2]],
+        input_revisions: { '1': 2 },
       },
-      apiUrl,
-    );
+    });
     expect(applied).toBe(true);
     const annotations = editor.store.annotations()!;
     expect(annotations.revision).toBe(2);
@@ -200,7 +187,7 @@ describe('session annotation snapshots', () => {
   it('rejects a delta built on another revision or session without changing state', () => {
     const { editor } = fixture;
     const accepted = snapshot(4);
-    editor.store.applyAnnotationSnapshot(accepted, apiUrl, true);
+    editor.store.applyAnnotationSnapshot(accepted, true);
     const before = editor.store.annotations();
     const delta = {
       ...annotationDelta(accepted.annotations!, accepted.annotations!),
@@ -208,118 +195,31 @@ describe('session annotation snapshots', () => {
       removed_objects: [2],
     };
     for (const update of [
-      { session_id: 'session-1', state_epoch: 3, annotation_delta: { ...delta, base_revision: 3 } },
-      { session_id: 'other', state_epoch: 3, annotation_delta: delta },
-      { session_id: 'session-1', state_epoch: 2, annotation_delta: delta },
+      { session_id: 'session-1', annotation_delta: { ...delta, base_revision: 3 } },
+      { session_id: 'other', annotation_delta: delta },
     ]) {
-      expect(editor.store.applyAnnotationUpdate(update, apiUrl)).toBe(false);
+      expect(editor.store.applyAnnotationUpdate(update)).toBe(false);
       expect(editor.store.annotations()).toBe(before);
     }
     expect(
-      editor.store.applyAnnotationUpdate(
-        { session_id: 'session-1', state_epoch: 3, annotation_delta: delta },
-        'http://other',
-      ),
-    ).toBe(false);
-    expect(
-      editor.store.applyAnnotationUpdate(
-        { session_id: 'session-1', state_epoch: 3, annotation_delta: delta },
-        apiUrl,
-      ),
+      editor.store.applyAnnotationUpdate({ session_id: 'session-1', annotation_delta: delta }),
     ).toBe(true);
     expect(Object.keys(editor.store.annotations()!.objects)).toEqual(['1']);
     expect(editor.store.annotations()!.prompts.map((prompt) => prompt.obj_id)).toEqual([1]);
   });
 
-  it('keeps a newer response when an earlier snapshot request finishes last', async () => {
-    const { editor, backendMock } = fixture;
-    connect();
-    const first = new Subject<VideoInfoResponse>();
-    const second = new Subject<VideoInfoResponse>();
-    backendMock.getVideoInfo.mockReturnValueOnce(first).mockReturnValueOnce(second);
-    const older = editor.sessions.refreshAnnotations();
-    const newer = editor.sessions.refreshAnnotations();
-    second.next(snapshot(3));
-    expect(await newer).toBe(true);
-    first.next(snapshot(2));
-    expect(await older).toBe(false);
-    expect(editor.store.annotationRevision()).toBe(3);
-  });
-
-  it('discards a response after the configured backend changes', async () => {
-    const { editor, backendMock } = fixture;
-    connect();
-    const pending = new Subject<VideoInfoResponse>();
-    backendMock.getVideoInfo.mockReturnValue(pending);
-    const refresh = editor.sessions.refreshAnnotations();
-    backendMock.getApiUrl.mockReturnValue('http://other-backend');
-    pending.next(snapshot(2));
-    expect(await refresh).toBe(false);
-    expect(editor.store.annotationsBackendUrl()).toBe(apiUrl);
-    expect(editor.store.annotationRevision()).toBe(1);
-  });
-
-  it('does not overwrite optimistic point input entered during a snapshot request', async () => {
-    const { editor, backendMock } = fixture;
-    connect();
-    const pending = new Subject<VideoInfoResponse>();
-    const pointResponse = new Subject<never>();
-    backendMock.getVideoInfo.mockReturnValue(pending);
-    backendMock.addNewPointsOrBox.mockReturnValue(pointResponse);
-    const refresh = editor.sessions.refreshAnnotations();
-    const edit = editor.prompts.addPoint(30, 40, 1, 2);
-    pending.next(snapshot());
-    expect(await refresh).toBe(false);
-    expect(editor.store.points().get(2)?.get(1)?.length).toBe(1);
-    expect(editor.store.previewPoints().get(2)?.get(1)?.length).toBe(2);
-    pointResponse.error(new Error('rejected'));
-    await edit;
-  });
-
-  it('waits for object updates and rejects an in-flight snapshot overtaken by a rename', async () => {
-    const { editor, backendMock, objectOperations } = fixture;
-    connect();
-    const pending = new Subject<VideoInfoResponse>();
-    const objectResponse = new Subject<AnnotationUpdate>();
-    backendMock.getVideoInfo.mockReturnValue(pending);
-    const refresh = editor.sessions.refreshAnnotations();
-    backendMock.updateObject.mockReturnValue(objectResponse);
-    objectOperations.renameObject(1, 'Draft label');
-    expect(editor.store.pendingObjectUpdates()).toBe(1);
-    expect(await editor.sessions.refreshAnnotations()).toBe(false);
-    objectResponse.next(
-      objectUpdate(
-        editor.store,
-        editor.store
-          .objects()
-          .map((object) => (object.id === 1 ? { ...object, label: 'Draft label' } : object)),
-      ),
-    );
-    objectResponse.complete();
-    expect(editor.store.pendingObjectUpdates()).toBe(0);
-    pending.next(snapshot());
-    expect(await refresh).toBe(false);
-    expect(editor.store.objects()[0].label).toBe('Draft label');
-  });
-
   it.each([
     {
       reason: 'an older accepted revision',
-      prepare: () => fixture.editor.store.applyAnnotationSnapshot(snapshot(5), apiUrl, true),
+      prepare: () => fixture.editor.store.applyAnnotationSnapshot(snapshot(5), true),
       info: () => snapshot(4),
-      expected: { revision: 5, epoch: 3, initialized: true },
-    },
-    {
-      reason: 'an earlier predictor epoch',
-      prepare: () => fixture.editor.store.updateStateEpoch(4, 'rebuild'),
-      info: () => snapshot(2),
-      expected: { revision: 1, epoch: 4, initialized: true },
+      expected: { revision: 5, initialized: true },
     },
     {
       reason: 'a replacement backend session',
       prepare: () => undefined,
       info: () => ({ ...snapshot(), session_id: 'other-session' }),
-      expected: { revision: 1, epoch: 3, initialized: false },
+      expected: { revision: 1, initialized: false },
     },
   ])('recovery does not adopt $reason', async ({ prepare, info, expected }) => {
     const { editor, backendMock } = fixture;
@@ -330,7 +230,6 @@ describe('session annotation snapshots', () => {
     expect(await editor.sessions.refreshAnnotations()).toBe(false);
     expect(editor.store.sessionId()).toBe('session-1');
     expect(editor.store.annotationRevision()).toBe(expected.revision);
-    expect(editor.store.stateEpoch()).toBe(expected.epoch);
     expect(editor.store.isInitialized()).toBe(expected.initialized);
   });
 
@@ -352,6 +251,21 @@ describe('session annotation snapshots', () => {
     backendMock.getVideoInfo.mockReturnValue(of(changed));
     expect(await editor.sessions.refreshAnnotations()).toBe(true);
     expect(cachedMasks(editor.framePipeline).size).toBe(0);
+  });
+
+  it('refuses a second refresh while one is in flight', async () => {
+    const { editor, backendMock } = fixture;
+    connect();
+    const pending = new Subject<VideoInfoResponse>();
+    backendMock.getVideoInfo.mockReturnValue(pending);
+    const first = editor.sessions.refreshAnnotations();
+    expect(editor.store.isRecoveringAnnotations()).toBe(true);
+    expect(await editor.sessions.refreshAnnotations()).toBe(false);
+    expect(backendMock.getVideoInfo).toHaveBeenCalledTimes(1);
+    pending.next(snapshot(2));
+    expect(await first).toBe(true);
+    expect(editor.store.annotationRevision()).toBe(2);
+    expect(editor.store.isRecoveringAnnotations()).toBe(false);
   });
 
   it('preserves the last accepted cache when recovery fails', async () => {

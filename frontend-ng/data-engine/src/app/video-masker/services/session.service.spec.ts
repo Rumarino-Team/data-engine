@@ -24,7 +24,6 @@ describe('session workflows', () => {
     expect(backendMock.getJob).toHaveBeenCalledWith('job-1');
     expect(editor.store.isInitialized()).toBe(true);
     expect(editor.store.numFrames()).toBe(12);
-    expect(editor.store.stateEpoch()).toBe(7);
     const [created] = editor.store.objects();
     expect(created).toEqual(expect.objectContaining({ id: 1, label: 'Object 1' }));
     expect(editor.store.selectedObjectId()).toBe(1);
@@ -35,7 +34,6 @@ describe('session workflows', () => {
   it('preserves an intentionally empty canonical session and its reserved object IDs', async () => {
     mockInitJob(backendMock, {
       num_frames: 1,
-      state_epoch: 4,
       restored_session: {
         annotations: { version: 1, revision: 8, next_object_id: 7, objects: {}, prompts: [] },
         interactive_state: { version: 1 },
@@ -55,7 +53,6 @@ describe('session workflows', () => {
   it('restores interactive state from saved-session init result', async () => {
     mockInitJob(backendMock, {
       num_frames: 10,
-      state_epoch: 12,
       source_type: 'saved_session',
       restored_session: {
         annotations: {
@@ -79,7 +76,6 @@ describe('session workflows', () => {
 
     await editor.sessions.initVideo();
 
-    expect(editor.store.hasManifestMasks()).toBe(true);
     expect(editor.store.interactionMode()).toBe('negative');
     expect(editor.store.targetFrameIdx()).toBe(4);
     expect(editor.store.points().get(4)?.get(1)?.length).toBe(1);
@@ -96,7 +92,6 @@ describe('session workflows', () => {
     }) => {
       mockInitJob(backendMock, {
         num_frames: 10,
-        state_epoch: 12,
         source_type: 'saved_session',
         restored_session: {
           annotations: { version: 1, revision: 0, next_object_id: 1, objects: {}, prompts: [] },
@@ -117,7 +112,6 @@ describe('session workflows', () => {
             result_id: 'track-restored',
             session_id: 'session-1',
             annotation_revision: 0,
-            state_epoch: 12,
             model_name: 'cotracker3_online',
             num_points: 1,
             num_frames: 2,
@@ -191,7 +185,6 @@ describe('session workflows', () => {
         name: 'review-run',
         checkpoint_id: 'checkpoint-1',
         saved_path: 'C:/project/backend/saved/review-run',
-        state_epoch: 3,
         saved_state: {
           checkpoint_id: 'checkpoint-1',
           display_name: 'review-run',

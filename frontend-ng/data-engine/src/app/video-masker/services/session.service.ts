@@ -20,7 +20,6 @@ import { getErrorMessage } from '../video-masker.util';
 export class SessionService {
   private readonly store = inject(VideoMaskerStateStore);
   private readonly destroyRef = inject(DestroyRef);
-  private snapshotRequest = 0;
   private readonly backend = inject(BackendService);
   private readonly framePipeline = inject(FramePipelineService);
   private readonly toast = inject(ToastService);
@@ -39,7 +38,7 @@ export class SessionService {
       const mutationRecovery = this.store.annotationRecoveryRequested();
       if (mutationRecovery && initialized && !busy) {
         this.store.annotationRecoveryRequested.set(false);
-        untracked(() => void this.refreshAnnotations(true));
+        untracked(() => void this.refreshAnnotations());
         return;
       }
       if (status === 'offline' && initialized) recoveryPending = true;
@@ -50,42 +49,23 @@ export class SessionService {
     });
   }
 
-  /** Recover accepted inputs without reopening the video or resetting the viewport. */
-  async refreshAnnotations(blockEdits = false): Promise<boolean> {
-    if (!this.store.isInitialized() || this.isBusy || this.store.pendingObjectUpdates() > 0)
-      return false;
-    const backendUrl = this.backend.getApiUrl();
-    if (backendUrl !== this.store.annotationsBackendUrl()) return false;
+  /**
+   * Recover accepted inputs from the backend without reopening the video or resetting the viewport.
+   * Edits are refused while the snapshot is fetched, so the response always applies cleanly.
+   */
+  async refreshAnnotations(): Promise<boolean> {
+    if (!this.store.isInitialized() || this.isBusy) return false;
     const sessionId = this.store.sessionId();
-    const epoch = this.store.stateEpoch();
-    const objects = this.store.objects();
-    const points = this.store.points();
-    const request = ++this.snapshotRequest;
-    if (blockEdits) this.store.isRecoveringAnnotations.set(true);
+    this.store.isRecoveringAnnotations.set(true);
     try {
       const info = await firstValueFrom(
         this.backend.getVideoInfo().pipe(takeUntilDestroyed(this.destroyRef)),
       );
-      // Existing workflows still own optimistic maps until their migration. A snapshot
-      // requested before an edit must not erase that edit, even if it has since finished.
-      if (
-        this.destroyRef.destroyed ||
-        request !== this.snapshotRequest ||
-        backendUrl !== this.backend.getApiUrl() ||
-        sessionId !== this.store.sessionId() ||
-        epoch !== this.store.stateEpoch() ||
-        objects !== this.store.objects() ||
-        points !== this.store.points() ||
-        this.store.isLoading() ||
-        this.store.isPointRequestInFlight() ||
-        this.store.pendingObjectUpdates() > 0
-      )
-        return false;
       if (info.session_id !== sessionId || !info.annotations) {
         this.store.isInitialized.set(false);
         throw new Error('The backend session changed. Load the video again to continue.');
       }
-      if (!this.store.applyAnnotationSnapshot(info, backendUrl)) return false;
+      if (!this.store.applyAnnotationSnapshot(info)) return false;
       this.store.numFrames.set(info.num_frames);
       if (info.predictor_ready === false) {
         this.store.isInitialized.set(false);
@@ -96,11 +76,7 @@ export class SessionService {
       this.framePipeline.scheduleFrameLoad(this.store.targetFrameIdx());
       return true;
     } catch (error) {
-      if (
-        !this.destroyRef.destroyed &&
-        request === this.snapshotRequest &&
-        backendUrl === this.backend.getApiUrl()
-      ) {
+      if (!this.destroyRef.destroyed) {
         this.toast.show(
           'warning',
           'Annotation refresh failed',
@@ -109,7 +85,7 @@ export class SessionService {
       }
       return false;
     } finally {
-      if (blockEdits) this.store.isRecoveringAnnotations.set(false);
+      this.store.isRecoveringAnnotations.set(false);
     }
   }
 
@@ -144,18 +120,11 @@ export class SessionService {
       return false;
     }
 
-    const backendUrl = this.backend.getApiUrl();
-    const request = ++this.snapshotRequest;
     this.store.videoDir.set(enteredPath);
     const { result: res } = await this.jobs.run<VideoInitStateResponse>('Loading video', () =>
       firstValueFrom(this.backend.initVideoState(enteredPath)),
     );
-    if (
-      this.destroyRef.destroyed ||
-      request !== this.snapshotRequest ||
-      backendUrl !== this.backend.getApiUrl()
-    )
-      return false;
+    if (this.destroyRef.destroyed) return false;
     if (!res) {
       // A failed replacement preserves the old session. Recover uncertain/lost responses.
       if (this.store.isInitialized()) this.store.annotationRecoveryRequested.set(true);
@@ -168,13 +137,8 @@ export class SessionService {
       const info = await firstValueFrom(
         this.backend.getVideoInfo().pipe(takeUntilDestroyed(this.destroyRef)),
       );
-      if (
-        this.destroyRef.destroyed ||
-        request !== this.snapshotRequest ||
-        backendUrl !== this.backend.getApiUrl()
-      )
-        return false;
-      if (!info.session_id || !info.annotations || info.state_epoch !== res.state_epoch) {
+      if (this.destroyRef.destroyed) return false;
+      if (!info.session_id || !info.annotations) {
         throw new Error('The initialized session is no longer current. Load the video again.');
       }
       this.store.targetFrameIdx.set(0);
@@ -183,33 +147,21 @@ export class SessionService {
       this.store.propagationEndFrameIdx.set(Math.max(0, info.num_frames - 1));
       this.store.saveName.set('');
       this.store.invalidateTracking();
-      this.store.resetInteractiveMaps();
       this.framePipeline.clearFrameCaches();
       this.store.selectedObjectId.set(null);
-      this.store.applyAnnotationSnapshot(info, backendUrl, true);
+      this.store.applyAnnotationSnapshot(info, true);
       this.store.saveName.set(info.saved_state?.display_name ?? '');
       this.store.numFrames.set(info.num_frames);
-      this.store.hasManifestMasks.set(Boolean(res.restored_session?.has_mask_manifest));
       this.restoreInteractiveSessionState(res.restored_session);
       if (!this.store.objects().some((object) => object.id === this.store.selectedObjectId())) {
         this.store.selectedObjectId.set(this.store.objects()[0]?.id ?? null);
       }
       const resultId = res.restored_session?.tracking_result?.result_id;
       if (resultId) await this.tracking.loadTrackingResult(resultId, 'Restored tracking');
-      if (
-        this.destroyRef.destroyed ||
-        request !== this.snapshotRequest ||
-        backendUrl !== this.backend.getApiUrl()
-      )
-        return false;
-      this.store.resetDebugState();
+      if (this.destroyRef.destroyed) return false;
       this.store.isInitialized.set(true);
     } catch (error) {
-      if (
-        !this.destroyRef.destroyed &&
-        request === this.snapshotRequest &&
-        backendUrl === this.backend.getApiUrl()
-      ) {
+      if (!this.destroyRef.destroyed) {
         this.toast.show(
           'error',
           'Loading video',
@@ -218,8 +170,7 @@ export class SessionService {
       }
       return false;
     } finally {
-      if (request === this.snapshotRequest && !this.destroyRef.destroyed)
-        this.store.isLoading.set(false);
+      if (!this.destroyRef.destroyed) this.store.isLoading.set(false);
     }
     return true;
   }
@@ -273,8 +224,6 @@ export class SessionService {
       return false;
     }
     const sendName = needsName || (name !== '' && name !== saved?.display_name);
-    const backendUrl = this.backend.getApiUrl();
-    const sessionId = this.store.sessionId();
     this.store.isLoading.set(true);
     try {
       const response: VideoSaveResponse = await firstValueFrom(
@@ -283,13 +232,7 @@ export class SessionService {
           this.buildSnapshot(),
         ),
       );
-      if (
-        this.destroyRef.destroyed ||
-        backendUrl !== this.backend.getApiUrl() ||
-        sessionId !== this.store.sessionId()
-      )
-        return true;
-      this.store.updateStateEpoch(response.state_epoch, 'save');
+      if (this.destroyRef.destroyed) return true;
       this.store.savedState.set(response.saved_state);
       this.store.saveName.set(response.name);
       this.toast.show('success', 'Session saved', `Saved to ${response.saved_path}`);
