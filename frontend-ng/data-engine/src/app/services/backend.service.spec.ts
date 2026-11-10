@@ -4,44 +4,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BackendService } from './backend.service';
 
 describe('BackendService', () => {
-  const originalGlobalApiUrl = (globalThis as { __DATA_ENGINE_API_URL__?: string })
-    .__DATA_ENGINE_API_URL__;
-  const originalLocalStorage = globalThis.localStorage;
-  let storage: Record<string, string>;
+  const globals = globalThis as { __DATA_ENGINE_API_URL__?: string };
+  const originalGlobalApiUrl = globals.__DATA_ENGINE_API_URL__;
 
   beforeEach(() => {
-    storage = {};
-    Object.defineProperty(globalThis, 'localStorage', {
-      value: {
-        getItem: vi.fn((key: string) => storage[key] ?? null),
-        setItem: vi.fn((key: string, value: string) => {
-          storage[key] = String(value);
-        }),
-        removeItem: vi.fn((key: string) => {
-          delete storage[key];
-        }),
-        clear: vi.fn(() => {
-          storage = {};
-        }),
-      },
-      configurable: true,
-    });
     localStorage.clear();
-    delete (globalThis as { __DATA_ENGINE_API_URL__?: string }).__DATA_ENGINE_API_URL__;
+    delete globals.__DATA_ENGINE_API_URL__;
   });
 
   afterEach(() => {
     localStorage.clear();
-    Object.defineProperty(globalThis, 'localStorage', {
-      value: originalLocalStorage,
-      configurable: true,
-    });
-    if (originalGlobalApiUrl === undefined) {
-      delete (globalThis as { __DATA_ENGINE_API_URL__?: string }).__DATA_ENGINE_API_URL__;
-      return;
-    }
-    (globalThis as { __DATA_ENGINE_API_URL__?: string }).__DATA_ENGINE_API_URL__ =
-      originalGlobalApiUrl;
+    if (originalGlobalApiUrl === undefined) delete globals.__DATA_ENGINE_API_URL__;
+    else globals.__DATA_ENGINE_API_URL__ = originalGlobalApiUrl;
   });
 
   it('defaults to localhost when no override exists', () => {

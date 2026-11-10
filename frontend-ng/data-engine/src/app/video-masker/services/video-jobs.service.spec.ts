@@ -1,16 +1,11 @@
 import { DestroyRef } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Subject, of, throwError } from 'rxjs';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { BackendService } from '../../services/backend.service';
 import { VideoJobsService } from './video-jobs.service';
 
 describe('VideoJobsService', () => {
-  afterEach(() => {
-    TestBed.resetTestingModule();
-    vi.useRealTimers();
-  });
-
   it('waits for a response and the delay before polling again', async () => {
     vi.useFakeTimers();
     const pending = new Subject<any>();

@@ -12,7 +12,6 @@ describe('mask textures', () => {
       putImageData,
     } as unknown as CanvasRenderingContext2D);
   });
-  afterEach(() => vi.restoreAllMocks());
 
   it('produces identical transparent textures from live masks and manifest RLE', () => {
     const texture = createMaskTexture({

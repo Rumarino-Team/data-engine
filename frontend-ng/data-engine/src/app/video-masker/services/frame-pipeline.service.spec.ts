@@ -73,8 +73,6 @@ describe('FramePipelineService', () => {
 
   afterEach(() => {
     service.detach();
-    vi.restoreAllMocks();
-    vi.unstubAllGlobals();
   });
 
   async function startFrame(idx: number): Promise<FakeImage> {

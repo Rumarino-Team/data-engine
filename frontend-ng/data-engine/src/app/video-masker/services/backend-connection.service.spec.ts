@@ -1,6 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 import { Subject, of, throwError } from 'rxjs';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BackendService } from '../../services/backend.service';
 import { BackendConnectionService } from './backend-connection.service';
 import { FramePipelineService } from './frame-pipeline.service';
@@ -31,10 +31,6 @@ describe('BackendConnectionService health monitoring', () => {
         { provide: SessionLeaveService, useValue: leave },
       ],
     });
-  });
-  afterEach(() => {
-    TestBed.resetTestingModule();
-    vi.useRealTimers();
   });
 
   it('skips overlapping checks and stops requests when destroyed', async () => {
