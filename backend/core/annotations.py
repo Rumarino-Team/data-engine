@@ -1,11 +1,31 @@
 """Accepted annotation inputs, independent of predictor lifetime and UI caches."""
 
+from dataclasses import dataclass
 from typing import Literal
 from secrets import randbelow
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 from schemas.video import VideoObject, VideoPrompt, MaskOverride
+
+
+def prompt_point_key(*, obj_id: int, frame_idx: int, x: float, y: float) -> str:
+    return f"obj:{int(obj_id)}|frame:{int(frame_idx)}|x:{float(x):.3f}|y:{float(y):.3f}"
+
+
+@dataclass(frozen=True)
+class PromptPoint:
+    """One accepted positive click: what tracking follows and what a tracking result is validated against."""
+    event_idx: int
+    point_idx: int
+    obj_id: int
+    frame_idx: int
+    x: float
+    y: float
+
+    @property
+    def key(self) -> str:
+        return prompt_point_key(obj_id=self.obj_id, frame_idx=self.frame_idx, x=self.x, y=self.y)
 
 
 class SessionAnnotations(BaseModel):
@@ -140,6 +160,18 @@ class SessionAnnotations(BaseModel):
     def prompt_events(self) -> list[dict]:
         """Detached predictor input; runtime consumers cannot mutate the annotations."""
         return [event.model_dump() for event in self.prompts]
+
+    def positive_points(self) -> list[PromptPoint]:
+        """The one definition of a positive prompt point: a point labeled 1, in accepted order."""
+        return [
+            PromptPoint(event_idx, point_idx, prompt.obj_id, prompt.frame_idx, float(x), float(y))
+            for event_idx, prompt in enumerate(self.prompts)
+            for point_idx, ((x, y), label) in enumerate(zip(prompt.points, prompt.labels, strict=True))
+            if label == 1
+        ]
+
+    def positive_prompt_keys(self) -> set[str]:
+        return {point.key for point in self.positive_points()}
 
     def snapshot(self) -> dict:
         return self.model_dump(mode="json")

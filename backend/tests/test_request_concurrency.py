@@ -107,10 +107,10 @@ class RequestConcurrencyTests(BackendStateFixtures, unittest.IsolatedAsyncioTest
         original_info = video_routes.get_video_info
 
         @contextmanager
-        def observed_operation():
+        def observed_operation(*args):
             self.loop.call_soon_threadsafe(second_entered.set)
-            with original_operation():
-                yield
+            with original_operation(*args) as session:
+                yield session
 
         def observed_info(*args):
             self.loop.call_soon_threadsafe(read_entered.set)

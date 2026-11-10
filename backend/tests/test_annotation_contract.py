@@ -20,6 +20,24 @@ from video import service
 VALID_UPDATE = {"label": "buoy", "color": "#ff0000"}
 
 
+class PositivePointTests(unittest.TestCase):
+    def test_positive_points_are_the_one_definition_of_what_tracking_follows(self):
+        annotations = SessionAnnotations(
+            objects={1: {"id": 1, "label": "a", "color": "#ff0000"}, 2: {"id": 2, "label": "b", "color": "#00ff00"}},
+            prompts=[
+                VideoPrompt(frame_idx=0, obj_id=1, points=[[1, 2], [3, 4]], labels=[0, 1]),
+                VideoPrompt(frame_idx=1, obj_id=1, box=[0, 0, 5, 5]),
+                VideoPrompt(frame_idx=2, obj_id=2, points=[[5, 6]], labels=[1]),
+            ])
+        points = annotations.positive_points()
+        # Negative points and box-only prompts are skipped; indexes keep counting them.
+        self.assertEqual([(p.event_idx, p.point_idx, p.obj_id, p.frame_idx, p.x, p.y) for p in points],
+                         [(0, 1, 1, 0, 3.0, 4.0), (2, 0, 2, 2, 5.0, 6.0)])
+        self.assertEqual(annotations.positive_prompt_keys(),
+                         {"obj:1|frame:0|x:3.000|y:4.000", "obj:2|frame:2|x:5.000|y:6.000"})
+        self.assertEqual({p.key for p in points}, annotations.positive_prompt_keys())
+
+
 class ObjectLifecycleTests(BackendStateTestCase):
     def setUp(self):
         super().setUp()

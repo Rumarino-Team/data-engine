@@ -1,9 +1,20 @@
 """What one running backend shares: the active session, the lock ordering edits, and the job slot."""
 from contextlib import contextmanager
 import threading
+from typing import Any, Callable, Iterator
 
-from core.jobs import JobManager
+from core.errors import OperationError
+from core.jobs import JobHandle, JobManager, capture_job_inputs
 from core.state import BackendState
+from schemas.video import AnnotationPrecondition
+
+
+def validate_annotation_precondition(session: BackendState, precondition: AnnotationPrecondition) -> None:
+    """The client's edit must target the session and revision it last saw."""
+    if session.active_session_dir is None or precondition.session_id != session.active_session_id:
+        raise OperationError(409, "The target session is no longer active. Refresh annotations.")
+    if precondition.expected_revision != session.annotations.revision:
+        raise OperationError(409, "Annotations changed. Refresh before editing again.")
 
 
 class SessionManager:
@@ -36,9 +47,26 @@ class AppContext:
         return self.sessions.lock
 
     @contextmanager
-    def edit(self):
-        """Serialize a synchronous mutation of the session; refused while a job runs.
+    def edit(self, precondition: AnnotationPrecondition | None = None) -> Iterator[BackendState]:
+        """Serialize a synchronous mutation of the session and yield it; refused while a job runs.
+        With a precondition, the edit must also target the session and revision the client last saw.
         Never suspend/await inside this block."""
         with self.lock:
             self.jobs.require_idle()
-            yield
+            session = self.session
+            if precondition is not None:
+                validate_annotation_precondition(session, precondition)
+            yield session
+
+    def start_job(
+        self, precondition: AnnotationPrecondition, *, operation: str, stage: str, stage_label: str,
+        message: str, parameters: dict[str, Any], run: Callable[[JobHandle, dict[str, Any]], dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Admit a background job against the state the client last saw; `run(job, inputs)` is its worker."""
+        with self.edit(precondition) as session:
+            inputs = capture_job_inputs(session, operation)
+            inputs["parameters"] = parameters
+            return self.jobs.start(
+                operation=operation, stage=stage, stage_label=stage_label, message=message,
+                worker=lambda job: run(job, inputs), inputs=inputs,
+            )

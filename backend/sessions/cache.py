@@ -16,15 +16,12 @@ def clear_window_cache() -> None:
     shutil.rmtree(WINDOW_FRAMES_ROOT, ignore_errors=True)
     WINDOW_FRAMES_ROOT.mkdir(parents=True, exist_ok=True)
 
-def release_active_session(session: BackendState, *, clear_video_masker: bool = True, clear_tracker: bool = True, clear_tracking_video: bool = True, clear_video_state: bool = True, clear_prompts: bool = True, clear_cache_session: bool = False) -> None:
+def release_active_session(session: BackendState, *, clear_video_masker: bool = True, clear_tracker: bool = True, clear_video_state: bool = True, clear_prompts: bool = True, clear_cache_session: bool = False) -> None:
     from core.runtime import cleanup_cuda_memory
     if clear_video_masker and session.video_masker is not None:
         session.video_masker = None
     if clear_tracker and session.tracker is not None:
         session.tracker = None
-    if clear_tracking_video:
-        session.tracking_video = None
-        session.tracking_video_path = None
     if clear_cache_session:
         clear_active_cache_session(session)
     if clear_video_state:

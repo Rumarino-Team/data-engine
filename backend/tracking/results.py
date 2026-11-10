@@ -8,7 +8,7 @@ from core.state import BackendState
 from core.jobs import utc_now_iso
 from sessions.artifacts import reclaim_superseded_artifacts
 from sessions.metadata import current_session_path
-from tracking.guidance import tracked_prompt_keys, positive_prompt_keys
+from tracking.guidance import tracked_prompt_keys
 from utils import load_mask_manifest, write_mask_manifest
 
 _RESULT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -119,7 +119,7 @@ def current_tracking_result(session: BackendState, result: dict[str, Any]) -> di
     if (result.get("session_id") != session.active_session_id or
             result.get("num_frames") != len(session.video_frame_files)):
         raise OperationError(409, "Tracking result does not match the current video session.")
-    keys = positive_prompt_keys(session.annotations.prompt_events())
+    keys = session.annotations.positive_prompt_keys()
     points, tracks, visibility = result.get("points", []), result.get("tracks", []), result.get("visibility", [])
     if len(points) != len(tracks) or len(points) != len(visibility):
         raise OperationError(500, "Tracking result payload is invalid.")
@@ -137,7 +137,7 @@ def tracking_validity(session: BackendState) -> dict[str, Any] | None:
     if (not result_id or summary.get("session_id") != session.active_session_id or
             summary.get("num_frames") != len(session.video_frame_files)):
         return None
-    keys = positive_prompt_keys(session.annotations.prompt_events())
+    keys = session.annotations.positive_prompt_keys()
     return {"result_id": result_id, "point_ids": [point["point_id"] for point in summary.get("points", [])
             if point["obj_id"] in session.annotations.objects and tracked_prompt_keys([point])[0] in keys]}
 

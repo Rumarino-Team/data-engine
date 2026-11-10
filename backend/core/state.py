@@ -1,7 +1,6 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
-import numpy as np
 from core.annotations import SessionAnnotations
 
 @dataclass
@@ -10,8 +9,6 @@ class BackendState:
     tracker: Optional[Any] = None
     video_dir: Optional[str] = None
     video_frame_files: list[str] = field(default_factory=list)
-    tracking_video: Optional[np.ndarray] = None
-    tracking_video_path: Optional[str] = None
     video_source_path: Optional[str] = None
     annotations: SessionAnnotations = field(default_factory=SessionAnnotations)
     interactive_mask_files: dict[str, str] = field(default_factory=dict)

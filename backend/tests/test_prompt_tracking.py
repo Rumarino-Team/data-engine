@@ -13,7 +13,9 @@ from support import state
 from core.annotations import SessionAnnotations
 from core.errors import OperationError
 from support import BackendStateTestCase
-from tracking.prompt_tracking import run_prompt_tracking_job
+from core.runtime import is_out_of_memory
+from tracking.prompt_tracking import run_prompt_tracking_job, track_in_batches, track_prompt_queries
+from tracking.runtime import VideoTrackerRuntime
 from video.runtime import VideoMaskerRuntime
 
 
@@ -68,20 +70,23 @@ class PromptTrackingStatusTests(BackendStateTestCase):
         self.restored_masker = _FakeRestoreMasker()
         self.factory = Mock(return_value=self.restored_masker)
         self.replay = Mock()
+        self.tracker_runtime = VideoTrackerRuntime(
+            session=state, create_tracker=Mock(return_value=state.tracker), release_memory=Mock(),
+        )
         self.runtime = VideoMaskerRuntime(
             session=state, create_masker=self.factory, replay_inputs=self.replay, release_memory=Mock(),
         )
 
     def run_tracking(self):
         return run_prompt_tracking_job(
-            self.ctx, type("Request", (), {"add_support_grid": False})(), self.job, masker_runtime=self.runtime,
+            self.ctx, type("Request", (), {"add_support_grid": False})(), self.job,
+            masker_runtime=self.runtime, tracker_runtime=self.tracker_runtime,
         )
 
     @contextmanager
     def tracking_environment(self, *, streaming=False, load_video=True):
         """Patch the tracking job's collaborators; yields the mock that publishes a result."""
         with ExitStack() as stack:
-            stack.enter_context(patch("tracking.prompt_tracking.ensure_tracker_model"))
             stack.enter_context(patch("tracking.prompt_tracking.should_stream_tracking", return_value=streaming))
             if load_video:
                 stack.enter_context(patch(
@@ -97,7 +102,6 @@ class PromptTrackingStatusTests(BackendStateTestCase):
             return {"result_id": "track-1", "summary": {}}
 
         with (
-            patch("tracking.prompt_tracking.ensure_tracker_model", return_value=None),
             patch("tracking.prompt_tracking.should_stream_tracking", return_value=False),
             patch(
                 "tracking.prompt_tracking.load_tracking_video_from_current_video_state",
@@ -133,13 +137,11 @@ class PromptTrackingStatusTests(BackendStateTestCase):
         self.assertEqual(failure.exception.status_code, 503)
         publish.assert_not_called()
         self.assertIsNone(state.video_masker)
-        self.assertIsNone(state.tracking_video)
 
     def test_tracker_loading_failure_restores_masker_without_publishing(self):
-        with (
-            patch("tracking.prompt_tracking.ensure_tracker_model", side_effect=ValueError("unsupported tracker")),
-            patch("tracking.prompt_tracking.save_prompt_tracking_result") as publish,
-        ):
+        state.tracker = None
+        self.tracker_runtime.create_tracker.side_effect = ValueError("unsupported tracker")
+        with patch("tracking.prompt_tracking.save_prompt_tracking_result") as publish:
             with self.assertRaises(OperationError) as failure:
                 self.run_tracking()
 
@@ -166,7 +168,6 @@ class PromptTrackingStatusTests(BackendStateTestCase):
                 self.assertEqual(failure.exception.status_code, status)
                 self.assertIs(failure.exception.__cause__, error)
                 self.assertIsNone(state.video_masker)
-                self.assertIsNone(state.tracking_video)
                 publish.assert_not_called()
 
     def test_inputs_are_revalidated_after_restoration_before_publication(self):
@@ -177,7 +178,6 @@ class PromptTrackingStatusTests(BackendStateTestCase):
 
         self.assertEqual(failure.exception.status_code, 409)
         self.assertIs(state.video_masker, self.restored_masker)
-        self.assertIsNone(state.tracking_video)
         publish.assert_not_called()
 
     def test_invalid_tracking_coverage_restores_masker_without_publishing(self):
@@ -212,7 +212,6 @@ class PromptTrackingStatusTests(BackendStateTestCase):
                         publish.assert_not_called()
                         self.factory.assert_called_once()
                         self.assertIs(state.video_masker, self.restored_masker)
-                        self.assertIsNone(state.tracking_video)
                         self.assertEqual(state.session_metadata["latest_tracking_result_id"], "previous-result")
                         self.assertEqual(state.annotations.snapshot(), before_annotations)
                     finally:
@@ -236,9 +235,94 @@ class PromptTrackingStatusTests(BackendStateTestCase):
             publish.assert_not_called()
             self.factory.assert_called_once()
             self.assertIs(state.video_masker, self.restored_masker)
-            self.assertIsNone(state.tracking_video)
             self.assertEqual(state.session_metadata["latest_tracking_result_id"], "previous-result")
             self.assertEqual(state.annotations.snapshot(), before_annotations)
+
+
+class BatchedTrackingTests(unittest.TestCase):
+    def setUp(self):
+        cleanup = patch("tracking.prompt_tracking.cleanup_cuda_memory")
+        self.cleanup = cleanup.start()
+        self.addCleanup(cleanup.stop)
+
+    @staticmethod
+    def rows(queries):
+        return np.zeros((len(queries), 2, 2), dtype=np.float32), np.ones((len(queries), 2), dtype=bool)
+
+    def test_out_of_memory_is_recognized_from_the_type_or_the_message(self):
+        self.assertTrue(is_out_of_memory(torch.OutOfMemoryError("anything")))
+        self.assertTrue(is_out_of_memory(RuntimeError("CUDA out of memory.")))
+        self.assertFalse(is_out_of_memory(RuntimeError("something else")))
+        self.assertFalse(is_out_of_memory(ValueError("out of memory")))
+
+    def test_the_batch_is_halved_until_it_fits_and_every_query_is_tracked_once(self):
+        sizes, progress = [], []
+
+        def track_batch(batch):
+            sizes.append(len(batch))
+            if len(batch) > 2:
+                raise torch.OutOfMemoryError("out of memory")
+            return self.rows(batch)
+
+        tracks, visibility = track_in_batches(
+            track_batch, np.arange(24, dtype=np.float32).reshape(8, 3), on_progress=lambda *args: progress.append(args))
+
+        self.assertEqual(sizes, [8, 4, 2, 2, 2, 2])
+        self.assertEqual((tracks.shape, visibility.shape), ((8, 2, 2), (8, 2)))
+        self.assertEqual(progress, [(2, 8), (4, 8), (6, 8), (8, 8)])
+        self.assertEqual(self.cleanup.call_count, 2)
+
+    def test_a_single_query_that_does_not_fit_raises_the_original_error(self):
+        error = torch.OutOfMemoryError("out of memory")
+
+        def track_batch(batch):
+            raise error
+
+        with self.assertRaises(torch.OutOfMemoryError) as caught:
+            track_in_batches(track_batch, np.zeros((1, 3), dtype=np.float32), on_progress=Mock())
+        self.assertIs(caught.exception, error)
+        self.cleanup.assert_called_once()
+
+    def test_other_errors_are_not_retried(self):
+        track_batch = Mock(side_effect=RuntimeError("something else"))
+        with self.assertRaises(RuntimeError):
+            track_in_batches(track_batch, np.zeros((4, 3), dtype=np.float32), on_progress=Mock())
+        track_batch.assert_called_once()
+        self.cleanup.assert_not_called()
+
+    def test_tracking_retries_once_without_the_support_grid_when_memory_runs_out(self):
+        grids = []
+
+        class Tracker:
+            def prepare_video(self, video):
+                return video
+
+            def track(self, video, *, queries, add_support_grid):
+                grids.append(add_support_grid)
+                if add_support_grid:
+                    raise RuntimeError("CUDA out of memory.")
+                return BatchedTrackingTests.rows(queries)
+
+        with patch("tracking.prompt_tracking.load_tracking_video_from_current_video_state",
+                   return_value=(np.zeros((2, 2, 2, 3), dtype=np.uint8), "frames")):
+            tracks, _, grid_used = track_prompt_queries(
+                Mock(), Tracker(), np.zeros((1, 3), dtype=np.float32), add_support_grid=True, streaming=False,
+                on_progress=Mock())
+
+        self.assertEqual(grids, [True, False])
+        self.assertFalse(grid_used)
+        self.assertEqual(tracks.shape, (1, 2, 2))
+
+    def test_without_the_support_grid_an_out_of_memory_error_is_not_retried(self):
+        tracker = Mock()
+        tracker.prepare_video.side_effect = lambda video: video
+        tracker.track.side_effect = RuntimeError("CUDA out of memory.")
+        with patch("tracking.prompt_tracking.load_tracking_video_from_current_video_state",
+                   return_value=(np.zeros((2, 2, 2, 3), dtype=np.uint8), "frames")):
+            with self.assertRaises(RuntimeError):
+                track_prompt_queries(Mock(), tracker, np.zeros((1, 3), dtype=np.float32),
+                                     add_support_grid=False, streaming=False, on_progress=Mock())
+        tracker.track.assert_called_once()
 
 
 if __name__ == "__main__":

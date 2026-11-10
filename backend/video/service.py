@@ -4,7 +4,7 @@ from typing import Any, Optional
 import cv2
 from fastapi.responses import FileResponse
 import numpy as np
-from core.config import IMAGE_EXTENSIONS, SAVED_ROOT, VIDEO_EXTENSIONS
+from core.config import IMAGE_EXTENSIONS, SAVED_ROOT
 from core.errors import OperationError
 from core.context import AppContext
 from core.jobs import JobHandle, utc_now_iso
@@ -36,6 +36,125 @@ from tracking.results import restored_tracking_result_payload, tracking_validity
 
 logger = logging.getLogger(__name__)
 
+def open_saved_session(
+    checkpoint_dir: Path, session: BackendState, job: JobHandle,
+) -> tuple[Path, list[str], Optional[str], dict[str, Any]]:
+    """Open a checkpoint as a new working copy and restore its accepted state into `session`.
+
+    Returns the working frames directory, its frame files, the source video path and the restored payload.
+    """
+    session_metadata = load_session_metadata(checkpoint_dir)
+    checkpoint_id, display_name = session_metadata.get("checkpoint_id"), session_metadata.get("display_name")
+    if not all(isinstance(value, str) and value.strip() for value in (checkpoint_id, display_name)):
+        raise OperationError(400, "Saved session is missing its checkpoint identity or display name.")
+    # The checkpoint stays untouched; all edits and results belong to the working copy.
+    session_dir = open_checkpoint_as_working_copy(checkpoint_dir, session=session)
+    frames_dir, masks_dir = session_dir / "frames", session_dir / "masks"
+    session.checkpoint_id, session.checkpoint_dir, session.display_name = checkpoint_id, checkpoint_dir, display_name
+    manifest_name = session_metadata.get("mask_manifest_file")
+    manifest_path = masks_dir / Path(manifest_name).name if manifest_name else None
+    session.mask_manifest_path = str(manifest_path) if manifest_path and manifest_path.exists() else None
+    source_video_path = session_metadata.get("source_video_path")
+    session.video_source_path = source_video_path
+    frame_files = sorted(
+        frame_path.name
+        for frame_path in frames_dir.iterdir()
+        if frame_path.is_file() and frame_path.suffix.lower() in IMAGE_EXTENSIONS
+    )
+    job.enter_stage(
+        "linking_frames", "Loading saved session frames",
+        progress=0.65,
+        current=len(frame_files),
+        total=len(frame_files),
+        frame_idx=len(frame_files) - 1 if frame_files else None,
+        message=f"Found {len(frame_files)} saved session frames",
+    )
+    try:
+        annotations = SessionAnnotations.model_validate(session_metadata["annotations"])
+        if any(event.frame_idx >= len(frame_files) for event in [*annotations.prompts, *annotations.mask_overrides]):
+            raise ValueError("Prompt frame is outside the video.")
+        interactive_state = InteractiveState.model_validate(session_metadata.get("interactive_state") or {}).model_dump()
+        for mask in annotations.mask_overrides:
+            override_pixels(mask, session.active_session_dir)
+    except (KeyError, ValidationError, ValueError) as error:
+        raise OperationError(400, f"Invalid session annotations or editor state: {error}") from error
+    session.annotations = annotations
+    session.interactive_mask_files = session_metadata.get("interactive_mask_files", {})
+    session.session_metadata = persisted_session_fields(session_metadata)
+    restored = {
+        "annotations": session.annotations.snapshot(),
+        "interactive_state": interactive_state_projection(interactive_state, session=session),
+        "has_mask_manifest": bool(session.mask_manifest_path),
+    }
+    session.video_frame_files = frame_files
+    tracking_result = restored_tracking_result_payload(session, session_dir, session_metadata)
+    if tracking_result is not None:
+        restored["tracking_result"] = tracking_result
+    return frames_dir, frame_files, source_video_path, restored
+
+
+def import_frames(resolved_input_path: Path, session: BackendState, job: JobHandle) -> tuple[Path, list[str], Optional[str]]:
+    """Extract a video file, or link a folder of frames, into a new working copy.
+
+    Returns the working frames directory, its frame files and the source video path (None for a folder).
+    """
+    session_dir = create_active_session(resolved_input_path, session=session)
+    frames_dir = session_dir / "frames"
+
+    if resolved_input_path.is_file():
+        def on_extract_progress(current: int, total: Optional[int]) -> None:
+            if total:
+                progress = 0.35 + (0.3 * (current / total))
+                message = f"Extracted {current} of {total} frames"
+            else:
+                progress = None
+                message = f"Extracted {current} frames"
+            job.enter_stage(
+                "extracting_frames", "Extracting video frames",
+                progress=progress,
+                current=current,
+                total=total,
+                frame_idx=max(0, current - 1),
+                message=message,
+                append_history=current == 1 or (bool(total) and current == total),
+            )
+
+        try:
+            frame_files = extract_video_to_session_frames(resolved_input_path, frames_dir, progress_callback=on_extract_progress)
+        except ValueError as error:
+            raise OperationError(400, str(error)) from error
+        except Exception as error:
+            raise OperationError(500, str(error)) from error
+        return frames_dir, frame_files, str(resolved_input_path)
+
+    candidate_count = len([
+        path
+        for path in resolved_input_path.iterdir()
+        if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+    ])
+
+    def on_link_progress(current: int, total: int, source_path: Path) -> None:
+        job.enter_stage(
+            "linking_frames", "Linking frame cache",
+            progress=0.35 + (0.3 * (current / total)) if total else 0.65,
+            current=current,
+            total=total,
+            frame_idx=max(0, current - 1),
+            message=f"Linked {current} of {total} frames",
+            append_history=current == 1 or current == total,
+        )
+
+    job.enter_stage(
+        "linking_frames", "Linking frame cache",
+        progress=0.35,
+        current=0,
+        total=candidate_count,
+        message="Preparing session-local frame cache",
+    )
+    frame_files = copy_frames_directory_to_session(resolved_input_path, frames_dir, progress_callback=on_link_progress)
+    return frames_dir, frame_files, None
+
+
 def initialize_video_state_from_resolved_input(
     resolved_input_path: Path,
     *,
@@ -48,147 +167,19 @@ def initialize_video_state_from_resolved_input(
     job: JobHandle,
 ):
     # Preparation may target a detached session; helpers must use that same session.
-
-    source_video_path = None
-    source_type = "frames_dir"
     restored_session_payload: Optional[dict[str, Any]] = None
     saved_session_layout = resolve_saved_session_layout(resolved_input_path)
-
     if saved_session_layout is not None:
-        checkpoint_dir, _, _ = saved_session_layout
-        session_metadata = load_session_metadata(checkpoint_dir)
-        checkpoint_id, display_name = session_metadata.get("checkpoint_id"), session_metadata.get("display_name")
-        if not all(isinstance(value, str) and value.strip() for value in (checkpoint_id, display_name)):
-            raise OperationError(400, "Saved session is missing its checkpoint identity or display name.")
         source_type = "saved_session"
-        # The checkpoint stays untouched; all edits and results belong to the working copy.
-        session_dir = open_checkpoint_as_working_copy(checkpoint_dir, session=session)
-        frames_dir, masks_dir = session_dir / "frames", session_dir / "masks"
-        session.checkpoint_id, session.checkpoint_dir, session.display_name = checkpoint_id, checkpoint_dir, display_name
-        manifest_name = session_metadata.get("mask_manifest_file")
-        manifest_path = masks_dir / Path(manifest_name).name if manifest_name else None
-        session.mask_manifest_path = str(manifest_path) if manifest_path and manifest_path.exists() else None
-        source_video_path = session_metadata.get("source_video_path")
-        session.video_source_path = source_video_path
-        indexed_frame_files = sorted(
-            frame_path.name
-            for frame_path in frames_dir.iterdir()
-            if frame_path.is_file() and frame_path.suffix.lower() in IMAGE_EXTENSIONS
-        )
-        job.enter_stage(
-            "linking_frames", "Loading saved session frames",
-            progress=0.65,
-            current=len(indexed_frame_files),
-            total=len(indexed_frame_files),
-            frame_idx=len(indexed_frame_files) - 1 if indexed_frame_files else None,
-            message=f"Found {len(indexed_frame_files)} saved session frames",
-        )
-        try:
-            annotations = SessionAnnotations.model_validate(session_metadata["annotations"])
-            if any(event.frame_idx >= len(indexed_frame_files) for event in [*annotations.prompts, *annotations.mask_overrides]):
-                raise ValueError("Prompt frame is outside the video.")
-            interactive_state = InteractiveState.model_validate(
-                session_metadata.get("interactive_state") or {}
-            ).model_dump()
-            for mask in annotations.mask_overrides:
-                override_pixels(mask, session.active_session_dir)
-        except (KeyError, ValidationError, ValueError) as error:
-            raise OperationError(400, f"Invalid session annotations or editor state: {error}") from error
-        session.annotations = annotations
-        session.interactive_mask_files = session_metadata.get("interactive_mask_files", {})
-        session.session_metadata = persisted_session_fields(session_metadata)
-        restored_session_payload = {
-            "annotations": session.annotations.snapshot(),
-            "interactive_state": interactive_state_projection(interactive_state, session=session),
-            "has_mask_manifest": bool(session.mask_manifest_path),
-        }
-        session.video_frame_files = indexed_frame_files
-        tracking_result = restored_tracking_result_payload(session, session_dir, session_metadata)
-        if tracking_result is not None:
-            restored_session_payload["tracking_result"] = tracking_result
+        frames_dir, frame_files, source_video_path, restored_session_payload = open_saved_session(
+            saved_session_layout[0], session, job)
     else:
-        session_dir = create_active_session(resolved_input_path, session=session)
-        frames_dir = session_dir / "frames"
-
-        if resolved_input_path.is_file():
-            source_type = "video_file"
-            suffix = resolved_input_path.suffix.lower()
-            if suffix in VIDEO_EXTENSIONS:
-                def _on_extract_progress(current: int, total: Optional[int]) -> None:
-                    if total:
-                        progress = 0.35 + (0.3 * (current / total))
-                        message = f"Extracted {current} of {total} frames"
-                    else:
-                        progress = None
-                        message = f"Extracted {current} frames"
-                    job.enter_stage(
-                        "extracting_frames", "Extracting video frames",
-                        progress=progress,
-                        current=current,
-                        total=total,
-                        frame_idx=max(0, current - 1),
-                        message=message,
-                        append_history=current == 1 or (bool(total) and current == total),
-                    )
-
-                try:
-                    indexed_frame_files = extract_video_to_session_frames(
-                        resolved_input_path,
-                        frames_dir,
-                        progress_callback=_on_extract_progress,
-                    )
-                except ValueError as error:
-                    raise OperationError(400, str(error)) from error
-                except Exception as error:
-                    raise OperationError(500, str(error)) from error
-                source_video_path = str(resolved_input_path)
-            else:
-                if suffix in IMAGE_EXTENSIONS:
-                    detail = (
-                        f"Expected a frames directory or video file, got a single image file: {resolved_input_path}. "
-                        "Provide a directory containing image frames."
-                    )
-                else:
-                    detail = (
-                        f"Unsupported input file type: {resolved_input_path.suffix or '<none>'}. "
-                        "Provide a directory of image frames or a video file (.mp4, .mov, .avi, .mkv, .webm, .m4v)."
-                    )
-                raise OperationError(400, detail)
-        else:
-            source_type = "frames_dir"
-            candidate_count = len([
-                path
-                for path in resolved_input_path.iterdir()
-                if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
-            ])
-
-            def _on_link_progress(current: int, total: int, source_path: Path) -> None:
-                progress = 0.35 + (0.3 * (current / total)) if total else 0.65
-                job.enter_stage(
-                    "linking_frames", "Linking frame cache",
-                    progress=progress,
-                    current=current,
-                    total=total,
-                    frame_idx=max(0, current - 1),
-                    message=f"Linked {current} of {total} frames",
-                    append_history=current == 1 or current == total,
-                )
-
-            job.enter_stage(
-                "linking_frames", "Linking frame cache",
-                progress=0.35,
-                current=0,
-                total=candidate_count,
-                message="Preparing session-local frame cache",
-            )
-            indexed_frame_files = copy_frames_directory_to_session(
-                resolved_input_path,
-                frames_dir,
-                progress_callback=_on_link_progress,
-            )
+        validate_video_input_path(resolved_input_path)
+        source_type = "video_file" if resolved_input_path.is_file() else "frames_dir"
+        frames_dir, frame_files, source_video_path = import_frames(resolved_input_path, session, job)
 
     session.video_dir = str(frames_dir)
-    session.video_frame_files = indexed_frame_files
+    session.video_frame_files = frame_files
 
     if not session.video_frame_files:
         if source_type == "saved_session":
@@ -297,9 +288,7 @@ def run_video_init_job(ctx: AppContext, request: VideoInitStateRequest, job: Job
 
 
 def reset_video_state(ctx: AppContext, precondition: AnnotationPrecondition):
-    with ctx.edit():
-        session = ctx.session
-        validate_annotation_precondition(session, precondition)
+    with ctx.edit(precondition) as session:
         if session.video_masker is None:
             raise OperationError(400, "Video masker not active.")
         with annotation_edit(session):
@@ -314,9 +303,7 @@ def reset_video_state(ctx: AppContext, precondition: AnnotationPrecondition):
             }
 
 def add_new_points_or_box(ctx: AppContext, request: VideoAddPointsOrBoxRequest, precondition: AnnotationPrecondition):
-    with ctx.edit():
-        session = ctx.session
-        validate_annotation_precondition(session, precondition)
+    with ctx.edit(precondition) as session:
         if session.video_masker is None:
             raise OperationError(400, "Video masker not active.")
 
@@ -433,9 +420,7 @@ def add_new_points_or_box(ctx: AppContext, request: VideoAddPointsOrBoxRequest, 
             }
 
 def add_new_mask(ctx: AppContext, request: VideoAddMaskRequest, precondition: AnnotationPrecondition):
-    with ctx.edit():
-        session = ctx.session
-        validate_annotation_precondition(session, precondition)
+    with ctx.edit(precondition) as session:
         if session.video_masker is None:
             raise OperationError(400, "Video masker not active.")
         if request.obj_id not in session.annotations.objects or request.frame_idx >= len(session.video_frame_files):
@@ -501,9 +486,7 @@ def save_video_session(ctx: AppContext, request: VideoSaveRequest):
         }
 
 def clear_all_prompts_in_frame(ctx: AppContext, frame_idx: int, obj_id: int, precondition: AnnotationPrecondition):
-    with ctx.edit():
-        session = ctx.session
-        validate_annotation_precondition(session, precondition)
+    with ctx.edit(precondition) as session:
         if session.video_masker is None:
             raise OperationError(400, "Video masker not active.")
         if obj_id not in session.annotations.objects or not 0 <= frame_idx < len(session.video_frame_files):
@@ -516,9 +499,7 @@ def clear_all_prompts_in_frame(ctx: AppContext, frame_idx: int, obj_id: int, pre
                     "message": "Cleared all prompts in frame successfully"}
 
 def remove_object(ctx: AppContext, obj_id: int, precondition: AnnotationPrecondition):
-    with ctx.edit():
-        session = ctx.session
-        validate_annotation_precondition(session, precondition)
+    with ctx.edit(precondition) as session:
         if session.video_masker is None:
             raise OperationError(400, "Video masker not active.")
         if obj_id not in session.annotations.objects:
@@ -529,31 +510,20 @@ def remove_object(ctx: AppContext, obj_id: int, precondition: AnnotationPrecondi
         return annotation_update(session, precondition)
 
 def create_object(ctx: AppContext, precondition: AnnotationPrecondition):
-    with ctx.edit():
-        session = ctx.session
-        validate_annotation_precondition(session, precondition)
+    with ctx.edit(precondition) as session:
         with annotation_edit(session, restore_runtime=False):
             obj = session.annotations.create_object()
         return {**annotation_update(session, precondition), "created_object_id": obj.id}
 
 
 def update_object(ctx: AppContext, obj_id: int, request: VideoObjectUpdate, precondition: AnnotationPrecondition):
-    with ctx.edit():
-        session = ctx.session
-        validate_annotation_precondition(session, precondition)
+    with ctx.edit(precondition) as session:
         if obj_id not in session.annotations.objects:
             raise OperationError(404, "Object does not exist.")
         obj = VideoObject(id=obj_id, **request.model_dump()).model_dump()
         with annotation_edit(session, restore_runtime=False):
             session.annotations.upsert_object(obj)
         return annotation_update(session, precondition)
-
-
-def validate_annotation_precondition(session: BackendState, precondition: AnnotationPrecondition):
-    if current_session_path(session) is None or precondition.session_id != session.active_session_id:
-        raise OperationError(409, "The target session is no longer active. Refresh annotations.")
-    if precondition.expected_revision != session.annotations.revision:
-        raise OperationError(409, "Annotations changed. Refresh before editing again.")
 
 
 def annotation_update(session: BackendState, precondition: AnnotationPrecondition):

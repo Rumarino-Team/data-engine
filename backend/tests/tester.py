@@ -101,7 +101,6 @@ SUITES = {
     "modes": lambda: run_tracking_mode_tests(),
     "sessions": lambda: run_session_tests(),
     "apple-prompt": lambda: run_apple_prompt_tracking_test(),
-    "apple": lambda: run_apple_tracking_tests(),
 }
 
 
@@ -121,27 +120,24 @@ def run_suites(names):
 def test_chooser():
     print("Choose a test with a number")
     print("Video Masking Test: 1")
-    print("CoTracker Propagation Tests (generic routes): 2")
-    print("Run All Tests: 3")
-    print("Tracking modes (track only, track and feed): 4")
-    print("Save, Save As and reopen: 5")
-    print("Apple prompt tracking: 6")
+    print("Run All Tests: 2")
+    print("Tracking modes (track only, track and feed): 3")
+    print("Save, Save As and reopen: 4")
+    print("Apple prompt tracking: 5")
     print("Quit: 0")
-    print("(Non-interactive: --run video|modes|sessions|apple-prompt|apple|all [--streaming])")
+    print("(Non-interactive: --run video|modes|sessions|apple-prompt|all [--streaming])")
     choice = input()
 
     match choice:
         case "1":
             run_suites(["video"])
         case "2":
-            run_suites(["apple"])
-        case "3":
             run_suites(list(SUITES))
-        case "4":
+        case "3":
             run_suites(["modes"])
-        case "5":
+        case "4":
             run_suites(["sessions"])
-        case "6":
+        case "5":
             run_suites(["apple-prompt"])
     return False
 
@@ -264,22 +260,6 @@ def write_json_output(output_path: Path, payload: dict) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, ensure_ascii=True, indent=2)
-
-
-def copy_output_into_dir(output_video_path: str, output_dir: Path) -> str:
-    if not output_video_path:
-        return output_video_path
-    source_path = Path(output_video_path)
-    if not source_path.exists():
-        return output_video_path
-    output_dir.mkdir(parents=True, exist_ok=True)
-    target_path = output_dir / source_path.name
-    if source_path.resolve() == target_path.resolve():
-        return str(target_path)
-    if target_path.exists():
-        target_path.unlink()
-    shutil.move(str(source_path), str(target_path))
-    return str(target_path)
 
 
 def download_and_extract_bedroom():
@@ -852,203 +832,6 @@ def run_apple_prompt_tracking_test():
         )
     finally:
         reset_video_state()
-
-
-def load_tracking_video(video_path, model_name=None):
-    """Calls the /tracking/load_video endpoint."""
-    url = f"{BASE_URL}/tracking/load_video"
-    payload = {"video_path": str(video_path)}
-    if model_name is not None:
-        payload["model_name"] = model_name
-    response = requests.post(url, json=payload)
-    if response.status_code == 200:
-        response_data = response.json()
-        print(f"Video loaded successfully: {video_path}")
-        print(f"  Model: {response_data.get('model_name', 'N/A')}")
-        print(f"  Shape: {response_data.get('shape', [])}")
-        print(f"  Num frames: {response_data.get('num_frames', 0)}")
-    else:
-        print(f"Failed to load tracking video. Status: {response.status_code}, Response: {response.text}")
-    return response.status_code == 200, response.json() if response.status_code == 200 else None
-
-
-def _ensure_mode_labeled_output_path(output_video_path: str, expected_mode: str | None) -> str:
-    """Ensures the output filename includes the expected mode label when requested."""
-    if not output_video_path:
-        return output_video_path
-    if expected_mode is None:
-        return output_video_path
-
-    output_path = Path(output_video_path)
-    name = output_path.name
-    opposite_mode = "online" if expected_mode == "offline" else "offline"
-
-    if f"_{expected_mode}_" in name:
-        return output_video_path
-
-    if f"_{opposite_mode}_" in name:
-        print(
-            f"Warning: Output file appears labeled as {opposite_mode}: {output_video_path}. "
-            f"Leaving filename unchanged."
-        )
-        return output_video_path
-
-    stem = output_path.stem
-    suffix = output_path.suffix
-
-    # Insert mode before trailing timestamp if present: ..._<ts>.mp4
-    prefix, sep, maybe_ts = stem.rpartition("_")
-    if sep and maybe_ts.isdigit() and prefix:
-        new_stem = f"{prefix}_{expected_mode}_{maybe_ts}"
-    else:
-        new_stem = f"{stem}_{expected_mode}"
-
-    new_path = output_path.with_name(f"{new_stem}{suffix}")
-
-    if output_path.exists() and new_path != output_path:
-        output_path.rename(new_path)
-        print(f"Renamed output file to include mode label: {new_path}")
-        return str(new_path)
-
-    return output_video_path
-
-
-def track_grid(grid_size=15, add_support_grid=True, expected_mode=None, output_dir=None):
-    """Calls the /tracking/track_grid endpoint."""
-    url = f"{BASE_URL}/tracking/track_grid"
-    payload = {
-        "grid_size": grid_size,
-        "add_support_grid": add_support_grid
-    }
-    response = requests.post(url, json=payload)
-    if response.status_code == 200:
-        response_data = response.json()
-        if expected_mode:
-            response_data["output_video_path"] = _ensure_mode_labeled_output_path(
-                response_data.get("output_video_path", ""), expected_mode
-            )
-        if output_dir:
-            response_data["output_video_path"] = copy_output_into_dir(
-                response_data.get("output_video_path", ""), Path(output_dir)
-            )
-        print(f"Grid tracking completed successfully!")
-        print(f"  Num points: {response_data.get('num_points', 0)}")
-        print(f"  Num frames: {response_data.get('num_frames', 0)}")
-        print(f"  Output video: {response_data.get('output_video_path', 'N/A')}")
-    else:
-        print(f"Failed to track grid. Status: {response.status_code}, Response: {response.text}")
-    return response.status_code == 200, response.json() if response.status_code == 200 else None
-
-
-def track_points(queries, add_support_grid=True, expected_mode=None, output_dir=None):
-    """Calls the /tracking/track_points endpoint."""
-    url = f"{BASE_URL}/tracking/track_points"
-    payload = {
-        "queries": queries if isinstance(queries, list) else queries.tolist(),
-        "add_support_grid": add_support_grid
-    }
-    response = requests.post(url, json=payload)
-    if response.status_code == 200:
-        response_data = response.json()
-        if expected_mode:
-            response_data["output_video_path"] = _ensure_mode_labeled_output_path(
-                response_data.get("output_video_path", ""), expected_mode
-            )
-        if output_dir:
-            response_data["output_video_path"] = copy_output_into_dir(
-                response_data.get("output_video_path", ""), Path(output_dir)
-            )
-        print(f"Point tracking completed successfully!")
-        print(f"  Num points: {response_data.get('num_points', 0)}")
-        print(f"  Num frames: {response_data.get('num_frames', 0)}")
-        print(f"  Output video: {response_data.get('output_video_path', 'N/A')}")
-    else:
-        print(f"Failed to track points. Status: {response.status_code}, Response: {response.text}")
-    return response.status_code == 200, response.json() if response.status_code == 200 else None
-
-
-def run_apple_tracking_tests():
-    """Runs apple.mp4 CoTracker tests using the current backend-supported model."""
-    generated_outputs = []
-
-    print("\n" + "=" * 60)
-    print("RUNNING APPLE TRACKING TESTS")
-    print("=" * 60)
-
-    if not ensure_apple_test_video():
-        return
-
-    print(f"\n--- Apple Test 1: Load tracking video ---")
-    success, result = load_tracking_video(TRACKING_VIDEO_PATH)
-
-    if not check("apple generic: load video", success):
-        print("Failed to load apple tracking video. Skipping remaining tests.")
-        return
-
-    time.sleep(1)
-
-    print(f"\n--- Apple Test 2: Track grid of points ---")
-    success, result = track_grid(grid_size=10, add_support_grid=True, output_dir=TEST_APPLE_DIR)
-
-    if success:
-        num_points = result.get("num_points", 0)
-        num_frames = result.get("num_frames", 0)
-        if result.get("output_video_path"):
-            generated_outputs.append(result.get("output_video_path"))
-        check(f"apple generic: grid tracking ({num_points} pts × {num_frames} frames)", num_points > 0)
-    else:
-        check("apple generic: grid tracking", False)
-
-    time.sleep(1)
-
-    print(f"\n--- Apple Test 3: Restored legacy point tracking ---")
-    queries = [
-        [0, 400, 350],
-        [10, 600, 500],
-        [20, 750, 600],
-        [30, 900, 200],
-    ]
-    success, result = track_points(queries, add_support_grid=False, output_dir=TEST_APPLE_DIR)
-
-    if success:
-        num_points = result.get("num_points", 0)
-        num_frames = result.get("num_frames", 0)
-        if result.get("output_video_path"):
-            generated_outputs.append(result.get("output_video_path"))
-        write_json_output(
-            TEST_APPLE_DIR / "apple_legacy_points_summary.json",
-            {
-                "queries": queries,
-                "num_points": num_points,
-                "num_frames": num_frames,
-                "output_video_path": result.get("output_video_path"),
-            },
-        )
-        check(f"apple generic: legacy point tracking ({num_points} pts × {num_frames} frames)", num_points > 0)
-    else:
-        check("apple generic: legacy point tracking", False)
-
-    time.sleep(1)
-
-    print(f"\n--- Apple Test 4: Track point with support grid ---")
-    queries = [
-        [0, 320, 240],
-    ]
-    success, result = track_points(queries, add_support_grid=True, output_dir=TEST_APPLE_DIR)
-
-    if success:
-        num_points = result.get("num_points", 0)
-        num_frames = result.get("num_frames", 0)
-        if result.get("output_video_path"):
-            generated_outputs.append(result.get("output_video_path"))
-        check(f"apple generic: point tracking with support grid ({num_points} pts × {num_frames} frames)", num_points > 0)
-    else:
-        check("apple generic: point tracking with support grid", False)
-
-    if generated_outputs:
-        print(f"\nApple generated outputs:")
-        for output_path in generated_outputs:
-            print(f"  - {output_path}")
 
 
 if __name__ == "__main__":

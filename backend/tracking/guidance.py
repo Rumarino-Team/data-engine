@@ -4,36 +4,10 @@ from typing import Any, Optional
 
 import numpy as np
 
+from core.annotations import prompt_point_key
 from core.state import BackendState
 from sessions.metadata import current_session_path
 from utils import load_mask_manifest
-
-
-def prompt_point_key(*, obj_id: int, frame_idx: int, x: float, y: float) -> str:
-    return f"obj:{int(obj_id)}|frame:{int(frame_idx)}|x:{float(x):.3f}|y:{float(y):.3f}"
-
-
-def positive_prompt_keys(prompt_events: list[dict[str, Any]]) -> set[str]:
-    keys: set[str] = set()
-    for event in prompt_events:
-        points = event.get("points", []) or []
-        labels = event.get("labels", []) or [1] * len(points)
-        frame_idx = int(event.get("frame_idx", 0))
-        obj_id = int(event.get("obj_id", 0))
-        for point_idx, point in enumerate(points):
-            if point_idx >= len(labels) or int(labels[point_idx]) != 1:
-                continue
-            if len(point) < 2:
-                continue
-            keys.add(
-                prompt_point_key(
-                    obj_id=obj_id,
-                    frame_idx=frame_idx,
-                    x=float(point[0]),
-                    y=float(point[1]),
-                )
-            )
-    return keys
 
 
 def tracked_prompt_keys(points: list[dict[str, Any]]) -> list[str]:

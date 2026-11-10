@@ -4,9 +4,7 @@ import numpy as np
 import cv2
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple, Union
-import colorsys
-import random
+from typing import Optional, Sequence, Tuple, Union
 
 VIDEO_INPUT_RESO = (384, 512) # Resolution of the input video to the model
 DEFAULT_COTRACKER_MODEL = "cotracker3_online"
@@ -31,63 +29,6 @@ class PreparedVideo:
     frames: torch.Tensor  # (1, T, 3, h, w) float32
     height: int
     width: int
-
-
-def read_video_rgb(video_path: str | Path) -> np.ndarray:
-    capture = cv2.VideoCapture(str(video_path))
-    if not capture.isOpened():
-        raise ValueError(f"Unable to open video: {video_path}")
-
-    frames: list[np.ndarray] = []
-    try:
-        while True:
-            success, frame_bgr = capture.read()
-            if not success:
-                break
-            frames.append(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
-    finally:
-        capture.release()
-
-    if not frames:
-        raise ValueError(f"No frames could be decoded from video: {video_path}")
-    return np.stack(frames, axis=0)
-
-
-def read_video_fps(video_path: str | Path, default: float = 30.0) -> float:
-    capture = cv2.VideoCapture(str(video_path))
-    try:
-        if not capture.isOpened():
-            return float(default)
-        fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
-        return fps if fps > 0 else float(default)
-    finally:
-        capture.release()
-
-
-def write_video_rgb(output_path: str | Path, video: np.ndarray, fps: float) -> None:
-    video_array = np.asarray(video)
-    if video_array.ndim != 4 or video_array.shape[-1] != 3 or video_array.shape[0] == 0:
-        raise ValueError(f"Expected video shape (T, H, W, 3), got {video_array.shape}.")
-
-    if video_array.dtype != np.uint8:
-        video_array = np.clip(video_array, 0, 255).astype(np.uint8)
-
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    height, width = int(video_array.shape[1]), int(video_array.shape[2])
-    writer = cv2.VideoWriter(
-        str(output_path),
-        cv2.VideoWriter_fourcc(*"mp4v"),
-        float(fps),
-        (width, height),
-    )
-    if not writer.isOpened():
-        raise ValueError(f"Unable to open video writer: {output_path}")
-    try:
-        for frame_rgb in video_array:
-            writer.write(cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR))
-    finally:
-        writer.release()
 
 
 class FrameChunkLoader:
@@ -154,102 +95,6 @@ class FrameChunkLoader:
         }
         self._cached = frames
         return torch.stack(list(frames.values()))[None]
-
-# Generate random colormaps for visualizing different points.
-def get_colors(num_colors: int) -> List[Tuple[int, int, int]]:
-  """Gets colormap for points."""
-  colors = []
-  for i in np.arange(0.0, 360.0, 360.0 / num_colors):
-    hue = i / 360.0
-    lightness = (50 + np.random.rand() * 10) / 100.0
-    saturation = (90 + np.random.rand() * 10) / 100.0
-    color = colorsys.hls_to_rgb(hue, lightness, saturation)
-    colors.append(
-        (int(color[0] * 255), int(color[1] * 255), int(color[2] * 255))
-    )
-  random.shuffle(colors)
-  return colors
-
-def paint_point_track(
-    frames: np.ndarray,
-    point_tracks: np.ndarray,
-    visibles: np.ndarray,
-    colormap: Optional[List[Tuple[int, int, int]]] = None,
-) -> np.ndarray:
-  """Converts a sequence of points to color code video.
-
-  Args:
-    frames: [num_frames, height, width, 3], np.uint8, [0, 255]
-    point_tracks: [num_points, num_frames, 2], np.float32, [0, width / height]
-    visibles: [num_points, num_frames], bool
-    colormap: colormap for points, each point has a different RGB color.
-
-  Returns:
-    video: [num_frames, height, width, 3], np.uint8, [0, 255]
-  """
-  num_points, num_frames = point_tracks.shape[0:2]
-  if colormap is None:
-    colormap = get_colors(num_colors=num_points)
-  height, width = frames.shape[1:3]
-  dot_size_as_fraction_of_min_edge = 0.015
-  radius = int(round(min(height, width) * dot_size_as_fraction_of_min_edge))
-  diam = radius * 2 + 1
-  quadratic_y = np.square(np.arange(diam)[:, np.newaxis] - radius - 1)
-  quadratic_x = np.square(np.arange(diam)[np.newaxis, :] - radius - 1)
-  icon = (quadratic_y + quadratic_x) - (radius**2) / 2.0
-  sharpness = 0.15
-  icon = np.clip(icon / (radius * 2 * sharpness), 0, 1)
-  icon = 1 - icon[:, :, np.newaxis]
-  icon1 = np.pad(icon, [(0, 1), (0, 1), (0, 0)])
-  icon2 = np.pad(icon, [(1, 0), (0, 1), (0, 0)])
-  icon3 = np.pad(icon, [(0, 1), (1, 0), (0, 0)])
-  icon4 = np.pad(icon, [(1, 0), (1, 0), (0, 0)])
-
-  video = frames.copy()
-  # Use the minimum of video frames and track frames to avoid index errors
-  num_frames_to_paint = min(num_frames, frames.shape[0])
-  for t in range(num_frames_to_paint):
-    # Pad so that points that extend outside the image frame don't crash us
-    image = np.pad(
-        video[t],
-        [
-            (radius + 1, radius + 1),
-            (radius + 1, radius + 1),
-            (0, 0),
-        ],
-    )
-    for i in range(num_points):
-      # The icon is centered at the center of a pixel, but the input coordinates
-      # are raster coordinates.  Therefore, to render a point at (1,1) (which
-      # lies on the corner between four pixels), we need 1/4 of the icon placed
-      # centered on the 0'th row, 0'th column, etc.  We need to subtract
-      # 0.5 to make the fractional position come out right.
-      x, y = point_tracks[i, t, :] + 0.5
-      x = min(max(x, 0.0), width)
-      y = min(max(y, 0.0), height)
-
-      if visibles[i, t]:
-        x1, y1 = np.floor(x).astype(np.int32), np.floor(y).astype(np.int32)
-        x2, y2 = x1 + 1, y1 + 1
-
-        # bilinear interpolation
-        patch = (
-            icon1 * (x2 - x) * (y2 - y)
-            + icon2 * (x2 - x) * (y - y1)
-            + icon3 * (x - x1) * (y2 - y)
-            + icon4 * (x - x1) * (y - y1)
-        )
-        x_ub = x1 + 2 * radius + 2
-        y_ub = y1 + 2 * radius + 2
-        image[y1:y_ub, x1:x_ub, :] = (1 - patch) * image[
-            y1:y_ub, x1:x_ub, :
-        ] + patch * np.array(colormap[i])[np.newaxis, np.newaxis, :]
-
-      # Remove the pad
-      video[t] = image[
-          radius + 1 : -radius - 1, radius + 1 : -radius - 1
-      ].astype(np.uint8)
-  return video
 
 class CoTracker:
     def __init__(self, model_name=DEFAULT_COTRACKER_MODEL):

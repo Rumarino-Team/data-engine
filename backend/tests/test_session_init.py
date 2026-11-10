@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core.errors import OperationError
+from core.state import BackendState
 from support import state
 from schemas.video import VideoInitStateRequest
 from sessions.metadata import session_metadata_document
@@ -50,6 +51,18 @@ class SessionReplacementTests(BackendStateTestCase):
         self.assertEqual(self.directory_files(self.old_dir), self.old_files)
         self.assertTrue((self.old_dir / "frames" / "00000.jpg").exists())
         self.old_masker.init_state.assert_not_called()
+
+    def test_unsupported_input_files_are_rejected_before_a_working_copy_exists(self):
+        for name, expected in [("notes.txt", "Unsupported input file type"), ("frame.png", "single image file")]:
+            path = self.root / name
+            path.touch()
+            with self.subTest(name), self.assertRaises(OperationError) as failure:
+                service.initialize_video_state_from_resolved_input(
+                    path, online_mode=True, batch_size=1, offload_video_to_cpu=True, offload_state_to_cpu=True,
+                    async_loading_frames=False, session=BackendState(), job=self.job_handle())
+            self.assertEqual(failure.exception.status_code, 400)
+            self.assertIn(expected, failure.exception.message)
+        self.assertFalse((self.root / "candidates").exists())
 
     def test_invalid_path_and_empty_directory_preserve_current_session(self):
         empty = self.root / "empty"
@@ -149,13 +162,3 @@ class SessionReplacementTests(BackendStateTestCase):
         self.assert_old_session()
         self.assertEqual((saved / "session.json").read_bytes(), before)
         self.assertTrue(orphan.exists())
-
-    def test_tracking_video_load_failure_preserves_annotation_session(self):
-        from schemas.tracking import TrackingLoadVideoRequest
-        from tracking import service as tracking
-        source = self.root / "video.mp4"
-        source.touch()
-        with patch.object(tracking, "read_tracking_video", side_effect=ValueError("bad video")):
-            with self.assertRaises(ValueError):
-                tracking.load_tracking_video(self.ctx, TrackingLoadVideoRequest(video_path=str(source)))
-        self.assert_old_session()

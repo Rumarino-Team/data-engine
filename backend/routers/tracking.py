@@ -5,23 +5,12 @@ from core.context import AppContext
 from routers.video import annotation_precondition
 from schemas.video import AnnotationPrecondition
 
-from schemas.tracking import (
-    TrackingGridRequest,
-    TrackingLoadVideoRequest,
-    TrackingPointsRequest,
-    TrackingPromptPointsRequest,
-)
+from schemas.tracking import TrackingPromptPointsRequest
 from tracking.prompt_tracking import start_prompt_tracking
 from tracking.results import load_prompt_tracking_result
-from tracking.service import load_tracking_video, track_grid, track_points
 
 
 router = APIRouter()
-
-
-@router.post("/tracking/load_video")
-def load_tracking_video_route(request: TrackingLoadVideoRequest, ctx: AppContext = Depends(get_context)):
-    return load_tracking_video(ctx, request)
 
 
 @router.post("/tracking/track_prompt_points")
@@ -31,16 +20,6 @@ def track_prompt_points(
     ctx: AppContext = Depends(get_context),
 ):
     return start_prompt_tracking(ctx, request, precondition)
-
-
-@router.post("/tracking/track_grid")
-def track_grid_route(request: TrackingGridRequest, ctx: AppContext = Depends(get_context)):
-    return track_grid(ctx, request)
-
-
-@router.post("/tracking/track_points")
-def track_points_route(request: TrackingPointsRequest, ctx: AppContext = Depends(get_context)):
-    return track_points(ctx, request)
 
 
 @router.get("/tracking/results/{result_id}")

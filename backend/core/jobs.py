@@ -217,11 +217,10 @@ class JobManager:
 
 
 def capture_job_inputs(session: "BackendState", operation: str) -> dict[str, Any]:
-    from tracking.guidance import positive_prompt_keys
     return {
         "session_id": session.active_session_id,
         "input_revision": session.annotations.revision,
-        "dependencies": (sorted(positive_prompt_keys(session.annotations.prompt_events()))
+        "dependencies": (sorted(session.annotations.positive_prompt_keys())
                          if operation == "prompt_tracking" else dict(session.annotations.input_revisions)),
     }
 
