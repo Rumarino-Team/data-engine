@@ -4,12 +4,12 @@ from video.masks import override_pixels
 from core.errors import OperationError
 import sam2_video_masker as svm
 from core.runtime import cleanup_cuda_memory
-from core.state import BackendState, state
+from core.state import BackendState
 from sessions.metadata import write_session_metadata
 from schemas.video import VideoPrompt
 from video.runtime import MaskerRestorationError, VideoMaskerRuntime
 
-def record_prompt_event(request: "VideoAddPointsOrBoxRequest"):
+def record_prompt_event(session: BackendState, request: "VideoAddPointsOrBoxRequest"):
     event = VideoPrompt.model_validate({
         "frame_idx": int(request.frame_idx),
         "obj_id": int(request.obj_id),
@@ -17,10 +17,10 @@ def record_prompt_event(request: "VideoAddPointsOrBoxRequest"):
         "labels": [int(label) for label in (request.labels or [])],
         "box": [float(v) for v in request.box] if request.box is not None else None,
     })
-    state.annotations.set_prompt(event, clear_old_points=request.clear_old_points)
+    session.annotations.set_prompt(event, clear_old_points=request.clear_old_points)
 
 
-def replay_annotation_prompts(session: BackendState = state) -> None:
+def replay_annotation_prompts(session: BackendState) -> None:
     for event in session.annotations.prompt_events():
         session.video_masker.add_new_points_or_box(
             frame_idx=event["frame_idx"], obj_id=event["obj_id"],
@@ -29,7 +29,7 @@ def replay_annotation_prompts(session: BackendState = state) -> None:
         )
     for mask in session.annotations.mask_overrides:
         session.video_masker.add_new_mask(frame_idx=mask.frame_idx, obj_id=mask.obj_id,
-                                       mask=override_pixels(mask, session_path=session.active_session_dir))
+                                       mask=override_pixels(mask, session.active_session_dir))
 
 
 def create_masker_runtime(session: BackendState) -> VideoMaskerRuntime:
@@ -37,36 +37,36 @@ def create_masker_runtime(session: BackendState) -> VideoMaskerRuntime:
         session=session,
         create_masker=svm.SAM2VideoMasker,
         replay_inputs=replay_annotation_prompts,
-        persist_session=lambda active: write_session_metadata(session=active),
+        persist_session=write_session_metadata,
         release_memory=cleanup_cuda_memory,
     )
 
 
 @contextmanager
-def annotation_edit(*, restore_runtime: bool = True):
+def annotation_edit(session: BackendState, *, restore_runtime: bool = True):
     """Stage accepted inputs and restore them when an edit fails.
 
     Caller holds foreground_operation. Encode results before persisting acceptance.
     Set restore_runtime=False for changes that never touch the predictor.
     """
     # Frame entries are replaced, never mutated by foreground edits.
-    previous_manifest = state.mask_manifest_path
-    previous_masks = state.interactive_mask_files
-    state.interactive_mask_files = dict(previous_masks)
-    previous = state.annotations
-    state.annotations = previous.model_copy(deep=True)
+    previous_manifest = session.mask_manifest_path
+    previous_masks = session.interactive_mask_files
+    session.interactive_mask_files = dict(previous_masks)
+    previous = session.annotations
+    session.annotations = previous.model_copy(deep=True)
     try:
         yield
     except Exception:
-        state.annotations = previous
-        state.interactive_mask_files = previous_masks
-        state.mask_manifest_path = previous_manifest
+        session.annotations = previous
+        session.interactive_mask_files = previous_masks
+        session.mask_manifest_path = previous_manifest
         # Artifacts published by the rejected edit were never committed.
-        sweep_unreferenced_artifacts(state)
+        sweep_unreferenced_artifacts(session)
         if not restore_runtime:
             raise
         try:
-            create_masker_runtime(state).rebuild_inputs()
+            create_masker_runtime(session).rebuild_inputs()
         except MaskerRestorationError as recovery_error:
             raise OperationError(
                 503, "The edit was rejected and the predictor could not be restored. Reload the video."

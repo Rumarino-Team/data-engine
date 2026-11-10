@@ -10,6 +10,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core.errors import OperationError
+from core.jobs import JobHandle
 from core.state import BackendState
 from core.annotations import SessionAnnotations
 from schemas.video import VideoPropagateRequest
@@ -51,31 +52,29 @@ class PartialPropagationTests(unittest.TestCase):
                         video_frame_files=[f"{i:05d}.jpg" for i in range(5)],
                         annotations=SessionAnnotations(objects={1: {"id": 1, "label": "Object 1", "color": "#ff0000"}},
                                                     prompts=[{"frame_idx": 1, "obj_id": 1, "points": [[1, 1]], "labels": [1]}]),
-                        mask_manifest_path=str(masks / "manifest.json"),
+                        mask_manifest_path=str(masks / "manifest.json"), active_session_dir=root,
                     )
                     runtime = VideoMaskerRuntime(
                         session=state, create_masker=Mock(), replay_inputs=Mock(),
                         persist_session=Mock(), release_memory=Mock(),
                     )
-                    patches.enter_context(patch("video.masks._overrides_dir", lambda: masks / "overrides"))
                     if explicit_override:
-                        state.annotations.set_mask(store_mask_override(1, 1, np.ones((8, 8), dtype=bool)))
+                        state.annotations.set_mask(store_mask_override(root, 1, 1, np.ones((8, 8), dtype=bool)))
                     state.interactive_mask_files = {str(i): "old-artifact.json" for i in range(5)}
                     for name, value in {
                         "state": state, "WINDOW_FRAMES_ROOT": root / "windows",
-                        "current_masks_dir": lambda: masks, "clear_window_cache": Mock(),
+                        "current_masks_dir": lambda session: masks, "clear_window_cache": Mock(),
                         "write_session_metadata": Mock(),
                         "create_masker_runtime": lambda session: runtime,
                     }.items():
                         patches.enter_context(patch.object(propagation, name, value))
                     patches.enter_context(patch("core.state.state", state))
-                    patches.enter_context(patch("core.jobs.update_job"))
                     # Repeat the shorter range: neither run may remove the earlier/later data.
                     for _ in range(2):
                         response = propagation.run_propagation_job(VideoPropagateRequest(
                             start_frame_idx=1, max_frame_num_to_track=2, use_tracked_points=False,
                             export_overlay_frames=export_overlay_frames,
-                        ))
+                        ), Mock(spec=JobHandle))
                         updated = load_mask_manifest(Path(state.mask_manifest_path))
                         self.assertEqual(set(updated["frames"]), {"0", "1", "2", "3", "4"})
                         for i in [0, 3, 4]:
@@ -104,19 +103,19 @@ class PartialPropagationTests(unittest.TestCase):
                                                     use_tracked_points=False, export_overlay_frames=False)
                     with patch.object(propagation, "write_session_metadata", side_effect=OSError("disk full")):
                         with self.assertRaises(OSError):
-                            propagation.run_propagation_job(request)
+                            propagation.run_propagation_job(request, Mock(spec=JobHandle))
                     self.assertEqual(state.mask_manifest_path, previous_path)
                     self.assertEqual(state.interactive_mask_files, previous_masks)
                     self.assertEqual(Path(previous_path).read_bytes(), previous_manifest)
                     with patch.object(masker, "propagate_in_video", side_effect=RuntimeError("inference failed")):
                         with self.assertRaises(OperationError):
-                            propagation.run_propagation_job(request)
+                            propagation.run_propagation_job(request, Mock(spec=JobHandle))
                     self.assertEqual(state.mask_manifest_path, previous_path)
                     runtime.replay_inputs.assert_called_with(state)
                     runtime.replay_inputs.side_effect = RuntimeError("restore failed")
                     with self.assertLogs("video.runtime", level="ERROR"):
                         with self.assertRaises(OperationError) as failure:
-                            propagation.run_propagation_job(request)
+                            propagation.run_propagation_job(request, Mock(spec=JobHandle))
                     self.assertEqual(failure.exception.status_code, 503)
                     self.assertIsNone(state.video_masker)
                     self.assertEqual(state.mask_manifest_path, previous_path)

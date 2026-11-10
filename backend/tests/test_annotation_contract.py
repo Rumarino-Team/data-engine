@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from core import jobs
+from core.jobs import job_manager
 from core.annotations import SessionAnnotations
 from core.errors import OperationError
 from core.state import state
@@ -130,7 +130,7 @@ class PreconditionTests(BackendStateTestCase):
         state.active_session_id = "current"
         state.annotations.create_object()
         state.video_masker = self.make_masker(offload_video_to_cpu=False)
-        write_session_metadata()
+        write_session_metadata(state)
         self.client = self.make_client(preconditions=False)
 
     def headers(self, session="current", revision=1):
@@ -186,7 +186,7 @@ class PreconditionTests(BackendStateTestCase):
         state.annotations.set_prompt(VideoPrompt(frame_idx=0, obj_id=1, points=[[1, 2]], labels=[1]))
         for route, module in [("/video/propagate_in_video", "video.propagation"),
                               ("/tracking/track_prompt_points", "tracking.prompt_tracking")]:
-            with patch(f"{module}.queue_long_job", return_value={"job_id": "test"}) as queue:
+            with patch.object(job_manager, "start", return_value={"job_id": "test"}) as queue:
                 response = self.client.post(route, json={}, headers=self.headers(revision=state.annotations.revision))
                 self.assertEqual(response.status_code, 200)
                 inputs = queue.call_args.kwargs["inputs"]
@@ -194,7 +194,7 @@ class PreconditionTests(BackendStateTestCase):
                 self.assertEqual(inputs["input_revision"], state.annotations.revision)
                 state.active_session_id = "replacement"
                 with self.assertRaises(OperationError) as stale:
-                    queue.call_args.kwargs["worker"]()
+                    queue.call_args.kwargs["worker"](self.job_handle())
                 self.assertEqual(stale.exception.status_code, 409)
                 state.active_session_id = "current"
         state.video_masker.init_state.assert_not_called()
@@ -218,15 +218,16 @@ class PreconditionTests(BackendStateTestCase):
         release = threading.Event()
         admission_attempted = threading.Event()
 
-        def persist():
+        def persist(*args):
             entered.set()
             self.assertTrue(release.wait(timeout=5))
-            self.assertFalse(jobs.is_job_active())
-            write_session_metadata()
+            self.assertFalse(job_manager.is_active())
+            write_session_metadata(state)
 
         def admit():
             admission_attempted.set()
-            return jobs._start_job("video_init", stage="init", stage_label="Init", message="init")
+            self.activate_job("queued")
+            return job_manager.snapshot()
         with ThreadPoolExecutor(max_workers=2) as pool:
             with patch.object(service, "write_session_metadata", side_effect=persist):
                 edit = pool.submit(service.create_object,

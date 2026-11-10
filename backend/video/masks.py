@@ -1,3 +1,4 @@
+from __future__ import annotations
 from typing import Any, TYPE_CHECKING
 from uuid import uuid4
 from functools import lru_cache
@@ -5,6 +6,7 @@ from pathlib import Path
 import logging, re
 
 if TYPE_CHECKING:
+    from core.state import BackendState
     from schemas.video import InteractiveMaskRLE, MaskOverride
 import numpy as np
 from video.mask_encoding import encode_mask_payload, encode_live_mask_payload
@@ -82,20 +84,18 @@ def encode_override(frame_idx: int, obj_id: int, mask: np.ndarray) -> "Interacti
                               height=mask.shape[0], width=mask.shape[1], counts=counts)
 
 
-def _overrides_dir() -> Path:
-    from sessions.metadata import current_masks_dir
-    masks_dir = current_masks_dir()
-    if masks_dir is None:
+def _overrides_dir(session_path: Path | None) -> Path:
+    if session_path is None:
         raise ValueError("No active session for mask overrides.")
-    return masks_dir / "overrides"
+    return session_path / "masks" / "overrides"
 
 
-def store_mask_override(frame_idx: int, obj_id: int, mask: np.ndarray) -> "MaskOverride":
+def store_mask_override(session_path: Path | None, frame_idx: int, obj_id: int, mask: np.ndarray) -> "MaskOverride":
     """Publish pixels as a new immutable artifact; the caller accepts its reference."""
     from schemas.video import MaskOverride
     from utils import write_mask_manifest
     artifact = f"{uuid4().hex}.json"
-    write_mask_manifest(_overrides_dir() / artifact, encode_override(frame_idx, obj_id, mask).model_dump())
+    write_mask_manifest(_overrides_dir(session_path) / artifact, encode_override(frame_idx, obj_id, mask).model_dump())
     return MaskOverride(frame_idx=frame_idx, obj_id=obj_id, artifact=artifact)
 
 
@@ -108,8 +108,8 @@ def _read_override(path: Path) -> tuple["InteractiveMaskRLE", dict[str, Any]]:
     return rle, encode_live_mask_payload(decode_override(rle))
 
 
-def _load_override(ref: "MaskOverride", session_path: Path | None = None) -> tuple["InteractiveMaskRLE", dict[str, Any]]:
-    path = (session_path / "masks" / "overrides" if session_path else _overrides_dir()) / ref.artifact
+def _load_override(ref: "MaskOverride", session_path: Path | None) -> tuple["InteractiveMaskRLE", dict[str, Any]]:
+    path = _overrides_dir(session_path) / ref.artifact
     try:
         # The cache trusts immutability, not existence; a reclaimed file must not stay readable.
         if not path.is_file():
@@ -122,31 +122,30 @@ def _load_override(ref: "MaskOverride", session_path: Path | None = None) -> tup
     return rle, payload
 
 
-def override_pixels(ref: "MaskOverride", *, session_path: Path | None = None) -> np.ndarray:
+def override_pixels(ref: "MaskOverride", session_path: Path | None) -> np.ndarray:
     return decode_override(_load_override(ref, session_path)[0])
 
 
-def override_payload(ref: "MaskOverride") -> dict[str, Any]:
-    return _load_override(ref)[1]
+def override_payload(ref: "MaskOverride", session_path: Path | None) -> dict[str, Any]:
+    return _load_override(ref, session_path)[1]
 
 
-def retain_interactive_masks(frame_idx: int, obj_ids: list[int], encoded_masks: list[dict]) -> None:
-    from core.state import state
+def retain_interactive_masks(session: BackendState, frame_idx: int, obj_ids: list[int], encoded_masks: list[dict]) -> None:
     from sessions.metadata import current_masks_dir
     from utils import write_mask_manifest
-    masks_dir = current_masks_dir()
+    masks_dir = current_masks_dir(session)
     if masks_dir is None:
         raise ValueError("No active session for interactive masks.")
     payload = {
-        str(obj_id): {"input_revision": state.annotations.input_revisions.get(obj_id, 0),
+        str(obj_id): {"input_revision": session.annotations.input_revisions.get(obj_id, 0),
                       "mask": mask}
-        for obj_id, mask in zip(obj_ids, encoded_masks) if obj_id in state.annotations.objects
+        for obj_id, mask in zip(obj_ids, encoded_masks) if obj_id in session.annotations.objects
     }
     # Publish an immutable artifact first, then accept its reference with annotations.
     # If metadata acceptance fails, the previous reference still names untouched pixels.
     artifact_name = f"{uuid4().hex}.json"
     write_mask_manifest(masks_dir / "interactive" / artifact_name, payload)
-    state.interactive_mask_files[str(frame_idx)] = artifact_name
+    session.interactive_mask_files[str(frame_idx)] = artifact_name
 
 
 @lru_cache(maxsize=1)
@@ -156,51 +155,47 @@ def _read_interactive_mask_file(path: Path) -> dict[str, Any]:
     return load_mask_manifest(path)
 
 
-def load_interactive_masks(frame_idx: int) -> dict[str, Any]:
-    from core.state import state
+def load_interactive_masks(session: BackendState, frame_idx: int) -> dict[str, Any]:
     from sessions.metadata import current_masks_dir
-    artifact_name = state.interactive_mask_files.get(str(frame_idx))
+    artifact_name = session.interactive_mask_files.get(str(frame_idx))
     if artifact_name is None:
         return {}
     if not isinstance(artifact_name, str) or not re.fullmatch(r"[0-9a-f]{32}\.json", artifact_name):
         raise ValueError("Invalid interactive mask artifact reference.")
-    masks_dir = current_masks_dir()
+    masks_dir = current_masks_dir(session)
     if masks_dir is None:
         raise ValueError("No active session for interactive masks.")
     return _read_interactive_mask_file(masks_dir / "interactive" / artifact_name)
 
 
-def effective_mask_data(frame_idx: int) -> dict[str, Any]:
+def effective_mask_data(session: BackendState, frame_idx: int) -> dict[str, Any]:
     """One authoritative frame: explicit input > interactive result > propagation.
 
     Empty masks are present values, so they suppress lower-precedence sources.
     Generated results expire on edits to their object's inputs, not display labels.
     """
-    from core.state import state
-    from sessions.metadata import current_masks_dir
     from video.manifest_cache import load_cached_mask_manifest
     objects, sources = {}, {}
-    masks_dir = current_masks_dir()
-    manifest_path = Path(state.mask_manifest_path) if state.mask_manifest_path else None
+    manifest_path = Path(session.mask_manifest_path) if session.mask_manifest_path else None
     frame = {}
     if manifest_path and manifest_path.exists():
         frame = load_cached_mask_manifest(manifest_path).get("frames", {}).get(str(frame_idx), {})
     for obj_id, mask in frame.get("objects", {}).items():
         object_id = int(obj_id)
-        if (object_id in state.annotations.objects and
-                frame.get("input_revisions", {}).get(str(obj_id)) == state.annotations.input_revisions.get(object_id, 0)):
+        if (object_id in session.annotations.objects and
+                frame.get("input_revisions", {}).get(str(obj_id)) == session.annotations.input_revisions.get(object_id, 0)):
             objects[str(obj_id)] = mask
             sources[str(obj_id)] = "manifest"
-    for obj_id, result in load_interactive_masks(frame_idx).items():
+    for obj_id, result in load_interactive_masks(session, frame_idx).items():
         object_id = int(obj_id)
-        if (object_id in state.annotations.objects and
-                result["input_revision"] == state.annotations.input_revisions.get(object_id, 0)):
+        if (object_id in session.annotations.objects and
+                result["input_revision"] == session.annotations.input_revisions.get(object_id, 0)):
             objects[str(obj_id)] = result["mask"]
             sources[str(obj_id)] = "live"
-    for mask in state.annotations.mask_overrides:
+    for mask in session.annotations.mask_overrides:
         if mask.frame_idx == frame_idx:
-            objects[str(mask.obj_id)] = override_payload(mask)
+            objects[str(mask.obj_id)] = override_payload(mask, session.active_session_dir)
             sources[str(mask.obj_id)] = "override"
-    return {"session_id": state.active_session_id, "annotation_revision": state.annotations.revision,
-            "state_epoch": state.video_state_epoch, "frame_idx": frame_idx,
+    return {"session_id": session.active_session_id, "annotation_revision": session.annotations.revision,
+            "state_epoch": session.video_state_epoch, "frame_idx": frame_idx,
             "objects": objects, "sources": sources}

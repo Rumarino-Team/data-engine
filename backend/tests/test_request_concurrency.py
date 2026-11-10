@@ -13,10 +13,10 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.factory import create_app
-from core import jobs
 from core.state import state
 from routers import video as video_routes
 from sessions.metadata import write_session_metadata
+from core.jobs import job_manager
 from support import BackendStateFixtures
 from video import service
 
@@ -32,10 +32,8 @@ class RequestConcurrencyTests(BackendStateFixtures, unittest.IsolatedAsyncioTest
             video_masker=self.make_masker(),
         )
         state.annotations.create_object()
-        write_session_metadata()
-        job = jobs._start_job("video_init", stage="init", stage_label="Init", message="init")
-        jobs._complete_job(job["job_id"], {"message": "previous job"})
-        self.job_id = job["job_id"]
+        write_session_metadata(state)
+        self.job_id = self.finished_job({"message": "previous job"})
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=create_app()), base_url="http://test",
         )
@@ -100,12 +98,12 @@ class RequestConcurrencyTests(BackendStateFixtures, unittest.IsolatedAsyncioTest
 
     async def test_concurrent_mutation_and_snapshot_wait_for_metadata_acceptance(self):
         second_entered, read_entered = asyncio.Event(), asyncio.Event()
-        original_operation = service.foreground_operation
+        original_operation = job_manager.foreground_operation
         original_info = video_routes.get_video_info
 
-        def persist():
+        def persist(*args):
             self.block_worker()
-            write_session_metadata()
+            write_session_metadata(state)
 
         @contextmanager
         def observed_operation():
@@ -121,7 +119,7 @@ class RequestConcurrencyTests(BackendStateFixtures, unittest.IsolatedAsyncioTest
             first = self.start_create()
             try:
                 await asyncio.wait_for(self.entered.wait(), timeout=1)
-                with (patch.object(service, "foreground_operation", observed_operation),
+                with (patch.object(job_manager, "foreground_operation", observed_operation),
                       patch.object(video_routes, "get_video_info", observed_info)):
                     second = self.start_create()
                     snapshot = self.start_request("GET", "/video/info")
@@ -147,9 +145,9 @@ class RequestConcurrencyTests(BackendStateFixtures, unittest.IsolatedAsyncioTest
         read_entered = asyncio.Event()
         original_info = video_routes.get_video_info
 
-        def persist():
+        def persist(*args):
             self.block_worker()
-            write_session_metadata()
+            write_session_metadata(state)
 
         def observed_info():
             self.loop.call_soon_threadsafe(read_entered.set)
@@ -174,9 +172,9 @@ class RequestConcurrencyTests(BackendStateFixtures, unittest.IsolatedAsyncioTest
             limiter.total_tokens = previous_tokens
 
     async def test_disconnected_request_does_not_release_mutation_lock_before_commit(self):
-        def persist():
+        def persist(*args):
             self.block_worker()
-            write_session_metadata()
+            write_session_metadata(state)
 
         with patch.object(service, "write_session_metadata", side_effect=persist):
             edit = self.start_create()

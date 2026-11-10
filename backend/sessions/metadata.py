@@ -3,21 +3,21 @@ from pathlib import Path
 from typing import Any, Optional
 from core.errors import OperationError
 from core.jobs import utc_now_iso
-from core.state import BackendState, state
+from core.state import BackendState
 from sessions.artifacts import reclaim_superseded_artifacts
 from utils import load_mask_manifest
 
 logger = logging.getLogger(__name__)
 
-def current_session_path(session: BackendState = state) -> Optional[Path]:
+def current_session_path(session: BackendState) -> Optional[Path]:
     return session.active_session_dir.resolve() if session.active_session_dir is not None else None
 
-def current_frames_dir() -> Optional[Path]:
-    session_path = current_session_path()
+def current_frames_dir(session: BackendState) -> Optional[Path]:
+    session_path = current_session_path(session)
     return session_path / "frames" if session_path is not None else None
 
-def current_masks_dir() -> Optional[Path]:
-    session_path = current_session_path()
+def current_masks_dir(session: BackendState) -> Optional[Path]:
+    session_path = current_session_path(session)
     return session_path / "masks" if session_path is not None else None
 
 # Session fields owned outside annotations; kept in memory so writes never re-read session.json.
@@ -35,7 +35,7 @@ PERSISTED_METADATA_KEYS = (
 def persisted_session_fields(metadata: dict[str, Any]) -> dict[str, Any]:
     return {key: metadata[key] for key in PERSISTED_METADATA_KEYS if key in metadata}
 
-def interactive_state_projection(raw_state: Optional[dict[str, Any]] = None, *, session: BackendState = state) -> dict[str, Any]:
+def interactive_state_projection(raw_state: Optional[dict[str, Any]] = None, *, session: BackendState) -> dict[str, Any]:
     """Editor preferences that still reference accepted objects."""
     interactive = dict(raw_state or {})
     interactive["version"] = 1
@@ -89,7 +89,7 @@ def write_metadata_file(directory: Path, metadata: dict[str, Any]) -> None:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
 
-def write_session_metadata(extra: Optional[dict[str, Any]] = None, *, session: BackendState = state) -> None:
+def write_session_metadata(session: BackendState, extra: Optional[dict[str, Any]] = None) -> None:
     session_path = current_session_path(session)
     if session_path is None:
         return

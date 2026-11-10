@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 import torch
 from core.config import WINDOW_FRAMES_ROOT
-from core.jobs import capture_job_inputs, validate_job_inputs, foreground_operation, queue_long_job, enter_stage, foreground_lock
+from core.jobs import JobHandle, capture_job_inputs, validate_job_inputs, job_manager
 from core.runtime import cleanup_cuda_memory
 from core.state import state
 from schemas.video import VideoPropagateRequest
@@ -46,26 +46,26 @@ def propagation_batch_progress(
 
 def start_propagation(request: VideoPropagateRequest, precondition):
     from video.service import validate_annotation_precondition
-    with foreground_operation():
+    with job_manager.foreground_operation():
         validate_annotation_precondition(precondition)
-        inputs = capture_job_inputs("mask_propagation")
+        inputs = capture_job_inputs(state, "mask_propagation")
         inputs["parameters"] = request.model_dump()
-        return queue_long_job(
+        return job_manager.start(
             operation="mask_propagation",
             stage="validating_prompts",
             stage_label="Validating prompts",
             message="Mask propagation queued",
-            worker=lambda: run_propagation_job(request, inputs),
+            worker=lambda job: run_propagation_job(request, job, inputs),
             inputs=inputs,
         )
 
-def run_propagation_job(request: VideoPropagateRequest, inputs=None) -> dict[str, Any]:
-    inputs = inputs or capture_job_inputs("mask_propagation")
-    validate_job_inputs(inputs, "mask_propagation")
+def run_propagation_job(request: VideoPropagateRequest, job: JobHandle, inputs=None) -> dict[str, Any]:
+    inputs = inputs or capture_job_inputs(state, "mask_propagation")
+    validate_job_inputs(state, inputs, "mask_propagation")
     def _propagation_progress(processed_frames_count: int, expected_frames_count: int) -> float:
         return (processed_frames_count / expected_frames_count) if expected_frames_count else 0.0
 
-    enter_stage(
+    job.enter_stage(
         "validating_prompts", "Validating prompts",
         status="running",
         progress=0.0,
@@ -128,11 +128,11 @@ def run_propagation_job(request: VideoPropagateRequest, inputs=None) -> dict[str
         raise OperationError(400, "Invalid propagation frame range.")
 
     expected_total_frames = end_frame_idx - start_frame_idx + 1
-    masks_root = current_masks_dir()
+    masks_root = current_masks_dir(state)
     if masks_root is None:
         raise OperationError(400, "Video session cache is not initialized.")
     clear_window_cache()
-    enter_stage(
+    job.enter_stage(
         "preparing_masks", "Preparing mask output",
         progress=0.02,
         current=0,
@@ -168,7 +168,7 @@ def run_propagation_job(request: VideoPropagateRequest, inputs=None) -> dict[str
     tracked_points_skipped_reason: Optional[str] = None
     tracked_points_skip_should_warn = False
     if request.use_tracked_points:
-        tracking_guidance = load_latest_tracking_guidance(num_frames=num_frames)
+        tracking_guidance = load_latest_tracking_guidance(state, num_frames=num_frames)
         tracked_points_skipped_reason = tracking_guidance.skipped_reason
         tracked_points_skip_should_warn = tracking_guidance.should_warn
     total_tracked_points_seeded = 0
@@ -202,7 +202,7 @@ def run_propagation_job(request: VideoPropagateRequest, inputs=None) -> dict[str
     )
 
     def _report_restore_progress(_stage: str, _label: str, progress: Optional[float], message: str) -> None:
-        enter_stage(
+        job.enter_stage(
             "restoring_interactive_state", "Restoring interactive state",
             progress=progress, message=message,
         )
@@ -213,7 +213,7 @@ def run_propagation_job(request: VideoPropagateRequest, inputs=None) -> dict[str
             for window_index, (window_start, window_end) in enumerate(windows):
                 window_number = window_index + 1
                 window_count = len(windows)
-                enter_stage(
+                job.enter_stage(
                     "building_window", "Loading propagation window",
                     current=0,
                     total=window_end - window_start + 1,
@@ -228,7 +228,7 @@ def run_propagation_job(request: VideoPropagateRequest, inputs=None) -> dict[str
 
                 def _on_window_build_progress(current: int, total: int, source_path: Path) -> None:
                     source_frame_idx = window_start + current - 1
-                    enter_stage(
+                    job.enter_stage(
                         "building_window", "Loading propagation window",
                         current=current,
                         total=total,
@@ -247,7 +247,7 @@ def run_propagation_job(request: VideoPropagateRequest, inputs=None) -> dict[str
                     progress_callback=_on_window_build_progress,
                 )
 
-                enter_stage(
+                job.enter_stage(
                     "initializing_state", "Initializing SAM2 window state",
                     current=len(processed_frames),
                     total=expected_total_frames,
@@ -267,7 +267,7 @@ def run_propagation_job(request: VideoPropagateRequest, inputs=None) -> dict[str
                     async_loading_frames=False,
                 )
 
-                enter_stage(
+                job.enter_stage(
                     "seeding_window", "Seeding prompts",
                     current=len(processed_frames),
                     total=expected_total_frames,
@@ -279,7 +279,7 @@ def run_propagation_job(request: VideoPropagateRequest, inputs=None) -> dict[str
                 )
 
                 if window_index > 0 and boundary_masks and boundary_frame_idx is not None:
-                    enter_stage(
+                    job.enter_stage(
                         "seeding_window", "Seeding boundary masks",
                         current=len(processed_frames),
                         total=expected_total_frames,
@@ -316,7 +316,7 @@ def run_propagation_job(request: VideoPropagateRequest, inputs=None) -> dict[str
                 for mask in state.annotations.mask_overrides:
                     if window_start <= mask.frame_idx <= window_end:
                         masker.add_new_mask(frame_idx=mask.frame_idx - window_start,
-                                                       obj_id=mask.obj_id, mask=override_pixels(mask))
+                                                       obj_id=mask.obj_id, mask=override_pixels(mask, state.active_session_dir))
 
                 if tracking_guidance is not None and tracking_guidance.points:
                     excluded_tracked_guidance = {(mask.frame_idx, mask.obj_id) for mask in state.annotations.mask_overrides}
@@ -385,7 +385,7 @@ def run_propagation_job(request: VideoPropagateRequest, inputs=None) -> dict[str
                     )
                     processed_window_frames_count += 1
                     processed_frames.add(global_frame_idx)
-                    enter_stage(
+                    job.enter_stage(
                         "propagating_window", "Propagating masks",
                         current=len(processed_frames),
                         total=expected_total_frames,
@@ -403,7 +403,7 @@ def run_propagation_job(request: VideoPropagateRequest, inputs=None) -> dict[str
                     # Explicit masks remain exact inputs even if inference alters their pixels.
                     for mask in state.annotations.mask_overrides:
                         if mask.frame_idx == global_frame_idx:
-                            frame_masks[mask.obj_id] = override_pixels(mask)
+                            frame_masks[mask.obj_id] = override_pixels(mask, state.active_session_dir)
                     manifest_frames[str(global_frame_idx)] = {
                         **manifest_frame_payload(frame_masks),
                         "input_revisions": {str(obj_id): state.annotations.input_revisions.get(int(obj_id), 0)
@@ -448,7 +448,7 @@ def run_propagation_job(request: VideoPropagateRequest, inputs=None) -> dict[str
                     collect_segments=False,
                     frame_callback=_on_window_frame,
                 )
-                enter_stage(
+                job.enter_stage(
                     "propagating_window", "Propagating masks",
                     current=len(processed_frames),
                     total=expected_total_frames,
@@ -479,7 +479,7 @@ def run_propagation_job(request: VideoPropagateRequest, inputs=None) -> dict[str
     finally:
         shutil.rmtree(run_root, ignore_errors=True)
 
-    enter_stage(
+    job.enter_stage(
         "saving_manifest", "Saving manifest",
         progress=0.98,
         current=len(processed_frames),
@@ -487,16 +487,16 @@ def run_propagation_job(request: VideoPropagateRequest, inputs=None) -> dict[str
         message="Saving mask manifest",
     )
 
-    with foreground_lock:
+    with job_manager.foreground_lock:
         previous_masks = state.interactive_mask_files
         previous_path = state.mask_manifest_path
         try:
-            validate_job_inputs(inputs, "mask_propagation")
+            validate_job_inputs(state, inputs, "mask_propagation")
             write_mask_manifest(manifest_file_path, manifest)
             state.interactive_mask_files = {key: value for key, value in previous_masks.items()
                                             if int(key) not in processed_frames}
             state.mask_manifest_path = str(manifest_file_path)
-            write_session_metadata()
+            write_session_metadata(state)
         except BaseException:
             state.interactive_mask_files = previous_masks
             state.mask_manifest_path = previous_path
@@ -528,5 +528,5 @@ def run_propagation_job(request: VideoPropagateRequest, inputs=None) -> dict[str
         "mask_manifest_path": state.mask_manifest_path,
         "state.mask_manifest_path": state.mask_manifest_path,
         "state_epoch": int(state.video_state_epoch),
-        "saved_state": saved_state(),
+        "saved_state": saved_state(state),
     }

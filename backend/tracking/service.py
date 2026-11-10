@@ -5,7 +5,7 @@ import torch
 import co_tracker as cot
 from core.config import DEFAULT_STREAMING_TRACK_FRAME_THRESHOLD
 from core.errors import OperationError
-from core.jobs import foreground_operation
+from core.jobs import job_manager
 from core.runtime import cleanup_cuda_memory
 from core.state import BackendState, state
 from schemas.tracking import TrackingGridRequest, TrackingLoadVideoRequest, TrackingPointsRequest
@@ -42,7 +42,7 @@ def read_tracking_video(video_path: str | Path) -> np.ndarray:
 def load_tracking_video(request: TrackingLoadVideoRequest):
     """Load a video file for tracking."""
 
-    with foreground_operation():
+    with job_manager.foreground_operation():
         requested_model = getattr(request, "model_name", cot.DEFAULT_COTRACKER_MODEL)
         if requested_model != cot.DEFAULT_COTRACKER_MODEL:
             raise OperationError(400, f"Unsupported CoTracker model '{requested_model}'.")
@@ -68,7 +68,7 @@ def load_tracking_video(request: TrackingLoadVideoRequest):
 def track_grid(request: TrackingGridRequest):
     """Track a grid of points across the video."""
 
-    with foreground_operation():
+    with job_manager.foreground_operation():
         if state.tracker is None:
             raise OperationError(400, "Tracker not active. Call /tracking/load_video first.")
 
@@ -124,7 +124,7 @@ def track_grid(request: TrackingGridRequest):
 def track_points(request: TrackingPointsRequest):
     """Track specific query points across the video."""
 
-    with foreground_operation():
+    with job_manager.foreground_operation():
         if state.tracker is None:
             raise OperationError(400, "Tracker not active. Call /tracking/load_video first.")
 

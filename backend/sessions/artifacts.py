@@ -12,7 +12,7 @@ import logging
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
-from core.state import BackendState, state
+from core.state import BackendState
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +66,7 @@ def remove_artifacts(root: Path, relatives: set[str]) -> None:
         _unlink(path)
         _remove_empty_overlay_dir(path.parent)
 
-def reclaim_superseded_artifacts(session: BackendState = state) -> None:
+def reclaim_superseded_artifacts(session: BackendState) -> None:
     """After a commit: delete what the previous commit named and this one does not."""
     if session.active_session_dir is None:
         return
@@ -79,7 +79,7 @@ def reclaim_superseded_artifacts(session: BackendState = state) -> None:
     except Exception:
         logger.warning("Unable to reclaim superseded session artifacts", exc_info=True)
 
-def sweep_unreferenced_artifacts(session: BackendState = state) -> None:
+def sweep_unreferenced_artifacts(session: BackendState) -> None:
     """Full scan for files no accepted state names: leftovers of rejected edits and of opened checkpoints."""
     if session.active_session_dir is None:
         return

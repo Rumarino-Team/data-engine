@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import co_tracker as cot
 from core.config import DEFAULT_PROMPT_TRACK_BATCH_SIZE, DEFAULT_STREAMING_TRACK_FRAME_THRESHOLD
-from core.jobs import capture_job_inputs, validate_job_inputs, foreground_operation, foreground_lock, queue_long_job, enter_stage
+from core.jobs import JobHandle, capture_job_inputs, validate_job_inputs, job_manager
 from core.runtime import cleanup_cuda_memory
 from core.state import state
 from sessions.checkpoints import saved_state
@@ -18,25 +18,26 @@ from video.runtime import MaskerRestorationError, VideoMaskerRuntime
 
 def start_prompt_tracking(request: TrackingPromptPointsRequest, precondition):
     from video.service import validate_annotation_precondition
-    with foreground_operation():
+    with job_manager.foreground_operation():
         validate_annotation_precondition(precondition)
-        inputs = capture_job_inputs("prompt_tracking")
+        inputs = capture_job_inputs(state, "prompt_tracking")
         inputs["parameters"] = request.model_dump()
-        return queue_long_job(
+        return job_manager.start(
             operation="prompt_tracking",
             stage="collecting_prompts",
             stage_label="Collecting prompts",
             message="Prompt tracking queued",
-            worker=lambda: run_prompt_tracking_job(request, inputs),
+            worker=lambda job: run_prompt_tracking_job(request, job, inputs),
             inputs=inputs,
         )
 
 def run_prompt_tracking_job(
-    request: TrackingPromptPointsRequest, inputs=None, *, masker_runtime: VideoMaskerRuntime | None = None,
+    request: TrackingPromptPointsRequest, job: JobHandle, inputs=None, *,
+    masker_runtime: VideoMaskerRuntime | None = None,
 ) -> dict[str, Any]:
-    inputs = inputs or capture_job_inputs("prompt_tracking")
-    validate_job_inputs(inputs, "prompt_tracking")
-    enter_stage(
+    inputs = inputs or capture_job_inputs(state, "prompt_tracking")
+    validate_job_inputs(state, inputs, "prompt_tracking")
+    job.enter_stage(
         "collecting_prompts", "Collecting prompts",
         status="running",
         progress=0.05,
@@ -75,7 +76,7 @@ def run_prompt_tracking_job(
     if not positive_queries:
         raise OperationError(400, "No positive prompt points available for tracking.")
     total_queries = len(positive_queries)
-    enter_stage(
+    job.enter_stage(
         "loading_tracker", "Loading tracker",
         progress=0.2,
         current=0,
@@ -86,7 +87,7 @@ def run_prompt_tracking_job(
     runtime = masker_runtime if masker_runtime is not None else create_masker_runtime(state)
 
     def _report_restore_progress(_stage: str, _label: str, progress: float | None, message: str) -> None:
-        enter_stage(
+        job.enter_stage(
             "restoring_masker", "Restoring interactive masking state",
             progress=progress,
             message=f"Restoring masking state after prompt tracking: {message}",
@@ -143,7 +144,7 @@ def run_prompt_tracking_job(
             tracks_batches.append(batch_tracks)
             visibility_batches.append(batch_visibility)
             index = end_index
-            enter_stage(
+            job.enter_stage(
                 "tracking_points", "Tracking prompt points",
                 progress=0.35 + (0.55 * (index / query_array.shape[0])),
                 current=index,
@@ -209,7 +210,7 @@ def run_prompt_tracking_job(
             tracks_batches.append(batch_tracks)
             visibility_batches.append(batch_visibility)
             index = end_index
-            enter_stage(
+            job.enter_stage(
                 "tracking_points", "Tracking prompt points",
                 progress=0.35 + (0.55 * (index / query_array.shape[0])),
                 current=index,
@@ -237,7 +238,7 @@ def run_prompt_tracking_job(
                 ensure_tracker_model(cot.DEFAULT_COTRACKER_MODEL)
             except ValueError as error:
                 raise OperationError(400, str(error)) from error
-            enter_stage(
+            job.enter_stage(
                 "loading_frames", "Preparing tracking frames",
                 progress=0.35,
                 current=0,
@@ -329,14 +330,14 @@ def run_prompt_tracking_job(
                 raise OperationError(500, f"Prompt-point tracking failed: {error}") from error
 
             cleanup_cuda_memory()
-            enter_stage(
+            job.enter_stage(
                 "restoring_masker", "Restoring interactive masking state",
                 progress=0.95,
                 current=int(tracks.shape[0]),
                 total=total_queries,
                 message="Restoring masking state after prompt tracking",
             )
-            validate_job_inputs(inputs, "prompt_tracking")
+            validate_job_inputs(state, inputs, "prompt_tracking")
     except MaskerRestorationError as error:
         raise OperationError(
             503, f"Prompt-point tracking finished but failed to restore interactive masking state: {error}"
@@ -344,9 +345,9 @@ def run_prompt_tracking_job(
     finally:
         _clear_tracking_video_if_loaded_for_operation()
 
-    with foreground_lock:
-        validate_job_inputs(inputs, "prompt_tracking")
-        tracking_result = save_prompt_tracking_result(
+    with job_manager.foreground_lock:
+        validate_job_inputs(state, inputs, "prompt_tracking")
+        tracking_result = save_prompt_tracking_result(state, 
             model_name=state.tracker.model_name,
             num_points=int(tracks.shape[0]),
             num_frames=int(tracks.shape[1]),
@@ -370,5 +371,5 @@ def run_prompt_tracking_job(
         "streaming_frame_threshold": int(DEFAULT_STREAMING_TRACK_FRAME_THRESHOLD),
         "tracking_result_id": tracking_result["result_id"],
         "state_epoch": int(state.video_state_epoch),
-        "saved_state": saved_state(),
+        "saved_state": saved_state(state),
     }

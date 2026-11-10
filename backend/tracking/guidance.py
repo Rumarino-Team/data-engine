@@ -4,7 +4,7 @@ from typing import Any, Optional
 
 import numpy as np
 
-from core.state import state
+from core.state import BackendState
 from sessions.metadata import current_session_path
 from utils import load_mask_manifest
 
@@ -149,8 +149,8 @@ def _latest_tracking_result_path(session_path: Path) -> Optional[Path]:
     return result_path
 
 
-def load_latest_tracking_guidance(*, num_frames: int) -> TrackingGuidance:
-    session_path = current_session_path()
+def load_latest_tracking_guidance(session: BackendState, *, num_frames: int) -> TrackingGuidance:
+    session_path = current_session_path(session)
     if session_path is None:
         return TrackingGuidance(points=[], skipped_reason="No active session for tracking guidance.")
 
@@ -181,7 +181,7 @@ def load_latest_tracking_guidance(*, num_frames: int) -> TrackingGuidance:
 
     from tracking.results import current_tracking_result
     try:
-        result = current_tracking_result(result)
+        result = current_tracking_result(session, result)
     except Exception:
         return TrackingGuidance(points=[], skipped_reason="Latest CoTracker result does not match the current session.", should_warn=True)
     matched_points = [TrackedGuidancePoint(

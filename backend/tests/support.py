@@ -1,11 +1,12 @@
 """Shared fixtures for tests that touch the process-global backend state.
 
-`state` and the job registry are globals, so every test that uses them must start from a clean copy and put
+`state` and the job manager are globals, so every test that uses them must start from a clean copy and put
 the original back. Keeping that in one place also means a future move to explicitly constructed application
 state only has to change this module, not every test file.
 """
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from typing import Any, Optional
@@ -16,7 +17,7 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.factory import create_app
-from core import jobs
+from core.jobs import JobHandle, job_manager
 from core.state import BackendState, state
 
 
@@ -29,20 +30,20 @@ class BackendStateFixtures:
         """Replace `state` with a fresh BackendState and clear the job registry; undone when the test ends."""
         if self._state_snapshot is None:
             self._state_snapshot = state.__dict__.copy()
-            with jobs.current_job_lock:
-                self._job_snapshot = jobs.current_job
+            with job_manager._lock:
+                self._job_snapshot = job_manager._job
             self.addCleanup(self._restore_backend_state)
         state.__dict__.clear()
         state.__dict__.update(BackendState(**fields).__dict__)
-        with jobs.current_job_lock:
-            jobs.current_job = None
+        with job_manager._lock:
+            job_manager._job = None
         return state
 
     def _restore_backend_state(self) -> None:
         state.__dict__.clear()
         state.__dict__.update(self._state_snapshot)
-        with jobs.current_job_lock:
-            jobs.current_job = self._job_snapshot
+        with job_manager._lock:
+            job_manager._job = self._job_snapshot
         self._state_snapshot = None
 
     def temp_dir(self) -> Path:
@@ -81,16 +82,25 @@ class BackendStateFixtures:
             client.event_hooks["request"].append(add_preconditions)
         return client
 
-    def activate_job(self, status: str = "running") -> None:
-        """Make the job registry report an active job, as a long operation would."""
-        with jobs.current_job_lock:
-            jobs.current_job = {
-                "job_id": "active", "operation": "video_init", "status": status, "stage": "working",
-                "stage_label": "Working", "progress": 0.5, "current": None, "total": None,
-                "window_index": None, "window_count": None, "frame_idx": None, "stage_history": [],
-                "message": "working", "result": None, "error": None, "started_at": "now",
-                "updated_at": "now", "completed_at": None,
-            }
+    def activate_job(self, status: str = "running") -> str:
+        """Make the job manager report an active job, as a long operation would; returns its id."""
+        job_id = job_manager._admit(
+            "video_init", stage="working", stage_label="Working", message="working", inputs=None)
+        job_manager._job["status"] = status
+        return job_id
+
+    def finished_job(self, result: dict[str, Any]) -> str:
+        """Run a job to completion with this result; returns its id."""
+        job_manager.start(operation="video_init", stage="init", stage_label="Init", message="init",
+                          worker=lambda handle: result)
+        deadline = time.time() + 5
+        while job_manager.is_active() and time.time() < deadline:
+            time.sleep(0.001)
+        return job_manager.snapshot()["job_id"]
+
+    def job_handle(self) -> Mock:
+        """A stand-in for the handle a job worker receives; progress calls are recorded, not stored."""
+        return Mock(spec=JobHandle)
 
 
 class BackendStateTestCase(BackendStateFixtures, unittest.TestCase):

@@ -14,7 +14,8 @@ def sweep_stale_sessions_on_startup() -> None:
     sweep_stale_session_storage(SESSION_CACHE_ROOT, SAVED_ROOT)
 
 def cleanup_backend_cache_on_shutdown() -> None:
+    from core.state import state
     from sessions.cache import release_active_session
-    release_active_session(clear_cache_session=False)
+    release_active_session(state, clear_cache_session=False)
     shutil.rmtree(CACHE_ROOT, ignore_errors=True)
     cleanup_cuda_memory()

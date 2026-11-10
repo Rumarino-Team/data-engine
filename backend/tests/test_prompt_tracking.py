@@ -64,6 +64,7 @@ class PromptTrackingStatusTests(BackendStateTestCase):
                 objects={1: {"id": 1, "label": "Object 1", "color": "#ff0000"}},
                 prompts=[{"frame_idx": 0, "obj_id": 1, "points": [[10.0, 20.0]], "labels": [1], "box": None}]),
         )
+        self.job = self.job_handle()
         self.restored_masker = _FakeRestoreMasker()
         self.factory = Mock(return_value=self.restored_masker)
         self.replay = Mock()
@@ -75,14 +76,13 @@ class PromptTrackingStatusTests(BackendStateTestCase):
 
     def run_tracking(self):
         return run_prompt_tracking_job(
-            type("Request", (), {"add_support_grid": False})(), masker_runtime=self.runtime,
+            type("Request", (), {"add_support_grid": False})(), self.job, masker_runtime=self.runtime,
         )
 
     @contextmanager
     def tracking_environment(self, *, streaming=False, load_video=True):
         """Patch the tracking job's collaborators; yields the mock that publishes a result."""
         with ExitStack() as stack:
-            stack.enter_context(patch("core.jobs.update_job"))
             stack.enter_context(patch("tracking.prompt_tracking.ensure_tracker_model"))
             stack.enter_context(patch("tracking.prompt_tracking.should_stream_tracking", return_value=streaming))
             if load_video:
@@ -93,19 +93,13 @@ class PromptTrackingStatusTests(BackendStateTestCase):
             yield stack.enter_context(patch("tracking.prompt_tracking.save_prompt_tracking_result"))
 
     def test_prompt_tracking_uses_tracking_labels_and_restore_progress(self):
-        updates = []
-
-        def capture_update(**kwargs):
-            updates.append(kwargs)
-
-        def publish_after_restoration(**kwargs):
+        def publish_after_restoration(*args, **kwargs):
             self.assertIs(state.video_masker, self.restored_masker)
             self.replay.assert_called_once_with(state)
             self.persist.assert_called_once_with(state)
             return {"result_id": "track-1", "summary": {}}
 
         with (
-            patch("core.jobs.update_job", side_effect=capture_update),
             patch("tracking.prompt_tracking.ensure_tracker_model", return_value=None),
             patch("tracking.prompt_tracking.should_stream_tracking", return_value=False),
             patch(
@@ -120,7 +114,7 @@ class PromptTrackingStatusTests(BackendStateTestCase):
         ):
             result = self.run_tracking()
 
-        labels = [entry.get("stage_label") for entry in updates]
+        labels = [call.args[1] for call in self.job.enter_stage.call_args_list]
         self.assertIn("Loading tracker", labels)
         self.assertIn("Preparing tracking frames", labels)
         self.assertIn("Tracking prompt points", labels)
@@ -147,7 +141,6 @@ class PromptTrackingStatusTests(BackendStateTestCase):
 
     def test_tracker_loading_failure_restores_masker_without_publishing(self):
         with (
-            patch("core.jobs.update_job"),
             patch("tracking.prompt_tracking.ensure_tracker_model", side_effect=ValueError("unsupported tracker")),
             patch("tracking.prompt_tracking.save_prompt_tracking_result") as publish,
         ):

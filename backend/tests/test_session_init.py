@@ -22,7 +22,7 @@ class SessionReplacementTests(BackendStateTestCase):
         self.old_dir = self.working_session(
             self.root / "old", session_id="old", video_masker=self.old_masker, video_state_epoch=4)
         state.annotations.create_object()
-        write_session_metadata()
+        write_session_metadata(state)
         self.before = state.annotations.snapshot()
         self.metadata = (self.old_dir / "session.json").read_bytes()
         self.source = self.root / "source"
@@ -37,7 +37,8 @@ class SessionReplacementTests(BackendStateTestCase):
         return self.make_masker(offload_state_to_cpu=True)
 
     def run_init(self, path=None):
-        return service.run_video_init_job(VideoInitStateRequest(video_frames_dir=str(path or self.source)))
+        return service.run_video_init_job(
+            VideoInitStateRequest(video_frames_dir=str(path or self.source)), self.job_handle())
 
     def assert_old_session(self):
         self.assertEqual(state.active_session_id, "old")
@@ -79,10 +80,10 @@ class SessionReplacementTests(BackendStateTestCase):
             self.assertEqual(info["session_id"], "old")
             self.assertTrue(info["predictor_ready"])
         candidate.init_state.side_effect = preparing
-        def persist(extra, *, session):
+        def persist(session, extra=None):
             self.assert_old_session()
             self.assertIsNot(session, state)
-            write_session_metadata(extra, session=session)
+            write_session_metadata(session, extra)
         with (patch.object(prompts.svm, "SAM2VideoMasker", return_value=candidate),
               patch.object(service, "write_session_metadata", side_effect=persist)):
             result = self.run_init()

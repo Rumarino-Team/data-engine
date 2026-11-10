@@ -32,6 +32,7 @@ class TrackingResultTests(BackendStateTestCase):
 
     def test_save_and_read_tracking_result(self):
         saved = save_prompt_tracking_result(
+            state,
             model_name="cotracker3_online",
             num_points=1,
             num_frames=2,
@@ -45,7 +46,7 @@ class TrackingResultTests(BackendStateTestCase):
 
         result_path = self.session_path / "tracking" / f"{saved['result_id']}.json"
         self.assertTrue(result_path.exists())
-        loaded = load_prompt_tracking_result(saved["result_id"])
+        loaded = load_prompt_tracking_result(state, saved["result_id"])
         self.assertEqual(loaded["version"], 3)
         self.assertEqual(loaded["state_epoch"], 1)
         self.assertEqual(loaded["tracked_prompt_keys"], ["obj:1|frame:0|x:10.000|y:20.000"])
@@ -57,34 +58,34 @@ class TrackingResultTests(BackendStateTestCase):
             add_support_grid_used=False, tracking_mode="streaming", streaming_frame_threshold=256,
             points=[{"point_id": "p0", "obj_id": 1, "source_frame_idx": 0, "source_x": 10, "source_y": 20}],
             tracks=[[[10, 20], [11, 21]]], visibility=[[True, True]])
-        old = save_prompt_tracking_result(**kwargs)
+        old = save_prompt_tracking_result(state, **kwargs)
         old_metadata = dict(state.session_metadata)
-        def fail(extra):
-            state.session_metadata.update(extra)
+        def fail(session, extra):
+            session.session_metadata.update(extra)
             raise OSError("disk full")
         with patch("tracking.results.write_session_metadata", side_effect=fail):
             with self.assertRaises(OSError):
-                save_prompt_tracking_result(**kwargs)
+                save_prompt_tracking_result(state, **kwargs)
         self.assertEqual(state.session_metadata, old_metadata)
-        self.assertEqual(load_prompt_tracking_result(old["result_id"])["num_points"], 1)
+        self.assertEqual(load_prompt_tracking_result(state, old["result_id"])["num_points"], 1)
         # The rejected result was never published, so its file is reclaimed immediately.
         self.assertEqual([path.stem for path in (self.session_path / "tracking").glob("*.json")], [old["result_id"]])
 
     def test_same_validity_for_retrieval_guidance_and_restore(self):
-        saved = save_prompt_tracking_result(model_name="cotracker3_online", num_points=1, num_frames=2,
+        saved = save_prompt_tracking_result(state, model_name="cotracker3_online", num_points=1, num_frames=2,
             add_support_grid_used=False, tracking_mode="streaming", streaming_frame_threshold=256,
             points=[{"point_id": "p0", "obj_id": 1, "source_frame_idx": 0, "source_x": 10, "source_y": 20}],
             tracks=[[[10, 20], [11, 21]]], visibility=[[True, True]])
         state.annotations.objects[1].label = "Renamed"
-        self.assertEqual(load_prompt_tracking_result(saved["result_id"])["num_points"], 1)
-        self.assertIsNotNone(restored_tracking_result_payload(self.session_path, state.session_metadata))
+        self.assertEqual(load_prompt_tracking_result(state, saved["result_id"])["num_points"], 1)
+        self.assertIsNotNone(restored_tracking_result_payload(state, self.session_path, state.session_metadata))
         state.annotations.clear_prompts(0, 1)
-        self.assertEqual(load_prompt_tracking_result(saved["result_id"])["points"], [])
-        self.assertEqual(load_latest_tracking_guidance(num_frames=2).points, [])
-        self.assertIsNone(restored_tracking_result_payload(self.session_path, state.session_metadata))
+        self.assertEqual(load_prompt_tracking_result(state, saved["result_id"])["points"], [])
+        self.assertEqual(load_latest_tracking_guidance(state, num_frames=2).points, [])
+        self.assertIsNone(restored_tracking_result_payload(state, self.session_path, state.session_metadata))
         state.active_session_id = "another-session"
         with self.assertRaises(OperationError) as mismatch:
-            load_prompt_tracking_result(saved["result_id"])
+            load_prompt_tracking_result(state, saved["result_id"])
         self.assertEqual(mismatch.exception.status_code, 409)
 
     def test_latest_guidance_uses_matching_tracks_with_post_tracking_prompts(self):
@@ -105,6 +106,7 @@ class TrackingResultTests(BackendStateTestCase):
             },
         ])
         save_prompt_tracking_result(
+            state,
             model_name="cotracker3_online",
             num_points=1,
             num_frames=2,
@@ -116,7 +118,7 @@ class TrackingResultTests(BackendStateTestCase):
             visibility=[[True, True]],
         )
 
-        guidance = load_latest_tracking_guidance(num_frames=2)
+        guidance = load_latest_tracking_guidance(state, num_frames=2)
 
         self.assertIsNone(guidance.skipped_reason)
         self.assertEqual(len(guidance.points), 1)
@@ -133,6 +135,7 @@ class TrackingResultTests(BackendStateTestCase):
             }
         ])
         save_prompt_tracking_result(
+            state,
             model_name="cotracker3_online",
             num_points=1,
             num_frames=2,
@@ -144,7 +147,7 @@ class TrackingResultTests(BackendStateTestCase):
             visibility=[[True, True]],
         )
 
-        guidance = load_latest_tracking_guidance(num_frames=2)
+        guidance = load_latest_tracking_guidance(state, num_frames=2)
 
         self.assertEqual(guidance.points, [])
         self.assertIn("No CoTracker points match", guidance.skipped_reason)
@@ -160,6 +163,7 @@ class TrackingResultTests(BackendStateTestCase):
             }
         ])
         save_prompt_tracking_result(
+            state,
             model_name="cotracker3_online",
             num_points=1,
             num_frames=2,
@@ -171,7 +175,7 @@ class TrackingResultTests(BackendStateTestCase):
             visibility=[[True, True]],
         )
 
-        guidance = load_latest_tracking_guidance(num_frames=3)
+        guidance = load_latest_tracking_guidance(state, num_frames=3)
 
         self.assertEqual(guidance.points, [])
         self.assertIn("does not match", guidance.skipped_reason)
@@ -263,7 +267,7 @@ class TrackingResultTests(BackendStateTestCase):
         self.assertEqual(batches[1][1], [[10.0, 10.0]])
 
     def test_latest_guidance_no_result_does_not_warn(self):
-        guidance = load_latest_tracking_guidance(num_frames=2)
+        guidance = load_latest_tracking_guidance(state, num_frames=2)
 
         self.assertEqual(guidance.points, [])
         self.assertFalse(guidance.should_warn)
@@ -271,24 +275,24 @@ class TrackingResultTests(BackendStateTestCase):
 
     def test_invalid_result_id_returns_400(self):
         with self.assertRaises(OperationError) as context:
-            load_prompt_tracking_result("../bad")
+            load_prompt_tracking_result(state, "../bad")
         self.assertEqual(context.exception.status_code, 400)
 
     def test_missing_result_returns_404(self):
         with self.assertRaises(OperationError) as context:
-            load_prompt_tracking_result("missing")
+            load_prompt_tracking_result(state, "missing")
         self.assertEqual(context.exception.status_code, 404)
 
     def test_metadata_preserves_latest_tracking_keys(self):
         write_session_metadata(
-            {
+            state, {
                 "latest_tracking_result_id": "abc",
                 "latest_tracking_result_path": "tracking/abc.json",
                 "latest_tracking_result_updated_at": "now",
                 "latest_tracking_result_summary": {"num_points": 1},
             }
         )
-        write_session_metadata({"schema_version": 2})
+        write_session_metadata(state, {"schema_version": 2})
 
         metadata = load_mask_manifest(self.session_path / "session.json")
         self.assertEqual(metadata["latest_tracking_result_id"], "abc")
@@ -304,7 +308,7 @@ class TrackingResultTests(BackendStateTestCase):
             "latest_tracking_result_summary": {"num_points": 1},
         }
 
-        restored = restored_tracking_result_payload(self.session_path, metadata)
+        restored = restored_tracking_result_payload(state, self.session_path, metadata)
 
         self.assertIsNone(restored)
 

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from routers.video import annotation_precondition
 from schemas.video import AnnotationPrecondition
-from core.jobs import foreground_lock
+from core.jobs import job_manager
 
 from schemas.tracking import (
     TrackingGridRequest,
@@ -40,5 +40,5 @@ def track_points_route(request: TrackingPointsRequest):
 
 @router.get("/tracking/results/{result_id}")
 def get_tracking_result(result_id: str):
-    with foreground_lock:
-        return {"result": load_prompt_tracking_result(result_id)}
+    with job_manager.foreground_lock:
+        return {"result": load_prompt_tracking_result(state, result_id)}

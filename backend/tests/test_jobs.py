@@ -6,157 +6,109 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import core.jobs as jobs
 from core.errors import OperationError
-from support import BackendStateTestCase
+from core.jobs import JobManager
 
 
-class JobTests(BackendStateTestCase):
-    def test_queue_long_job_stores_global_job_and_completes(self):
-        started = jobs.queue_long_job(
-            operation="video_init",
-            stage="queued",
-            stage_label="Queued",
-            message="queued",
-            worker=lambda: {"ok": True},
-        )
+class JobManagerTests(unittest.TestCase):
+    """Each test owns its manager: nothing here touches the application's."""
 
+    def setUp(self):
+        self.jobs = JobManager()
+        self.release = threading.Event()
+        self.addCleanup(self.release.set)
+
+    def start(self, worker, operation="video_init"):
+        return self.jobs.start(
+            operation=operation, stage="queued", stage_label="Queued", message="queued", worker=worker)
+
+    def wait_for(self, status):
         deadline = time.time() + 2
-        serialized = None
         while time.time() < deadline:
-            serialized = jobs.serialize_job()
-            if serialized and serialized.get("status") == "completed":
-                break
-            time.sleep(0.01)
+            job = self.jobs.snapshot()
+            if job and job["status"] == status:
+                return job
+            time.sleep(0.005)
+        self.fail(f"job never reached {status}: {self.jobs.snapshot()}")
 
-        self.assertIsNotNone(serialized)
-        self.assertEqual(serialized["job_id"], started["job_id"])
-        self.assertEqual(serialized["status"], "completed")
-        self.assertEqual(serialized["result"], {"ok": True})
-        self.assertIsNone(serialized["batch_current"])
-        self.assertIsNone(serialized["batch_total"])
-        self.assertIsNone(serialized["batch_index"])
-        self.assertIsNone(serialized["batch_count"])
+    def hold(self, operation="video_init"):
+        """Start a job that stays running until the test ends; returns its handle."""
+        handles = []
+        started = threading.Event()
 
-    def test_starting_second_active_job_raises_409(self):
-        release = threading.Event()
-        jobs.queue_long_job(
-            operation="video_init",
-            stage="queued",
-            stage_label="Queued",
-            message="queued",
-            worker=lambda: (release.wait(1), {"ok": True})[1],
-        )
+        def worker(handle):
+            handles.append(handle)
+            started.set()
+            self.release.wait(2)
+            return {"ok": True}
+        self.start(worker, operation)
+        self.assertTrue(started.wait(2))
+        return handles[0]
 
-        deadline = time.time() + 2
-        while time.time() < deadline and not jobs.is_job_active():
-            time.sleep(0.01)
+    def test_job_runs_on_a_worker_and_completes_with_its_result(self):
+        started = self.start(lambda handle: {"ok": True})
+        job = self.wait_for("completed")
+        self.assertEqual((job["job_id"], job["result"]), (started["job_id"], {"ok": True}))
+        for field in ("batch_current", "batch_total", "batch_index", "batch_count", "window_index"):
+            self.assertIsNone(job[field], field)
 
-        with self.assertRaises(OperationError) as context:
-            jobs.queue_long_job(
-                operation="mask_propagation",
-                stage="queued",
-                stage_label="Queued",
-                message="queued",
-                worker=lambda: {"ok": True},
-            )
-        release.set()
-        self.assertEqual(context.exception.status_code, 409)
+    def test_a_second_active_job_is_refused_and_edits_wait_for_idle(self):
+        self.hold()
+        with self.assertRaises(OperationError) as refused:
+            self.start(lambda handle: {}, "mask_propagation")
+        self.assertEqual(refused.exception.status_code, 409)
+        with self.assertRaises(OperationError):
+            with self.jobs.foreground_operation():
+                pass
+        self.release.set()
+        self.wait_for("completed")
+        with self.jobs.foreground_operation():
+            pass
 
-    def test_update_job_mutates_registered_job(self):
-        release = threading.Event()
-        started = jobs.queue_long_job(
-            operation="video_init",
-            stage="queued",
-            stage_label="Queued",
-            message="queued",
-            worker=lambda: (release.wait(1), {"ok": True})[1],
-        )
-        jobs.update_job(
-            stage="working",
-            stage_label="Working",
-            progress=0.25,
-            batch_current=8,
-            batch_total=32,
-            batch_index=1,
-            batch_count=4,
-            message="working",
-        )
-        serialized = jobs.serialize_job()
-        release.set()
+    def test_update_refines_a_stage_and_entering_one_clears_the_previous_position(self):
+        handle = self.hold()
+        handle.update(stage="working", progress=0.25, batch_current=8, batch_total=32, window_index=1, frame_idx=9)
+        job = self.jobs.snapshot()
+        self.assertEqual((job["stage"], job["progress"], job["batch_current"], job["batch_total"]),
+                         ("working", 0.25, 8, 32))
 
-        self.assertEqual(serialized["job_id"], started["job_id"])
-        self.assertEqual(serialized["stage"], "working")
-        self.assertEqual(serialized["progress"], 0.25)
-        self.assertEqual(serialized["batch_current"], 8)
-        self.assertEqual(serialized["batch_total"], 32)
-        self.assertEqual(serialized["batch_index"], 1)
-        self.assertEqual(serialized["batch_count"], 4)
-
-    def test_entering_a_stage_clears_the_previous_stages_position(self):
-        release = threading.Event()
-        jobs.queue_long_job(
-            operation="video_init", stage="queued", stage_label="Queued", message="queued",
-            worker=lambda: (release.wait(1), {"ok": True})[1],
-        )
-        jobs.update_job(window_index=1, window_count=2, batch_current=8, batch_total=32, frame_idx=9)
-
-        jobs.enter_stage("saving", "Saving", message="saving", progress=0.9, total=5)
-        serialized = jobs.serialize_job()
-        release.set()
-
-        self.assertEqual((serialized["stage"], serialized["progress"], serialized["total"]), ("saving", 0.9, 5))
-        for field in ("current", "frame_idx", "window_index", "window_count", "batch_current", "batch_total"):
-            self.assertIsNone(serialized[field], field)
+        handle.enter_stage("saving", "Saving", message="saving", progress=0.9, total=5)
+        job = self.jobs.snapshot()
+        self.assertEqual((job["stage"], job["progress"], job["total"]), ("saving", 0.9, 5))
+        for field in ("current", "frame_idx", "window_index", "batch_current", "batch_total"):
+            self.assertIsNone(job[field], field)
         with self.assertRaises(TypeError):
-            jobs.enter_stage("saving", "Saving", message="saving", frame=1)
+            handle.enter_stage("saving", "Saving", message="saving", frame=1)
+
+    def test_a_finished_workers_handle_cannot_touch_a_newer_job(self):
+        first = self.hold()
+        self.release.set()
+        self.wait_for("completed")
+        self.release.clear()
+        second = self.hold()
+        first.enter_stage("stale", "Stale", message="stale")
+        self.assertEqual(self.jobs.snapshot()["job_id"], second.job_id)
+        self.assertEqual(self.jobs.snapshot()["stage"], "queued")
 
     def test_failed_worker_sets_failed_status(self):
-        def fail():
+        def fail(handle):
             raise RuntimeError("boom")
+        self.start(fail)
+        job = self.wait_for("failed")
+        self.assertEqual(job["error"]["code"], "backend_error")
 
-        jobs.queue_long_job(
-            operation="video_init",
-            stage="queued",
-            stage_label="Queued",
-            message="queued",
-            worker=fail,
-        )
+    def test_clearing_a_finished_result_keeps_only_its_summary(self):
+        started = self.start(lambda handle: {
+            "message": "done", "tracking_result_id": "abc", "tracks": [[[1, 2]]], "visibility": [[True]],
+        }, "prompt_tracking")
+        self.wait_for("completed")
+        self.assertTrue(self.jobs.clear_result(started["job_id"]))
+        self.assertEqual(self.jobs.snapshot()["result"], {"message": "done", "tracking_result_id": "abc"})
+        self.assertFalse(self.jobs.clear_result("another"))
 
-        deadline = time.time() + 2
-        serialized = None
-        while time.time() < deadline:
-            serialized = jobs.serialize_job()
-            if serialized and serialized.get("status") == "failed":
-                break
-            time.sleep(0.01)
-
-        self.assertEqual(serialized["status"], "failed")
-        self.assertEqual(serialized["error"]["code"], "backend_error")
-
-    def test_clear_current_job_result_slims_completed_result(self):
-        started = jobs.queue_long_job(
-            operation="prompt_tracking",
-            stage="queued",
-            stage_label="Queued",
-            message="queued",
-            worker=lambda: {
-                "message": "done",
-                "tracking_result_id": "abc",
-                "tracks": [[[1, 2]]],
-                "visibility": [[True]],
-            },
-        )
-
-        deadline = time.time() + 2
-        while time.time() < deadline:
-            serialized = jobs.serialize_job()
-            if serialized and serialized.get("status") == "completed":
-                break
-            time.sleep(0.01)
-
-        self.assertTrue(jobs.clear_current_job_result(started["job_id"]))
-        self.assertEqual(jobs.serialize_job()["result"], {"message": "done", "tracking_result_id": "abc"})
+    def test_a_running_job_cannot_be_cleared(self):
+        handle = self.hold()
+        self.assertFalse(self.jobs.clear_result(handle.job_id))
 
 
 if __name__ == "__main__":

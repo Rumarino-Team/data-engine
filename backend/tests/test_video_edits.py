@@ -70,6 +70,7 @@ class VideoEditTests(BackendStateTestCase):
                 checkpoint, online_mode=True, batch_size=1,
                 offload_video_to_cpu=True, offload_state_to_cpu=True,
                 async_loading_frames=False, session=state,
+                job=self.job_handle(),
             )
 
     def rewrite_checkpoint(self, checkpoint, **changes):
@@ -292,7 +293,7 @@ class VideoEditTests(BackendStateTestCase):
 
     def test_a_failed_prompt_edit_is_rejected_and_the_predictor_rebuilt(self):
         state.annotations.set_prompt(VideoPrompt(**PROMPT))
-        write_session_metadata()
+        write_session_metadata(state)
         before = state.annotations.snapshot()
         accepted_result = (0, [1], [np.ones((3, 3))])
         failures = [
@@ -402,6 +403,7 @@ class VideoEditTests(BackendStateTestCase):
                 source, online_mode=True, batch_size=1,
                 offload_video_to_cpu=True, offload_state_to_cpu=True,
                 async_loading_frames=False, session=state,
+                job=self.job_handle(),
             )
         self.assertNotIn("restored_session", result)
         annotations = self.client.get("/video/info").json()["annotations"]
@@ -424,7 +426,7 @@ class VideoEditTests(BackendStateTestCase):
         selected = original.with_name("manifest-run.json")
         selected.write_bytes(original.read_bytes())
         state.mask_manifest_path = str(selected)
-        write_session_metadata()
+        write_session_metadata(state)
         checkpoint = self.save_checkpoint("result")
         self.assertEqual(Path(state.mask_manifest_path).name, "manifest-run.json")
         self.reopen(checkpoint)
@@ -433,7 +435,7 @@ class VideoEditTests(BackendStateTestCase):
 
     def test_save_without_frontend_annotations_preserves_backend_annotations(self):
         state.annotations.set_prompt(VideoPrompt(**PROMPT))
-        write_session_metadata()
+        write_session_metadata(state)
         checkpoint = self.save_checkpoint("review")
         expected = state.annotations.snapshot()
         restored = self.reopen(checkpoint)
@@ -445,7 +447,7 @@ class VideoEditTests(BackendStateTestCase):
 
     def test_save_persists_editor_preferences_and_rejects_client_supplied_inputs(self):
         state.annotations.set_prompt(VideoPrompt(**PROMPT))
-        write_session_metadata()
+        write_session_metadata(state)
         with patch.object(service, "SAVED_ROOT", self.root / "saved"):
             # Editor state carries preferences only; client copies of accepted inputs are rejected outright.
             rejected = self.client.post("/video/save", json={"name": "review", "interactive_state": {
@@ -460,7 +462,7 @@ class VideoEditTests(BackendStateTestCase):
     def test_clear_reset_and_delete_stay_applied_after_reopen(self):
         def seed_prompt():
             state.annotations.set_prompt(VideoPrompt(**PROMPT))
-            write_session_metadata()
+            write_session_metadata(state)
 
         for kind, seed in [("prompt", seed_prompt), ("override", self.add_override)]:
             for endpoint, params in [CLEAR, RESET, REMOVE]:
@@ -526,20 +528,20 @@ class VideoEditTests(BackendStateTestCase):
                     self.reopen(checkpoint)
 
     def test_failed_metadata_replacement_keeps_previous_complete_annotations(self):
-        write_session_metadata()
+        write_session_metadata(state)
         previous = self.metadata()
         state.annotations.set_prompt(VideoPrompt(**PROMPT))
         with patch("sessions.metadata.os.replace", side_effect=OSError("disk unavailable")):
             with self.assertRaises(OSError):
-                write_session_metadata()
+                write_session_metadata(state)
         self.assertEqual(self.metadata(), previous)
         self.assertEqual(list(self.session.glob(".session-*.json")), [])
 
     def test_metadata_writes_never_reread_session_json(self):
-        write_session_metadata({"created_at": "then", "latest_tracking_result_id": "abc"})
+        write_session_metadata(state, {"created_at": "then", "latest_tracking_result_id": "abc"})
         with patch("sessions.metadata.load_mask_manifest", side_effect=AssertionError("re-read")):
             state.annotations.set_prompt(VideoPrompt(**PROMPT))
-            write_session_metadata()
+            write_session_metadata(state)
         self.assertEqual(self.metadata()["created_at"], "then")
         self.assertEqual(self.metadata()["latest_tracking_result_id"], "abc")
         self.assertEqual(self.metadata()["annotations"], state.annotations.snapshot())
@@ -549,7 +551,7 @@ class VideoEditTests(BackendStateTestCase):
     def test_release_clears_annotations_and_snapshot_reports_no_session(self):
         state.annotations.set_prompt(VideoPrompt(**PROMPT))
         with patch("core.runtime.cleanup_cuda_memory"):
-            release_active_session()
+            release_active_session(state, )
         self.assertEqual(state.annotations.snapshot(), SessionAnnotations().snapshot())
         response = self.client.get("/video/info")
         self.assertEqual(response.status_code, 200)
@@ -575,7 +577,7 @@ class VideoEditTests(BackendStateTestCase):
             SessionAnnotations(objects={1: OBJECT}, prompts=[PROMPT, {**PROMPT, "points": [[5, 5]]}])
 
     def test_editor_state_projection_drops_deleted_selection(self):
-        projection = interactive_state_projection({"selected_object_id": 7, "interaction_mode": "positive"})
+        projection = interactive_state_projection({"selected_object_id": 7, "interaction_mode": "positive"}, session=state)
         self.assertEqual(projection, {"selected_object_id": None, "interaction_mode": "positive", "version": 1})
 
 
