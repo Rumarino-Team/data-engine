@@ -17,6 +17,7 @@ from utils import build_empty_mask_manifest, load_mask_manifest, write_mask_mani
 from video import propagation
 from video.propagation import propagation_batch_progress
 from video.masks import manifest_frame_payload, store_mask_override
+from video.runtime import VideoMaskerRuntime
 
 
 class PartialPropagationTests(unittest.TestCase):
@@ -52,6 +53,10 @@ class PartialPropagationTests(unittest.TestCase):
                                                     prompts=[{"frame_idx": 1, "obj_id": 1, "points": [[1, 1]], "labels": [1]}]),
                         mask_manifest_path=str(masks / "manifest.json"),
                     )
+                    runtime = VideoMaskerRuntime(
+                        session=state, create_masker=Mock(), replay_inputs=Mock(),
+                        persist_session=Mock(), release_memory=Mock(),
+                    )
                     patches.enter_context(patch("video.masks._overrides_dir", lambda: masks / "overrides"))
                     if explicit_override:
                         state.annotations.set_mask(store_mask_override(1, 1, np.ones((8, 8), dtype=bool)))
@@ -59,11 +64,12 @@ class PartialPropagationTests(unittest.TestCase):
                     for name, value in {
                         "state": state, "WINDOW_FRAMES_ROOT": root / "windows",
                         "current_masks_dir": lambda: masks, "clear_window_cache": Mock(),
-                        "update_job": Mock(), "write_session_metadata": Mock(),
-                        "restore_video_masker_from_prompt_events": Mock(),
+                        "write_session_metadata": Mock(),
+                        "create_masker_runtime": lambda session: runtime,
                     }.items():
                         patches.enter_context(patch.object(propagation, name, value))
                     patches.enter_context(patch("core.state.state", state))
+                    patches.enter_context(patch("core.jobs.update_job"))
                     # Repeat the shorter range: neither run may remove the earlier/later data.
                     for _ in range(2):
                         response = propagation.run_propagation_job(VideoPropagateRequest(
@@ -106,8 +112,9 @@ class PartialPropagationTests(unittest.TestCase):
                         with self.assertRaises(OperationError):
                             propagation.run_propagation_job(request)
                     self.assertEqual(state.mask_manifest_path, previous_path)
-                    propagation.restore_video_masker_from_prompt_events.assert_called()
-                    with patch.object(propagation, "restore_video_masker_from_prompt_events", side_effect=RuntimeError("restore failed")):
+                    runtime.replay_inputs.assert_called_with(state)
+                    runtime.replay_inputs.side_effect = RuntimeError("restore failed")
+                    with self.assertLogs("video.runtime", level="ERROR"):
                         with self.assertRaises(OperationError) as failure:
                             propagation.run_propagation_job(request)
                     self.assertEqual(failure.exception.status_code, 503)

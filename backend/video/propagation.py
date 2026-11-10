@@ -6,18 +6,19 @@ import cv2
 import numpy as np
 import torch
 from core.config import WINDOW_FRAMES_ROOT
-from core.jobs import capture_job_inputs, validate_job_inputs, foreground_operation, queue_long_job, update_job, foreground_lock
+from core.jobs import capture_job_inputs, validate_job_inputs, foreground_operation, queue_long_job, enter_stage, foreground_lock
 from core.runtime import cleanup_cuda_memory
 from core.state import state
 from schemas.video import VideoPropagateRequest
 from sessions.artifacts import sweep_unreferenced_artifacts
-from sessions.cache import clear_window_cache, bump_video_state_epoch
+from sessions.cache import clear_window_cache
 from sessions.checkpoints import saved_state
 from sessions.metadata import current_masks_dir, write_session_metadata
 from utils import build_empty_mask_manifest, load_mask_manifest, prepare_video_masks_output, save_single_video_mask_frame, write_mask_manifest
 from video.io import build_window_dir
 from video.masks import manifest_frame_payload, override_pixels
-from video.prompts import restore_video_masker_from_prompt_events
+from video.prompts import create_masker_runtime
+from video.runtime import MaskerRestorationError, MaskerSettings
 from tracking.guidance import load_latest_tracking_guidance
 
 logger = logging.getLogger(__name__)
@@ -64,15 +65,10 @@ def run_propagation_job(request: VideoPropagateRequest, inputs=None) -> dict[str
     def _propagation_progress(processed_frames_count: int, expected_frames_count: int) -> float:
         return (processed_frames_count / expected_frames_count) if expected_frames_count else 0.0
 
-    update_job(
+    enter_stage(
+        "validating_prompts", "Validating prompts",
         status="running",
-        stage="validating_prompts",
-        stage_label="Validating prompts",
         progress=0.0,
-        batch_current=None,
-        batch_total=None,
-        batch_index=None,
-        batch_count=None,
         message="Validating mask propagation inputs",
     )
     if state.video_masker is None:
@@ -136,16 +132,11 @@ def run_propagation_job(request: VideoPropagateRequest, inputs=None) -> dict[str
     if masks_root is None:
         raise OperationError(400, "Video session cache is not initialized.")
     clear_window_cache()
-    update_job(
-        stage="preparing_masks",
-        stage_label="Preparing mask output",
+    enter_stage(
+        "preparing_masks", "Preparing mask output",
         progress=0.02,
         current=0,
         total=expected_total_frames,
-        batch_current=None,
-        batch_total=None,
-        batch_index=None,
-        batch_count=None,
         message="Preparing mask output directory",
     )
 
@@ -203,288 +194,274 @@ def run_propagation_job(request: VideoPropagateRequest, inputs=None) -> dict[str
 
     video_segments_serializable: dict[int, dict[int, list]] = {}
 
+    runtime = create_masker_runtime(state)
+    restore_settings = MaskerSettings(
+        online_mode=effective_online_mode, batch_size=effective_batch_size,
+        offload_video_to_cpu=effective_offload_video_to_cpu,
+        offload_state_to_cpu=effective_offload_state_to_cpu,
+    )
+
+    def _report_restore_progress(_stage: str, _label: str, progress: Optional[float], message: str) -> None:
+        enter_stage(
+            "restoring_interactive_state", "Restoring interactive state",
+            progress=progress, message=message,
+        )
+
     try:
-        for window_index, (window_start, window_end) in enumerate(windows):
-            window_number = window_index + 1
-            window_count = len(windows)
-            update_job(
-                stage="building_window",
-                stage_label="Loading propagation window",
-                current=0,
-                total=window_end - window_start + 1,
-                window_index=window_number,
-                window_count=window_count,
-                frame_idx=window_start,
-                progress=_propagation_progress(len(processed_frames), expected_total_frames),
-                batch_current=None,
-                batch_total=None,
-                batch_index=None,
-                batch_count=None,
-                message=f"Preparing window {window_number} of {window_count}: frames {window_start}-{window_end}",
-            )
-            window_frame_paths = [Path(state.video_dir) / state.video_frame_files[idx] for idx in range(window_start, window_end + 1)]
-            window_name = f"window_{window_index}_{window_start}_{window_end}"
-
-            def _on_window_build_progress(current: int, total: int, source_path: Path) -> None:
-                source_frame_idx = window_start + current - 1
-                update_job(
-                    stage="building_window",
-                    stage_label="Loading propagation window",
-                    current=current,
-                    total=total,
+        # Leaving this scope reloads the session's own frames and inputs before publication.
+        with runtime.borrowed(restore_settings, progress_callback=_report_restore_progress) as masker:
+            for window_index, (window_start, window_end) in enumerate(windows):
+                window_number = window_index + 1
+                window_count = len(windows)
+                enter_stage(
+                    "building_window", "Loading propagation window",
+                    current=0,
+                    total=window_end - window_start + 1,
                     window_index=window_number,
                     window_count=window_count,
-                    frame_idx=source_frame_idx,
+                    frame_idx=window_start,
                     progress=_propagation_progress(len(processed_frames), expected_total_frames),
-                    batch_current=None,
-                    batch_total=None,
-                    batch_index=None,
-                    batch_count=None,
-                    message=f"Linked {current} of {total} frames for window {window_number} of {window_count}",
-                    append_history=current == 1 or current == total,
+                    message=f"Preparing window {window_number} of {window_count}: frames {window_start}-{window_end}",
+                )
+                window_frame_paths = [Path(state.video_dir) / state.video_frame_files[idx] for idx in range(window_start, window_end + 1)]
+                window_name = f"window_{window_index}_{window_start}_{window_end}"
+
+                def _on_window_build_progress(current: int, total: int, source_path: Path) -> None:
+                    source_frame_idx = window_start + current - 1
+                    enter_stage(
+                        "building_window", "Loading propagation window",
+                        current=current,
+                        total=total,
+                        window_index=window_number,
+                        window_count=window_count,
+                        frame_idx=source_frame_idx,
+                        progress=_propagation_progress(len(processed_frames), expected_total_frames),
+                        message=f"Linked {current} of {total} frames for window {window_number} of {window_count}",
+                        append_history=current == 1 or current == total,
+                    )
+
+                window_dir = build_window_dir(
+                    window_frame_paths,
+                    run_root,
+                    window_name,
+                    progress_callback=_on_window_build_progress,
                 )
 
-            window_dir = build_window_dir(
-                window_frame_paths,
-                run_root,
-                window_name,
-                progress_callback=_on_window_build_progress,
-            )
-
-            update_job(
-                stage="initializing_state",
-                stage_label="Initializing SAM2 window state",
-                current=len(processed_frames),
-                total=expected_total_frames,
-                window_index=window_number,
-                window_count=window_count,
-                frame_idx=window_start,
-                progress=_propagation_progress(len(processed_frames), expected_total_frames),
-                batch_current=None,
-                batch_total=None,
-                batch_index=None,
-                batch_count=None,
-                message=f"Initializing SAM2 state for window {window_number} of {window_count}",
-            )
-
-            state.video_masker.init_state(
-                str(window_dir),
-                online_mode=effective_online_mode,
-                batch_size=effective_batch_size,
-                offload_video_to_cpu=effective_offload_video_to_cpu,
-                offload_state_to_cpu=effective_offload_state_to_cpu,
-                async_loading_frames=False,
-            )
-
-            update_job(
-                stage="seeding_window",
-                stage_label="Seeding prompts",
-                current=len(processed_frames),
-                total=expected_total_frames,
-                window_index=window_number,
-                window_count=window_count,
-                frame_idx=window_start,
-                progress=_propagation_progress(len(processed_frames), expected_total_frames),
-                batch_current=None,
-                batch_total=None,
-                batch_index=None,
-                batch_count=None,
-                message=f"Seeding prompts for window {window_number} of {window_count}",
-            )
-
-            if window_index > 0 and boundary_masks and boundary_frame_idx is not None:
-                update_job(
-                    stage="seeding_window",
-                    stage_label="Seeding boundary masks",
+                enter_stage(
+                    "initializing_state", "Initializing SAM2 window state",
                     current=len(processed_frames),
                     total=expected_total_frames,
                     window_index=window_number,
                     window_count=window_count,
-                    frame_idx=boundary_frame_idx,
+                    frame_idx=window_start,
                     progress=_propagation_progress(len(processed_frames), expected_total_frames),
-                    batch_current=None,
-                    batch_total=None,
-                    batch_index=None,
-                    batch_count=None,
-                    message=f"Seeding boundary masks for window {window_number} of {window_count}",
-                )
-                local_boundary_idx = int(boundary_frame_idx - window_start)
-                for obj_id, obj_mask in boundary_masks.items():
-                    state.video_masker.add_new_mask(
-                        frame_idx=local_boundary_idx,
-                        obj_id=int(obj_id),
-                        mask=np.asarray(obj_mask).astype(bool),
-                    )
-
-            for event in state.annotations.prompt_events():
-                event_frame_idx = int(event["frame_idx"])
-                if event_frame_idx < window_start or event_frame_idx > window_end:
-                    continue
-                local_event_frame_idx = event_frame_idx - window_start
-                points = event["points"] if event["points"] else None
-                labels = event["labels"] if event["labels"] else None
-                state.video_masker.add_new_points_or_box(
-                    frame_idx=local_event_frame_idx,
-                    obj_id=int(event["obj_id"]),
-                    points=points,
-                    labels=labels,
-                    clear_old_points=True,
-                    box=event.get("box"),
+                    message=f"Initializing SAM2 state for window {window_number} of {window_count}",
                 )
 
-            for mask in state.annotations.mask_overrides:
-                if window_start <= mask.frame_idx <= window_end:
-                    state.video_masker.add_new_mask(frame_idx=mask.frame_idx - window_start,
-                                                   obj_id=mask.obj_id, mask=override_pixels(mask))
-
-            if tracking_guidance is not None and tracking_guidance.points:
-                excluded_tracked_guidance = {(mask.frame_idx, mask.obj_id) for mask in state.annotations.mask_overrides}
-                if window_index > 0 and boundary_masks and boundary_frame_idx is not None:
-                    excluded_tracked_guidance.update(
-                        (int(boundary_frame_idx), int(obj_id))
-                        for obj_id in boundary_masks.keys()
-                    )
-                tracked_batches, seeded_count, seeded_frames = tracking_guidance.build_window_batches(
-                    window_start=window_start,
-                    window_end=window_end,
-                    propagation_start_frame_idx=start_frame_idx,
-                    frame_width=frame_width,
-                    frame_height=frame_height,
-                    keyframe_interval=request.tracked_point_keyframe_interval,
-                    max_points_per_object_per_frame=request.max_tracked_points_per_object_per_frame,
-                    excluded_frame_objects=excluded_tracked_guidance,
-                )
-                for local_frame_idx, obj_batches in sorted(tracked_batches.items()):
-                    for obj_id, points in sorted(obj_batches.items()):
-                        if not points:
-                            continue
-                        labels = [1] * len(points)
-                        state.video_masker.add_new_points_or_box(
-                            frame_idx=int(local_frame_idx),
-                            obj_id=int(obj_id),
-                            points=points,
-                            labels=labels,
-                            clear_old_points=False,
-                            box=None,
-                        )
-                total_tracked_points_seeded += seeded_count
-                tracked_points_seeded_frames.update(seeded_frames)
-
-            local_start_frame = max(start_frame_idx, window_start) - window_start
-            local_max_frames = (window_end - window_start + 1) - local_start_frame
-            window_output_start = max(start_frame_idx, window_start)
-            window_expected_frames = window_end - window_output_start + 1
-            if window_index > 0 and window_start in processed_frames:
-                window_expected_frames = max(0, window_expected_frames - 1)
-            processed_window_frames_count = 0
-
-            def _on_window_frame(local_frame_idx: int, frame_masks: dict[int, np.ndarray]):
-                nonlocal saved_mask_frame_count, save_failures, boundary_masks, boundary_frame_idx, processed_window_frames_count
-                global_frame_idx = int(window_start + local_frame_idx)
-                if global_frame_idx < start_frame_idx or global_frame_idx > end_frame_idx:
-                    return
-
-                is_overlap_duplicate = (
-                    window_index > 0
-                    and global_frame_idx == window_start
-                    and global_frame_idx in processed_frames
-                )
-                if is_overlap_duplicate:
-                    boundary_masks = {
-                        int(obj_id): np.asarray(mask).astype(bool)
-                        for obj_id, mask in frame_masks.items()
-                    }
-                    boundary_frame_idx = global_frame_idx
-                    return
-
-                batch_progress = propagation_batch_progress(
-                    processed_before_frame=processed_window_frames_count,
-                    window_total_frames=max(1, window_expected_frames),
+                masker.init_state(
+                    str(window_dir),
+                    online_mode=effective_online_mode,
                     batch_size=effective_batch_size,
+                    offload_video_to_cpu=effective_offload_video_to_cpu,
+                    offload_state_to_cpu=effective_offload_state_to_cpu,
+                    async_loading_frames=False,
                 )
-                processed_window_frames_count += 1
-                processed_frames.add(global_frame_idx)
-                update_job(
-                    stage="propagating_window",
-                    stage_label="Propagating masks",
+
+                enter_stage(
+                    "seeding_window", "Seeding prompts",
                     current=len(processed_frames),
                     total=expected_total_frames,
                     window_index=window_number,
                     window_count=window_count,
-                    frame_idx=global_frame_idx,
+                    frame_idx=window_start,
                     progress=_propagation_progress(len(processed_frames), expected_total_frames),
-                    batch_current=batch_progress["batch_current"],
-                    batch_total=batch_progress["batch_total"],
-                    batch_index=batch_progress["batch_index"],
-                    batch_count=batch_progress["batch_count"],
-                    message=f"Processed {len(processed_frames)} of {expected_total_frames} frames",
-                    append_history=len(processed_frames) == 1 or len(processed_frames) == expected_total_frames,
+                    message=f"Seeding prompts for window {window_number} of {window_count}",
                 )
-                # Explicit masks remain exact inputs even if inference alters their pixels.
-                for mask in state.annotations.mask_overrides:
-                    if mask.frame_idx == global_frame_idx:
-                        frame_masks[mask.obj_id] = override_pixels(mask)
-                manifest_frames[str(global_frame_idx)] = {
-                    **manifest_frame_payload(frame_masks),
-                    "input_revisions": {str(obj_id): state.annotations.input_revisions.get(int(obj_id), 0)
-                                        for obj_id in frame_masks},
-                }
-                if request.include_masks_in_response:
-                    video_segments_serializable[global_frame_idx] = {
-                        int(obj_id): np.asarray(mask).astype(bool).tolist()
-                        for obj_id, mask in frame_masks.items()
-                    }
 
-                if request.export_overlay_frames:
-                    try:
-                        saved_path = save_single_video_mask_frame(
-                            frame_files,
-                            overlay_dir,
-                            global_frame_idx,
-                            frame_masks,
+                if window_index > 0 and boundary_masks and boundary_frame_idx is not None:
+                    enter_stage(
+                        "seeding_window", "Seeding boundary masks",
+                        current=len(processed_frames),
+                        total=expected_total_frames,
+                        window_index=window_number,
+                        window_count=window_count,
+                        frame_idx=boundary_frame_idx,
+                        progress=_propagation_progress(len(processed_frames), expected_total_frames),
+                        message=f"Seeding boundary masks for window {window_number} of {window_count}",
+                    )
+                    local_boundary_idx = int(boundary_frame_idx - window_start)
+                    for obj_id, obj_mask in boundary_masks.items():
+                        masker.add_new_mask(
+                            frame_idx=local_boundary_idx,
+                            obj_id=int(obj_id),
+                            mask=np.asarray(obj_mask).astype(bool),
                         )
-                        if saved_path is not None:
-                            manifest_frames[str(global_frame_idx)]["overlay_path"] = str(Path(saved_path).relative_to(masks_dir))
-                            saved_mask_frame_count += 1
-                            if request.include_saved_mask_paths:
-                                saved_mask_paths_serializable.setdefault(global_frame_idx, []).append(saved_path)
-                    except Exception:
-                        save_failures += 1
-                        logger.exception("Failed to save propagated mask frame %s", global_frame_idx)
 
-                if global_frame_idx == window_end:
-                    boundary_masks = {
-                        int(obj_id): np.asarray(mask).astype(bool)
-                        for obj_id, mask in frame_masks.items()
+                for event in state.annotations.prompt_events():
+                    event_frame_idx = int(event["frame_idx"])
+                    if event_frame_idx < window_start or event_frame_idx > window_end:
+                        continue
+                    local_event_frame_idx = event_frame_idx - window_start
+                    points = event["points"] if event["points"] else None
+                    labels = event["labels"] if event["labels"] else None
+                    masker.add_new_points_or_box(
+                        frame_idx=local_event_frame_idx,
+                        obj_id=int(event["obj_id"]),
+                        points=points,
+                        labels=labels,
+                        clear_old_points=True,
+                        box=event.get("box"),
+                    )
+
+                for mask in state.annotations.mask_overrides:
+                    if window_start <= mask.frame_idx <= window_end:
+                        masker.add_new_mask(frame_idx=mask.frame_idx - window_start,
+                                                       obj_id=mask.obj_id, mask=override_pixels(mask))
+
+                if tracking_guidance is not None and tracking_guidance.points:
+                    excluded_tracked_guidance = {(mask.frame_idx, mask.obj_id) for mask in state.annotations.mask_overrides}
+                    if window_index > 0 and boundary_masks and boundary_frame_idx is not None:
+                        excluded_tracked_guidance.update(
+                            (int(boundary_frame_idx), int(obj_id))
+                            for obj_id in boundary_masks.keys()
+                        )
+                    tracked_batches, seeded_count, seeded_frames = tracking_guidance.build_window_batches(
+                        window_start=window_start,
+                        window_end=window_end,
+                        propagation_start_frame_idx=start_frame_idx,
+                        frame_width=frame_width,
+                        frame_height=frame_height,
+                        keyframe_interval=request.tracked_point_keyframe_interval,
+                        max_points_per_object_per_frame=request.max_tracked_points_per_object_per_frame,
+                        excluded_frame_objects=excluded_tracked_guidance,
+                    )
+                    for local_frame_idx, obj_batches in sorted(tracked_batches.items()):
+                        for obj_id, points in sorted(obj_batches.items()):
+                            if not points:
+                                continue
+                            labels = [1] * len(points)
+                            masker.add_new_points_or_box(
+                                frame_idx=int(local_frame_idx),
+                                obj_id=int(obj_id),
+                                points=points,
+                                labels=labels,
+                                clear_old_points=False,
+                                box=None,
+                            )
+                    total_tracked_points_seeded += seeded_count
+                    tracked_points_seeded_frames.update(seeded_frames)
+
+                local_start_frame = max(start_frame_idx, window_start) - window_start
+                local_max_frames = (window_end - window_start + 1) - local_start_frame
+                window_output_start = max(start_frame_idx, window_start)
+                window_expected_frames = window_end - window_output_start + 1
+                if window_index > 0 and window_start in processed_frames:
+                    window_expected_frames = max(0, window_expected_frames - 1)
+                processed_window_frames_count = 0
+
+                def _on_window_frame(local_frame_idx: int, frame_masks: dict[int, np.ndarray]):
+                    nonlocal saved_mask_frame_count, save_failures, boundary_masks, boundary_frame_idx, processed_window_frames_count
+                    global_frame_idx = int(window_start + local_frame_idx)
+                    if global_frame_idx < start_frame_idx or global_frame_idx > end_frame_idx:
+                        return
+
+                    is_overlap_duplicate = (
+                        window_index > 0
+                        and global_frame_idx == window_start
+                        and global_frame_idx in processed_frames
+                    )
+                    if is_overlap_duplicate:
+                        boundary_masks = {
+                            int(obj_id): np.asarray(mask).astype(bool)
+                            for obj_id, mask in frame_masks.items()
+                        }
+                        boundary_frame_idx = global_frame_idx
+                        return
+
+                    batch_progress = propagation_batch_progress(
+                        processed_before_frame=processed_window_frames_count,
+                        window_total_frames=max(1, window_expected_frames),
+                        batch_size=effective_batch_size,
+                    )
+                    processed_window_frames_count += 1
+                    processed_frames.add(global_frame_idx)
+                    enter_stage(
+                        "propagating_window", "Propagating masks",
+                        current=len(processed_frames),
+                        total=expected_total_frames,
+                        window_index=window_number,
+                        window_count=window_count,
+                        frame_idx=global_frame_idx,
+                        progress=_propagation_progress(len(processed_frames), expected_total_frames),
+                        batch_current=batch_progress["batch_current"],
+                        batch_total=batch_progress["batch_total"],
+                        batch_index=batch_progress["batch_index"],
+                        batch_count=batch_progress["batch_count"],
+                        message=f"Processed {len(processed_frames)} of {expected_total_frames} frames",
+                        append_history=len(processed_frames) == 1 or len(processed_frames) == expected_total_frames,
+                    )
+                    # Explicit masks remain exact inputs even if inference alters their pixels.
+                    for mask in state.annotations.mask_overrides:
+                        if mask.frame_idx == global_frame_idx:
+                            frame_masks[mask.obj_id] = override_pixels(mask)
+                    manifest_frames[str(global_frame_idx)] = {
+                        **manifest_frame_payload(frame_masks),
+                        "input_revisions": {str(obj_id): state.annotations.input_revisions.get(int(obj_id), 0)
+                                            for obj_id in frame_masks},
                     }
-                    boundary_frame_idx = global_frame_idx
+                    if request.include_masks_in_response:
+                        video_segments_serializable[global_frame_idx] = {
+                            int(obj_id): np.asarray(mask).astype(bool).tolist()
+                            for obj_id, mask in frame_masks.items()
+                        }
 
-            state.video_masker.propagate_in_video(
-                start_frame_idx=local_start_frame,
-                max_frame_num_to_track=local_max_frames,
-                reverse=False,
-                batch_size=effective_batch_size,
-                online_mode=effective_online_mode,
-                collect_segments=False,
-                frame_callback=_on_window_frame,
-            )
-            update_job(
-                stage="propagating_window",
-                stage_label="Propagating masks",
-                current=len(processed_frames),
-                total=expected_total_frames,
-                window_index=window_number,
-                window_count=window_count,
-                frame_idx=window_end,
-                progress=_propagation_progress(len(processed_frames), expected_total_frames),
-                batch_current=None,
-                batch_total=None,
-                batch_index=None,
-                batch_count=None,
-                message=f"Finished window {window_number} of {window_count}",
-            )
+                    if request.export_overlay_frames:
+                        try:
+                            saved_path = save_single_video_mask_frame(
+                                frame_files,
+                                overlay_dir,
+                                global_frame_idx,
+                                frame_masks,
+                            )
+                            if saved_path is not None:
+                                manifest_frames[str(global_frame_idx)]["overlay_path"] = str(Path(saved_path).relative_to(masks_dir))
+                                saved_mask_frame_count += 1
+                                if request.include_saved_mask_paths:
+                                    saved_mask_paths_serializable.setdefault(global_frame_idx, []).append(saved_path)
+                        except Exception:
+                            save_failures += 1
+                            logger.exception("Failed to save propagated mask frame %s", global_frame_idx)
+
+                    if global_frame_idx == window_end:
+                        boundary_masks = {
+                            int(obj_id): np.asarray(mask).astype(bool)
+                            for obj_id, mask in frame_masks.items()
+                        }
+                        boundary_frame_idx = global_frame_idx
+
+                masker.propagate_in_video(
+                    start_frame_idx=local_start_frame,
+                    max_frame_num_to_track=local_max_frames,
+                    reverse=False,
+                    batch_size=effective_batch_size,
+                    online_mode=effective_online_mode,
+                    collect_segments=False,
+                    frame_callback=_on_window_frame,
+                )
+                enter_stage(
+                    "propagating_window", "Propagating masks",
+                    current=len(processed_frames),
+                    total=expected_total_frames,
+                    window_index=window_number,
+                    window_count=window_count,
+                    frame_idx=window_end,
+                    progress=_propagation_progress(len(processed_frames), expected_total_frames),
+                    message=f"Finished window {window_number} of {window_count}",
+                )
     except ValueError as error:
         raise OperationError(400, str(error)) from error
+    except MaskerRestorationError as error:
+        raise OperationError(503, "Predictor restoration failed. Reload the video; no results were published.") from error
     except torch.OutOfMemoryError as error:
         cleanup_cuda_memory()
         raise OperationError(
@@ -500,36 +477,14 @@ def run_propagation_job(request: VideoPropagateRequest, inputs=None) -> dict[str
     except Exception as error:
         raise OperationError(500, f"Failed to propagate video masks: {error}") from error
     finally:
-        try:
-            validate_job_inputs(inputs, "mask_propagation")
-            restore_video_masker_from_prompt_events(
-                online_mode=effective_online_mode, batch_size=effective_batch_size,
-                offload_video_to_cpu=effective_offload_video_to_cpu,
-                offload_state_to_cpu=effective_offload_state_to_cpu,
-                progress_stage_override="restoring_interactive_state",
-                progress_label_override="Restoring interactive state",
-            )
-        except Exception as error:
-            state.video_masker = None
-            bump_video_state_epoch()
-            raise OperationError(503, "Predictor restoration failed. Reload the video; no results were published.") from error
-        finally:
-            shutil.rmtree(run_root, ignore_errors=True)
+        shutil.rmtree(run_root, ignore_errors=True)
 
-    update_job(
-        stage="saving_manifest",
-        stage_label="Saving manifest",
+    enter_stage(
+        "saving_manifest", "Saving manifest",
         progress=0.98,
         current=len(processed_frames),
         total=expected_total_frames,
-        window_index=None,
-        window_count=None,
-        frame_idx=None,
         message="Saving mask manifest",
-        batch_current=None,
-        batch_total=None,
-        batch_index=None,
-        batch_count=None,
     )
 
     with foreground_lock:

@@ -182,6 +182,30 @@ def update_job(
             )
             del history[:-8]
 
+_POSITION_FIELDS = (
+    "current", "total", "frame_idx", "window_index", "window_count",
+    "batch_current", "batch_total", "batch_index", "batch_count",
+)
+
+
+def enter_stage(
+    stage: str, stage_label: str, *, message: str, progress: Any = _UNSET,
+    status: Optional[str] = None, append_history: bool = True, **position: Any,
+) -> None:
+    """Start a stage: position fields (frame, window, batch counters) not given are cleared.
+
+    `update_job` only touches what it is given, so a stage that forgot to reset a counter
+    would show the previous stage's position. Use `update_job` to refine the current stage.
+    """
+    unknown = set(position) - set(_POSITION_FIELDS)
+    if unknown:
+        raise TypeError(f"Unknown job position fields: {sorted(unknown)}")
+    update_job(
+        status=status, stage=stage, stage_label=stage_label, message=message, progress=progress,
+        append_history=append_history, **{name: position.get(name) for name in _POSITION_FIELDS},
+    )
+
+
 def _complete_job(job_id: str, result: dict[str, Any]) -> None:
     with current_job_lock:
         if current_job is None or current_job.get("job_id") != job_id:

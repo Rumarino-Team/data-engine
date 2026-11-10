@@ -11,7 +11,7 @@ from core.state import state
 from schemas.video import VideoInitStateRequest
 from sessions.metadata import write_session_metadata
 from support import BackendStateTestCase
-from video import service
+from video import prompts, service
 
 
 class SessionReplacementTests(BackendStateTestCase):
@@ -51,7 +51,7 @@ class SessionReplacementTests(BackendStateTestCase):
     def test_invalid_path_and_empty_directory_preserve_current_session(self):
         empty = self.root / "empty"
         empty.mkdir()
-        with patch.object(service.svm, "SAM2VideoMasker") as constructor:
+        with patch.object(prompts.svm, "SAM2VideoMasker") as constructor:
             for path in [self.root / "missing", empty]:
                 with self.subTest(path=path), self.assertRaises(OperationError):
                     self.run_init(path)
@@ -61,11 +61,11 @@ class SessionReplacementTests(BackendStateTestCase):
     def test_model_and_persistence_failure_preserve_current_session(self):
         candidate = self.masker()
         candidate.init_state.side_effect = RuntimeError("model failed")
-        with patch.object(service.svm, "SAM2VideoMasker", return_value=candidate):
+        with patch.object(prompts.svm, "SAM2VideoMasker", return_value=candidate):
             with self.assertRaises(RuntimeError):
                 self.run_init()
         self.assert_old_session()
-        with (patch.object(service.svm, "SAM2VideoMasker", return_value=self.masker()),
+        with (patch.object(prompts.svm, "SAM2VideoMasker", return_value=self.masker()),
               patch.object(service, "write_session_metadata", side_effect=OSError("disk full"))):
             with self.assertRaises(OSError):
                 self.run_init()
@@ -83,7 +83,7 @@ class SessionReplacementTests(BackendStateTestCase):
             self.assert_old_session()
             self.assertIsNot(session, state)
             write_session_metadata(extra, session=session)
-        with (patch.object(service.svm, "SAM2VideoMasker", return_value=candidate),
+        with (patch.object(prompts.svm, "SAM2VideoMasker", return_value=candidate),
               patch.object(service, "write_session_metadata", side_effect=persist)):
             result = self.run_init()
         self.assertNotEqual(state.active_session_id, "old")
@@ -102,7 +102,7 @@ class SessionReplacementTests(BackendStateTestCase):
 
     def test_replaced_working_directory_is_deleted_after_publication(self):
         working = self.adopt_as_working_copy()
-        with patch.object(service.svm, "SAM2VideoMasker", return_value=self.masker()):
+        with patch.object(prompts.svm, "SAM2VideoMasker", return_value=self.masker()):
             self.run_init()
         self.assertNotEqual(state.active_session_dir, working)
         self.assertFalse(working.exists())
@@ -112,7 +112,7 @@ class SessionReplacementTests(BackendStateTestCase):
         working = self.adopt_as_working_copy()
         failing = self.masker()
         failing.init_state.side_effect = RuntimeError("model failed")
-        with patch.object(service.svm, "SAM2VideoMasker", return_value=failing):
+        with patch.object(prompts.svm, "SAM2VideoMasker", return_value=failing):
             with self.assertRaises(RuntimeError):
                 self.run_init()
         self.assert_old_session()
@@ -120,7 +120,7 @@ class SessionReplacementTests(BackendStateTestCase):
 
     def test_directories_outside_the_working_cache_are_never_deleted(self):
         # self.old_dir lives outside the patched cache root, as a checkpoint would.
-        with patch.object(service.svm, "SAM2VideoMasker", return_value=self.masker()):
+        with patch.object(prompts.svm, "SAM2VideoMasker", return_value=self.masker()):
             self.run_init()
         self.assertTrue((self.old_dir / "session.json").exists())
         service.discard_working_session(self.source)
@@ -141,7 +141,7 @@ class SessionReplacementTests(BackendStateTestCase):
         before = (saved / "session.json").read_bytes()
         candidate = self.masker()
         candidate.add_new_points_or_box.side_effect = RuntimeError("replay failed")
-        with patch.object(service.svm, "SAM2VideoMasker", return_value=candidate):
+        with patch.object(prompts.svm, "SAM2VideoMasker", return_value=candidate):
             with self.assertRaises(RuntimeError):
                 self.run_init(saved)
         self.assert_old_session()

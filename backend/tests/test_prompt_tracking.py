@@ -14,7 +14,6 @@ from core.annotations import SessionAnnotations
 from core.errors import OperationError
 from support import BackendStateTestCase
 from tracking.prompt_tracking import run_prompt_tracking_job
-from video.prompts import restore_video_masker_from_prompt_events
 from video.runtime import VideoMaskerRuntime
 
 
@@ -83,7 +82,7 @@ class PromptTrackingStatusTests(BackendStateTestCase):
     def tracking_environment(self, *, streaming=False, load_video=True):
         """Patch the tracking job's collaborators; yields the mock that publishes a result."""
         with ExitStack() as stack:
-            stack.enter_context(patch("tracking.prompt_tracking.update_job"))
+            stack.enter_context(patch("core.jobs.update_job"))
             stack.enter_context(patch("tracking.prompt_tracking.ensure_tracker_model"))
             stack.enter_context(patch("tracking.prompt_tracking.should_stream_tracking", return_value=streaming))
             if load_video:
@@ -106,7 +105,7 @@ class PromptTrackingStatusTests(BackendStateTestCase):
             return {"result_id": "track-1", "summary": {}}
 
         with (
-            patch("tracking.prompt_tracking.update_job", side_effect=capture_update),
+            patch("core.jobs.update_job", side_effect=capture_update),
             patch("tracking.prompt_tracking.ensure_tracker_model", return_value=None),
             patch("tracking.prompt_tracking.should_stream_tracking", return_value=False),
             patch(
@@ -148,7 +147,7 @@ class PromptTrackingStatusTests(BackendStateTestCase):
 
     def test_tracker_loading_failure_restores_masker_without_publishing(self):
         with (
-            patch("tracking.prompt_tracking.update_job"),
+            patch("core.jobs.update_job"),
             patch("tracking.prompt_tracking.ensure_tracker_model", side_effect=ValueError("unsupported tracker")),
             patch("tracking.prompt_tracking.save_prompt_tracking_result") as publish,
         ):
@@ -252,49 +251,6 @@ class PromptTrackingStatusTests(BackendStateTestCase):
             self.assertIsNone(state.tracking_video)
             self.assertEqual(state.session_metadata["latest_tracking_result_id"], "previous-result")
             self.assertEqual(state.annotations.snapshot(), before_annotations)
-
-    def test_restore_progress_override_hides_sam2_labels(self):
-        updates = []
-
-        with (
-            patch("video.prompts.update_job", side_effect=lambda **kwargs: updates.append(kwargs)),
-            patch("video.prompts.svm.SAM2VideoMasker", return_value=_FakeRestoreMasker()),
-        ):
-            state.video_masker = None
-            restore_video_masker_from_prompt_events(
-                online_mode=True,
-                batch_size=32,
-                offload_video_to_cpu=True,
-                offload_state_to_cpu=True,
-                increment_epoch=False,
-                progress_stage_override="restoring_masker",
-                progress_label_override="Restoring interactive masking state",
-                progress_message_prefix="Restoring masking state after prompt tracking",
-            )
-
-        self.assertEqual(updates[0]["stage"], "restoring_masker")
-        self.assertEqual(updates[0]["stage_label"], "Restoring interactive masking state")
-        self.assertNotEqual(updates[0]["stage_label"], "Loading SAM2 model")
-        self.assertIn("Restoring masking state after prompt tracking", updates[0]["message"])
-
-    def test_restore_progress_default_passes_through_labels(self):
-        updates = []
-
-        with (
-            patch("video.prompts.update_job", side_effect=lambda **kwargs: updates.append(kwargs)),
-            patch("video.prompts.svm.SAM2VideoMasker", return_value=_FakeRestoreMasker()),
-        ):
-            state.video_masker = None
-            restore_video_masker_from_prompt_events(
-                online_mode=True,
-                batch_size=32,
-                offload_video_to_cpu=True,
-                offload_state_to_cpu=True,
-                increment_epoch=False,
-            )
-
-        self.assertEqual(updates[0]["stage"], "loading_sam2_model")
-        self.assertEqual(updates[0]["stage_label"], "Loading SAM2 model")
 
 
 if __name__ == "__main__":

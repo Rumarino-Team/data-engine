@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import co_tracker as cot
 from core.config import DEFAULT_PROMPT_TRACK_BATCH_SIZE, DEFAULT_STREAMING_TRACK_FRAME_THRESHOLD
-from core.jobs import capture_job_inputs, validate_job_inputs, foreground_operation, foreground_lock, queue_long_job, update_job
+from core.jobs import capture_job_inputs, validate_job_inputs, foreground_operation, foreground_lock, queue_long_job, enter_stage
 from core.runtime import cleanup_cuda_memory
 from core.state import state
 from sessions.checkpoints import saved_state
@@ -36,10 +36,9 @@ def run_prompt_tracking_job(
 ) -> dict[str, Any]:
     inputs = inputs or capture_job_inputs("prompt_tracking")
     validate_job_inputs(inputs, "prompt_tracking")
-    update_job(
+    enter_stage(
+        "collecting_prompts", "Collecting prompts",
         status="running",
-        stage="collecting_prompts",
-        stage_label="Collecting prompts",
         progress=0.05,
         message="Collecting positive prompt points",
     )
@@ -76,9 +75,8 @@ def run_prompt_tracking_job(
     if not positive_queries:
         raise OperationError(400, "No positive prompt points available for tracking.")
     total_queries = len(positive_queries)
-    update_job(
-        stage="loading_tracker",
-        stage_label="Loading tracker",
+    enter_stage(
+        "loading_tracker", "Loading tracker",
         progress=0.2,
         current=0,
         total=total_queries,
@@ -88,9 +86,8 @@ def run_prompt_tracking_job(
     runtime = masker_runtime if masker_runtime is not None else create_masker_runtime(state)
 
     def _report_restore_progress(_stage: str, _label: str, progress: float | None, message: str) -> None:
-        update_job(
-            stage="restoring_masker",
-            stage_label="Restoring interactive masking state",
+        enter_stage(
+            "restoring_masker", "Restoring interactive masking state",
             progress=progress,
             message=f"Restoring masking state after prompt tracking: {message}",
         )
@@ -146,9 +143,8 @@ def run_prompt_tracking_job(
             tracks_batches.append(batch_tracks)
             visibility_batches.append(batch_visibility)
             index = end_index
-            update_job(
-                stage="tracking_points",
-                stage_label="Tracking prompt points",
+            enter_stage(
+                "tracking_points", "Tracking prompt points",
                 progress=0.35 + (0.55 * (index / query_array.shape[0])),
                 current=index,
                 total=query_array.shape[0],
@@ -213,9 +209,8 @@ def run_prompt_tracking_job(
             tracks_batches.append(batch_tracks)
             visibility_batches.append(batch_visibility)
             index = end_index
-            update_job(
-                stage="tracking_points",
-                stage_label="Tracking prompt points",
+            enter_stage(
+                "tracking_points", "Tracking prompt points",
                 progress=0.35 + (0.55 * (index / query_array.shape[0])),
                 current=index,
                 total=query_array.shape[0],
@@ -242,9 +237,8 @@ def run_prompt_tracking_job(
                 ensure_tracker_model(cot.DEFAULT_COTRACKER_MODEL)
             except ValueError as error:
                 raise OperationError(400, str(error)) from error
-            update_job(
-                stage="loading_frames",
-                stage_label="Preparing tracking frames",
+            enter_stage(
+                "loading_frames", "Preparing tracking frames",
                 progress=0.35,
                 current=0,
                 total=total_queries,
@@ -335,9 +329,8 @@ def run_prompt_tracking_job(
                 raise OperationError(500, f"Prompt-point tracking failed: {error}") from error
 
             cleanup_cuda_memory()
-            update_job(
-                stage="restoring_masker",
-                stage_label="Restoring interactive masking state",
+            enter_stage(
+                "restoring_masker", "Restoring interactive masking state",
                 progress=0.95,
                 current=int(tracks.shape[0]),
                 total=total_queries,

@@ -4,10 +4,9 @@ from typing import Any, Optional
 import cv2
 from fastapi.responses import FileResponse
 import numpy as np
-import sam2_video_masker as svm
 from core.config import IMAGE_EXTENSIONS, SAVED_ROOT, VIDEO_EXTENSIONS
 from core.errors import OperationError
-from core.jobs import queue_long_job, foreground_operation, foreground_lock, update_job, utc_now_iso
+from core.jobs import queue_long_job, foreground_operation, foreground_lock, enter_stage, utc_now_iso
 from core.state import BackendState, state
 from core.annotations import SessionAnnotations
 from pydantic import ValidationError
@@ -31,7 +30,8 @@ from video.io import copy_frames_directory_to_session, create_active_session, di
 from video.masks import mask_logits_to_2d_bool, store_mask_override, override_pixels, retain_interactive_masks, effective_mask_data
 from video.manifest_cache import load_cached_mask_manifest
 from video.mask_encoding import encode_live_mask_payload
-from video.prompts import record_prompt_event, replay_annotation_prompts, annotation_edit
+from video.prompts import record_prompt_event, annotation_edit, create_masker_runtime
+from video.runtime import MaskerSettings
 from tracking.results import restored_tracking_result_payload, tracking_validity
 
 logger = logging.getLogger(__name__)
@@ -74,9 +74,8 @@ def initialize_video_state_from_resolved_input(
             for frame_path in frames_dir.iterdir()
             if frame_path.is_file() and frame_path.suffix.lower() in IMAGE_EXTENSIONS
         )
-        update_job(
-            stage="linking_frames",
-            stage_label="Loading saved session frames",
+        enter_stage(
+            "linking_frames", "Loading saved session frames",
             progress=0.65,
             current=len(indexed_frame_files),
             total=len(indexed_frame_files),
@@ -121,9 +120,8 @@ def initialize_video_state_from_resolved_input(
                     else:
                         progress = None
                         message = f"Extracted {current} frames"
-                    update_job(
-                        stage="extracting_frames",
-                        stage_label="Extracting video frames",
+                    enter_stage(
+                        "extracting_frames", "Extracting video frames",
                         progress=progress,
                         current=current,
                         total=total,
@@ -165,9 +163,8 @@ def initialize_video_state_from_resolved_input(
 
             def _on_link_progress(current: int, total: int, source_path: Path) -> None:
                 progress = 0.35 + (0.3 * (current / total)) if total else 0.65
-                update_job(
-                    stage="linking_frames",
-                    stage_label="Linking frame cache",
+                enter_stage(
+                    "linking_frames", "Linking frame cache",
                     progress=progress,
                     current=current,
                     total=total,
@@ -176,13 +173,11 @@ def initialize_video_state_from_resolved_input(
                     append_history=current == 1 or current == total,
                 )
 
-            update_job(
-                stage="linking_frames",
-                stage_label="Linking frame cache",
+            enter_stage(
+                "linking_frames", "Linking frame cache",
                 progress=0.35,
                 current=0,
                 total=candidate_count,
-                frame_idx=None,
                 message="Preparing session-local frame cache",
             )
             indexed_frame_files = copy_frames_directory_to_session(
@@ -209,36 +204,26 @@ def initialize_video_state_from_resolved_input(
             source_type = "video_file"
 
     def _on_sam2_progress(stage: str, label: str, progress: Optional[float], message: str) -> None:
-        update_job(
-            stage=stage,
-            stage_label=label,
+        enter_stage(
+            stage, label,
             progress=progress,
-            current=None,
-            total=None,
-            frame_idx=None,
             message=message,
         )
 
-    if session.video_masker is None:
-        session.video_masker = svm.SAM2VideoMasker(progress_callback=_on_sam2_progress)
-
     try:
-        session.video_masker.init_state(
-            session.video_dir,
-            online_mode=online_mode,
-            batch_size=batch_size,
-            offload_video_to_cpu=offload_video_to_cpu,
-            offload_state_to_cpu=offload_state_to_cpu,
+        create_masker_runtime(session).initialize(
+            MaskerSettings(
+                online_mode=online_mode, batch_size=batch_size,
+                offload_video_to_cpu=offload_video_to_cpu, offload_state_to_cpu=offload_state_to_cpu,
+            ),
             async_loading_frames=async_loading_frames,
             progress_callback=_on_sam2_progress,
         )
-        replay_annotation_prompts(session)
     except ValueError as error:
         raise OperationError(400, str(error)) from error
 
-    update_job(
-        stage="indexing_frames",
-        stage_label="Indexing video frames",
+    enter_stage(
+        "indexing_frames", "Indexing video frames",
         progress=0.85,
         message="SAM2 state initialized; indexing frame files",
     )
@@ -260,9 +245,8 @@ def initialize_video_state_from_resolved_input(
             or candidate_idx % report_every == 0
         )
         if should_report:
-            update_job(
-                stage="indexing_frames",
-                stage_label="Indexing video frames",
+            enter_stage(
+                "indexing_frames", "Indexing video frames",
                 progress=0.85 + (0.1 * (candidate_idx / total_candidates)) if total_candidates else 0.95,
                 current=len(indexed_frame_files),
                 total=total_candidates,
@@ -314,10 +298,9 @@ def start_video_init(request: VideoInitStateRequest):
     )
 
 def run_video_init_job(request: VideoInitStateRequest) -> dict[str, Any]:
-    update_job(
+    enter_stage(
+        "resolving_input", "Resolving input",
         status="running",
-        stage="resolving_input",
-        stage_label="Resolving input",
         progress=0.05,
         message="Resolving video path",
     )

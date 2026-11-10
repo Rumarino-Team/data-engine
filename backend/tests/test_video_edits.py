@@ -18,7 +18,8 @@ from sessions.cache import release_active_session
 from sessions.metadata import interactive_state_projection, write_session_metadata
 from video import service
 from video.mask_encoding import encode_live_mask_payload
-from video.prompts import restore_video_masker_from_prompt_events
+from video.prompts import create_masker_runtime
+from video.runtime import MaskerSettings
 from annotation_delta import apply_delta, same_annotations
 from support import BackendStateTestCase
 
@@ -487,9 +488,7 @@ class VideoEditTests(BackendStateTestCase):
     def test_box_prompts_survive_reconstruction_without_changing_revision(self):
         state.annotations.set_prompt(VideoPrompt(frame_idx=0, obj_id=1, box=[0, 0, 2, 2]))
         expected = state.annotations.snapshot()
-        restore_video_masker_from_prompt_events(
-            online_mode=True, batch_size=1, offload_video_to_cpu=True, offload_state_to_cpu=True,
-        )
+        create_masker_runtime(state).restore(MaskerSettings(True, 1, True, True))
         self.assertEqual(state.annotations.snapshot(), expected)
         self.masker.add_new_points_or_box.assert_called_once_with(
             frame_idx=0, obj_id=1, points=None, labels=None, clear_old_points=True, box=[0, 0, 2, 2],

@@ -1,17 +1,13 @@
-from typing import Optional
 from contextlib import contextmanager
-import logging
 from sessions.artifacts import sweep_unreferenced_artifacts
 from video.masks import override_pixels
 from core.errors import OperationError
 import sam2_video_masker as svm
-from core.jobs import update_job
 from core.runtime import cleanup_cuda_memory
 from core.state import BackendState, state
-from sessions.cache import bump_video_state_epoch
 from sessions.metadata import write_session_metadata
 from schemas.video import VideoPrompt
-from video.runtime import MaskerSettings, VideoMaskerRuntime
+from video.runtime import MaskerRestorationError, VideoMaskerRuntime
 
 def record_prompt_event(request: "VideoAddPointsOrBoxRequest"):
     event = VideoPrompt.model_validate({
@@ -46,40 +42,6 @@ def create_masker_runtime(session: BackendState) -> VideoMaskerRuntime:
     )
 
 
-def restore_video_masker_from_prompt_events(
-    *,
-    online_mode: bool,
-    batch_size: Optional[int],
-    offload_video_to_cpu: Optional[bool],
-    offload_state_to_cpu: Optional[bool],
-    increment_epoch: bool = True,
-    progress_stage_override: Optional[str] = None,
-    progress_label_override: Optional[str] = None,
-    progress_message_prefix: Optional[str] = None,
-) -> None:
-
-    if state.video_dir is None:
-        return
-
-    def _on_progress(stage: str, label: str, progress: Optional[float], message: str) -> None:
-        update_job(
-            stage=progress_stage_override or stage,
-            stage_label=progress_label_override or label,
-            progress=progress,
-            message=f"{progress_message_prefix}: {message}" if progress_message_prefix else message,
-        )
-
-    create_masker_runtime(state).restore(
-        MaskerSettings(
-            online_mode=online_mode, batch_size=batch_size,
-            offload_video_to_cpu=offload_video_to_cpu,
-            offload_state_to_cpu=offload_state_to_cpu,
-        ),
-        progress_callback=_on_progress,
-        increment_epoch=increment_epoch,
-    )
-
-
 @contextmanager
 def annotation_edit(*, restore_runtime: bool = True):
     """Stage accepted inputs and restore them when an edit fails.
@@ -104,14 +66,9 @@ def annotation_edit(*, restore_runtime: bool = True):
         if not restore_runtime:
             raise
         try:
-            state.video_masker.reset_state()
-            replay_annotation_prompts()
-        except Exception as recovery_error:
-            state.video_masker = None
-            bump_video_state_epoch()
-            logging.getLogger(__name__).exception("Prompt runtime recovery failed")
+            create_masker_runtime(state).rebuild_inputs()
+        except MaskerRestorationError as recovery_error:
             raise OperationError(
                 503, "The edit was rejected and the predictor could not be restored. Reload the video."
             ) from recovery_error
-        bump_video_state_epoch()
         raise

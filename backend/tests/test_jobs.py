@@ -93,6 +93,24 @@ class JobTests(BackendStateTestCase):
         self.assertEqual(serialized["batch_index"], 1)
         self.assertEqual(serialized["batch_count"], 4)
 
+    def test_entering_a_stage_clears_the_previous_stages_position(self):
+        release = threading.Event()
+        jobs.queue_long_job(
+            operation="video_init", stage="queued", stage_label="Queued", message="queued",
+            worker=lambda: (release.wait(1), {"ok": True})[1],
+        )
+        jobs.update_job(window_index=1, window_count=2, batch_current=8, batch_total=32, frame_idx=9)
+
+        jobs.enter_stage("saving", "Saving", message="saving", progress=0.9, total=5)
+        serialized = jobs.serialize_job()
+        release.set()
+
+        self.assertEqual((serialized["stage"], serialized["progress"], serialized["total"]), ("saving", 0.9, 5))
+        for field in ("current", "frame_idx", "window_index", "window_count", "batch_current", "batch_total"):
+            self.assertIsNone(serialized[field], field)
+        with self.assertRaises(TypeError):
+            jobs.enter_stage("saving", "Saving", message="saving", frame=1)
+
     def test_failed_worker_sets_failed_status(self):
         def fail():
             raise RuntimeError("boom")

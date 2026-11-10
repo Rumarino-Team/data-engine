@@ -17,6 +17,8 @@ class VideoMasker(Protocol):
     offload_video_to_cpu: bool
     offload_state_to_cpu: bool
 
+    def reset_state(self) -> None: ...
+
     def init_state(
         self, video_dir: str, *, online_mode: bool, batch_size: int | None,
         offload_video_to_cpu: bool | None, offload_state_to_cpu: bool | None,
@@ -50,12 +52,14 @@ class VideoMaskerRuntime:
     persist_session: Callable[[BackendState], None]
     release_memory: Callable[[], None]
 
-    def restore(
-        self, settings: MaskerSettings, *, progress_callback: ProgressCallback | None = None,
-        increment_epoch: bool = True,
+    def initialize(
+        self, settings: MaskerSettings, *, async_loading_frames: bool = False,
+        progress_callback: ProgressCallback | None = None,
     ) -> None:
-        if self.session.video_dir is None:
-            return
+        """Build the model if absent, load the session's frames and replay its accepted inputs.
+
+        Epoch and persistence stay with the caller: a new session publishes both itself.
+        """
         if self.session.video_masker is None:
             self.session.video_masker = self.create_masker(progress_callback=progress_callback)
         self.session.video_masker.init_state(
@@ -64,13 +68,36 @@ class VideoMaskerRuntime:
             batch_size=settings.batch_size,
             offload_video_to_cpu=settings.offload_video_to_cpu,
             offload_state_to_cpu=settings.offload_state_to_cpu,
-            async_loading_frames=False,
+            async_loading_frames=async_loading_frames,
             progress_callback=progress_callback,
         )
         self.replay_inputs(self.session)
+
+    def restore(
+        self, settings: MaskerSettings, *, progress_callback: ProgressCallback | None = None,
+        increment_epoch: bool = True,
+    ) -> None:
+        if self.session.video_dir is None:
+            return
+        self.initialize(settings, progress_callback=progress_callback)
         if increment_epoch:
             self.session.video_state_epoch += 1
             self.persist_session(self.session)
+
+    def rebuild_inputs(self) -> None:
+        """Reset the predictor and replay accepted inputs, e.g. after a rejected edit.
+
+        On failure the predictor is disabled, because it no longer matches accepted state.
+        """
+        try:
+            self.session.video_masker.reset_state()
+            self.replay_inputs(self.session)
+        except Exception as error:
+            self.session.video_masker = None
+            logging.getLogger(__name__).exception("Prompt runtime recovery failed")
+            raise MaskerRestorationError(str(error)) from error
+        finally:
+            self.session.video_state_epoch += 1
 
     def _settings_for_restoration(self) -> MaskerSettings | None:
         masker = self.session.video_masker
@@ -99,18 +126,14 @@ class VideoMaskerRuntime:
                 raise MaskerRestorationError(str(error)) from error
 
     @contextmanager
-    def suspended(self, *, progress_callback: ProgressCallback | None = None) -> Iterator[None]:
-        """Release SAM2 for another computation and restore it before returning.
+    def _restoring(
+        self, settings: MaskerSettings | None, progress_callback: ProgressCallback | None,
+    ) -> Iterator[None]:
+        """If computation fails, restoration is best effort and the original error wins.
 
-        If computation fails, restoration is best effort and the original error wins.
-        If computation succeeds, failed restoration prevents subsequent publication.
+        If computation succeeds, failed restoration raises MaskerRestorationError so the
+        caller does not publish results next to a predictor that no longer matches them.
         """
-        # Retain settings only: holding the previous masker would retain its weights.
-        settings = self._settings_for_restoration()
-        if self.session.video_masker is not None:
-            self.session.video_masker = None
-            self.session.video_state_epoch += 1
-            self.release_memory()
         try:
             yield
         except Exception:
@@ -118,3 +141,30 @@ class VideoMaskerRuntime:
             raise
         else:
             self._restore_after_suspension(settings, progress_callback, raise_on_error=True)
+
+    @contextmanager
+    def suspended(self, *, progress_callback: ProgressCallback | None = None) -> Iterator[None]:
+        """Release SAM2 for another computation and restore it before returning."""
+        # Retain settings only: holding the previous masker would retain its weights.
+        settings = self._settings_for_restoration()
+        if self.session.video_masker is not None:
+            self.session.video_masker = None
+            self.session.video_state_epoch += 1
+            self.release_memory()
+        with self._restoring(settings, progress_callback):
+            yield
+
+    @contextmanager
+    def borrowed(
+        self, settings: MaskerSettings, *, progress_callback: ProgressCallback | None = None,
+    ) -> Iterator[VideoMasker]:
+        """Lend the live masker to a computation that initializes it on other frames.
+
+        The session's own frames and accepted inputs are loaded back on exit, under the
+        same failure rules as `suspended`.
+        """
+        masker = self.session.video_masker
+        if masker is None:
+            raise ValueError("Video masker not active.")
+        with self._restoring(settings, progress_callback):
+            yield masker
