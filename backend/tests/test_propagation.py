@@ -15,6 +15,7 @@ from core.annotations import SessionAnnotations
 from schemas.video import VideoPropagateRequest
 from utils import build_empty_mask_manifest, load_mask_manifest, write_mask_manifest
 from video import propagation
+from video.propagation import propagation_batch_progress
 from video.masks import manifest_frame_payload, store_mask_override
 
 
@@ -113,6 +114,22 @@ class PartialPropagationTests(unittest.TestCase):
                     self.assertIsNone(state.video_masker)
                     self.assertEqual(state.mask_manifest_path, previous_path)
                     self.assertEqual(state.interactive_mask_files, previous_masks)
+
+
+
+class PropagationProgressTests(unittest.TestCase):
+    def test_batch_progress_follows_the_position_within_the_window(self):
+        for name, processed, total, expected in [
+            ("a full batch reaches its total", 31, 64, (32, 32, 1, 2)),
+            ("the second batch restarts the count", 32, 64, (1, 32, 2, 2)),
+            ("the final partial batch uses its own total", 38, 39, (7, 7, 2, 2)),
+        ]:
+            with self.subTest(name):
+                progress = propagation_batch_progress(
+                    processed_before_frame=processed, window_total_frames=total, batch_size=32)
+                self.assertEqual(
+                    (progress["batch_current"], progress["batch_total"],
+                     progress["batch_index"], progress["batch_count"]), expected)
 
 
 if __name__ == "__main__":

@@ -1,3 +1,4 @@
+"""The editing contract between a client and the backend: object lifecycle, preconditions and serialization."""
 from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
@@ -6,17 +7,123 @@ import threading
 import unittest
 from unittest.mock import patch
 
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core import jobs
+from core.annotations import SessionAnnotations
+from core.errors import OperationError
 from core.state import state
-from schemas.video import AnnotationPrecondition
+from pydantic import ValidationError
+from schemas.video import AnnotationPrecondition, VideoPrompt
 from sessions.metadata import write_session_metadata
+from annotation_delta import apply_delta, same_annotations
 from support import BackendStateTestCase
 from video import service
 
+VALID_UPDATE = {"label": "buoy", "color": "#ff0000"}
 
-class AnnotationPreconditionTests(BackendStateTestCase):
+
+class ObjectLifecycleTests(BackendStateTestCase):
+    def setUp(self):
+        super().setUp()
+        self.session_path = self.working_session(session_id="object-session", frames=())
+        self.client = self.make_client()
+
+    def session_objects(self):
+        annotations = json.loads((self.session_path / "session.json").read_text())["annotations"]
+        return sorted(annotations["objects"].values(), key=lambda obj: obj["id"])
+
+    def info(self):
+        return self.client.get("/video/info").json()["annotations"]
+
+    def test_create_allocates_defaults_and_update_preserves_id(self):
+        response = self.client.post("/video/objects")
+        self.assertEqual(response.status_code, 200)
+        snapshot = response.json()
+        self.assertEqual(snapshot["created_object_id"], 1)
+        obj = snapshot["annotation_delta"]["objects"]["1"]
+        self.assertEqual(obj["label"], "Object 1")
+        self.assertRegex(obj["color"], r"^#[0-9a-f]{6}$")
+        self.assertEqual(snapshot["session_id"], "object-session")
+        self.assertEqual(snapshot["annotation_delta"]["base_revision"], 0)
+        self.assertEqual(snapshot["annotation_delta"]["revision"], 1)
+        self.assertEqual(snapshot["annotation_delta"]["next_object_id"], 2)
+        before = self.info()
+        response = self.client.put("/video/objects/1", json={"label": "  buoy ", "color": "#ff0000"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["annotation_delta"]["revision"], 2)
+        self.assertEqual(self.session_objects(), [{"id": 1, "label": "buoy", "color": "#ff0000"}])
+        self.assertTrue(same_annotations(apply_delta(before, response.json()["annotation_delta"]), self.info()))
+
+    def test_invalid_updates_are_rejected_without_changing_state(self):
+        for object_id, body, status in [
+            (99, VALID_UPDATE, 404),  # an update can never create or resurrect an id
+            (1, {"label": "   ", "color": "#ff0000"}, 422),
+            (0, VALID_UPDATE, 422),
+        ]:
+            with self.subTest(object_id=object_id, body=body):
+                self.assertEqual(self.client.put(f"/video/objects/{object_id}", json=body).status_code, status)
+        self.assertEqual(state.annotations.objects, {})
+        self.assertEqual((state.annotations.revision, state.annotations.next_object_id), (0, 1))
+
+    def test_the_model_rejects_a_blank_label(self):
+        with self.assertRaises(ValidationError):
+            SessionAnnotations(objects={2: {"id": 2, "label": "", "color": "#00ff00"}})
+
+    def test_edits_without_an_active_session_are_rejected(self):
+        state.active_session_dir = None
+        for method, url, body in [("post", "/video/objects", None), ("put", "/video/objects/1", VALID_UPDATE)]:
+            with self.subTest(url=url):
+                self.assertEqual(getattr(self.client, method)(url, json=body).status_code, 409)
+        self.assertEqual(state.annotations.objects, {})
+
+    def test_allocation_survives_deletion_and_metadata_reload(self):
+        state.annotations = SessionAnnotations(next_object_id=8)
+        self.assertEqual(self.client.post("/video/objects").json()["created_object_id"], 8)
+        state.video_masker = self.make_masker()
+        self.assertEqual(self.client.post("/video/remove_object", params={"obj_id": 8}).status_code, 200)
+        metadata = json.loads((self.session_path / "session.json").read_text())
+        state.annotations = SessionAnnotations.model_validate(metadata["annotations"])
+        self.assertEqual(state.annotations.objects, {})
+        self.assertEqual(self.client.post("/video/objects").json()["created_object_id"], 9)
+
+    def test_relabel_response_carries_only_the_relabeled_object(self):
+        state.annotations.upsert_object({"id": 1, "label": "hand", "color": "#ff0000"})
+        state.annotations.upsert_object({"id": 2, "label": "cup", "color": "#00ff00"})
+        state.annotations.set_prompt(VideoPrompt(frame_idx=0, obj_id=2, points=[[1, 2]], labels=[1]))
+        state.annotations.take_delta(3)
+        before = state.annotations.snapshot()
+        snapshot = self.client.put("/video/objects/1", json={"label": "left hand", "color": "#ff0000"}).json()
+        delta = snapshot["annotation_delta"]
+        self.assertEqual(delta["revision"], 4)
+        self.assertEqual(list(delta["objects"]), ["1"])
+        self.assertEqual(delta["prompts"], [])
+        persisted = json.loads((self.session_path / "session.json").read_text())
+        self.assertTrue(same_annotations(apply_delta(before, delta), persisted["annotations"]))
+        self.assertNotIn("annotations", snapshot)
+        self.assertNotIn("frame_files", snapshot)
+
+    def test_deletion_removes_the_object_and_its_prompts_everywhere(self):
+        for obj_id in (1, 2):
+            self.client.post("/video/objects")
+            state.annotations.set_prompt(VideoPrompt(frame_idx=0, obj_id=obj_id, points=[[1, 2]], labels=[1]))
+        state.video_masker = self.make_masker()
+        before = self.info()
+        snapshot = self.client.post("/video/remove_object", params={"obj_id": 1}).json()
+        self.assertEqual(snapshot["session_id"], "object-session")
+        delta = snapshot["annotation_delta"]
+        self.assertEqual(delta["removed_objects"], [1])
+        self.assertEqual(delta["removed_prompts"], [[0, 1]])
+        self.assertEqual(delta["revision"], 5)
+        self.assertEqual(delta["next_object_id"], 3)
+        state.video_masker.remove_object.assert_called_once_with(1)
+        after = apply_delta(before, delta)
+        self.assertEqual(list(after["objects"]), ["2"])
+        self.assertEqual([prompt["obj_id"] for prompt in after["prompts"]], [2])
+        self.assertTrue(same_annotations(after, self.info()))
+        self.assertEqual([obj["id"] for obj in self.session_objects()], [2])
+
+
+class PreconditionTests(BackendStateTestCase):
     def setUp(self):
         super().setUp()
         state.active_session_dir = self.temp_dir()
@@ -76,8 +183,6 @@ class AnnotationPreconditionTests(BackendStateTestCase):
         self.assertEqual(state.annotations.revision, 1)
 
     def test_job_admission_captures_inputs_and_rejects_stale_worker(self):
-        from schemas.video import VideoPrompt
-        from core.errors import OperationError
         state.annotations.set_prompt(VideoPrompt(frame_idx=0, obj_id=1, points=[[1, 2]], labels=[1]))
         for route, module in [("/video/propagate_in_video", "video.propagation"),
                               ("/tracking/track_prompt_points", "tracking.prompt_tracking")]:
@@ -96,6 +201,7 @@ class AnnotationPreconditionTests(BackendStateTestCase):
 
     def test_two_concurrent_commands_from_same_revision_accept_only_one(self):
         barrier = threading.Barrier(2)
+
         def create():
             barrier.wait(timeout=5)
             return self.client.post("/video/objects", headers=self.headers()).status_code
@@ -111,18 +217,20 @@ class AnnotationPreconditionTests(BackendStateTestCase):
         entered = threading.Event()
         release = threading.Event()
         admission_attempted = threading.Event()
+
         def persist():
             entered.set()
             self.assertTrue(release.wait(timeout=5))
             self.assertFalse(jobs.is_job_active())
             write_session_metadata()
+
         def admit():
             admission_attempted.set()
             return jobs._start_job("video_init", stage="init", stage_label="Init", message="init")
         with ThreadPoolExecutor(max_workers=2) as pool:
             with patch.object(service, "write_session_metadata", side_effect=persist):
                 edit = pool.submit(service.create_object,
-                    AnnotationPrecondition(session_id="current", expected_revision=1))
+                                   AnnotationPrecondition(session_id="current", expected_revision=1))
                 self.assertTrue(entered.wait(timeout=5))
                 admission = pool.submit(admit)
                 self.assertTrue(admission_attempted.wait(timeout=5))
@@ -144,3 +252,7 @@ class AnnotationPreconditionTests(BackendStateTestCase):
         response = self.client.post("/video/objects", headers=self.headers())
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["created_object_id"], 2)
+
+
+if __name__ == "__main__":
+    unittest.main()
