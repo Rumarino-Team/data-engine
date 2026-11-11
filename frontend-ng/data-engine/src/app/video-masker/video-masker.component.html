@@ -277,6 +277,19 @@
             [disabled]="store.isInteractionBusy()"
           />
         </label>
+        <label
+          class="inline-checkbox-label"
+          title="Tracked points guide propagation but make it slower, roughly in proportion to how many keyframes they add."
+        >
+          Propagate With Tracked Points
+          <input
+            type="checkbox"
+            data-testid="propagate-with-tracked-points"
+            [checked]="store.propagationUseTrackedPoints()"
+            (change)="store.propagationUseTrackedPoints.set($any($event.target).checked)"
+            [disabled]="store.isInteractionBusy()"
+          />
+        </label>
         <div class="save-panel">
           <label class="save-controls">
             <span>Save Current Session</span>

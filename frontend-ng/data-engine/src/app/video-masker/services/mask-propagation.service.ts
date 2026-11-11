@@ -45,6 +45,7 @@ export class MaskPropagationService {
             {
               start_frame_idx: startFrameIdx,
               max_frame_num_to_track: endFrameIdx - startFrameIdx + 1,
+              use_tracked_points: this.store.propagationUseTrackedPoints(),
               include_masks_in_response: false,
               include_saved_mask_paths: false,
             },

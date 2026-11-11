@@ -47,10 +47,33 @@ describe('mask-propagation workflows', () => {
       {
         start_frame_idx: 1,
         max_frame_num_to_track: 2,
+        use_tracked_points: true,
         include_masks_in_response: false,
         include_saved_mask_paths: false,
       },
       { session_id: 'session-1', expected_revision: editor.store.annotationRevision() },
+    );
+  });
+
+  it.each([
+    ['sends use_tracked_points by default', undefined, true],
+    ['sends use_tracked_points false when the toggle is off', false, false],
+  ])('%s', async (_name, toggle, expected) => {
+    mockJob(
+      backendMock.propagateInVideo,
+      backendMock.getJob,
+      'mask_propagation',
+      { result: { video_segments: {}, saved_mask_paths: {}, video_segments_total_frames: 1 } },
+      'job-propagate',
+    );
+    editor.store.isInitialized.set(true);
+    editor.store.numFrames.set(5);
+    if (toggle !== undefined) editor.store.propagationUseTrackedPoints.set(toggle);
+
+    await editor.propagation.propagate();
+
+    expect(backendMock.propagateInVideo.mock.calls[0][0]).toEqual(
+      expect.objectContaining({ use_tracked_points: expected }),
     );
   });
 });
