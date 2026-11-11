@@ -209,6 +209,7 @@ class TrackingResultTests(BackendStateTestCase):
             frame_width=32,
             frame_height=32,
             keyframe_interval=2,
+            max_keyframes=100,
             max_points_per_object_per_frame=1,
         )
 
@@ -235,6 +236,7 @@ class TrackingResultTests(BackendStateTestCase):
             frame_width=64,
             frame_height=64,
             keyframe_interval=2,
+            max_keyframes=100,
             max_points_per_object_per_frame=16,
             excluded_frame_objects={(2, 1)},
         )
@@ -242,6 +244,34 @@ class TrackingResultTests(BackendStateTestCase):
         self.assertNotIn(0, batches)
         self.assertEqual(seeded_count, 1)
         self.assertEqual(seeded_frames, {4})
+
+    def guidance_over(self, frames):
+        return TrackingGuidance(points=[TrackedGuidancePoint(
+            obj_id=1, source_frame_idx=0, tracks=[[10, 10]] * frames, visibility=[True] * frames)])
+
+    def seeded_frames(self, frames, *, interval, cap, start=0):
+        _, _, seeded = self.guidance_over(frames).build_seed_batches(
+            range_start=start, range_end=frames - 1, frame_width=64, frame_height=64,
+            keyframe_interval=interval, max_keyframes=cap, max_points_per_object_per_frame=16)
+        return sorted(seeded)
+
+    def test_keyframes_follow_the_interval_while_they_stay_under_the_cap(self):
+        self.assertEqual(self.seeded_frames(21, interval=8, cap=16), [0, 8, 16, 20])
+
+    def test_a_long_range_gets_at_most_the_cap_evenly_spaced_with_both_ends(self):
+        frames = self.seeded_frames(923, interval=8, cap=16)
+        self.assertEqual(len(frames), 16)
+        self.assertEqual((frames[0], frames[-1]), (0, 922))
+        gaps = {later - earlier for earlier, later in zip(frames, frames[1:])}
+        self.assertLessEqual(max(gaps) - min(gaps), 1)
+
+    def test_the_cap_counts_from_the_start_of_a_custom_range(self):
+        frames = self.seeded_frames(300, interval=1, cap=5, start=100)
+        self.assertEqual(frames, [100, 150, 200, 249, 299])
+
+    def test_a_cap_of_one_seeds_only_the_first_frame_and_a_short_range_is_unaffected(self):
+        self.assertEqual(self.seeded_frames(300, interval=8, cap=1), [0])
+        self.assertEqual(self.seeded_frames(3, interval=1, cap=16), [0, 1, 2])
 
     def test_guidance_skips_bad_coordinate_values(self):
         guidance = TrackingGuidance(
@@ -261,6 +291,7 @@ class TrackingResultTests(BackendStateTestCase):
             frame_width=64,
             frame_height=64,
             keyframe_interval=1,
+            max_keyframes=100,
             max_points_per_object_per_frame=16,
         )
 

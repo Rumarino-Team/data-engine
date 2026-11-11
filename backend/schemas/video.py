@@ -53,6 +53,9 @@ class VideoPropagateRequest(BaseModel):
     online_mode: Optional[bool] = None
     use_tracked_points: bool = True
     tracked_point_keyframe_interval: int = Field(default=8, ge=1)
+    # Seeded keyframes slow every frame (measured: roughly 3 ms per keyframe on every frame), so a long range
+    # gets at most this many, evenly spaced, whatever the interval says.
+    max_tracked_keyframes: int = Field(default=16, ge=1)
     max_tracked_points_per_object_per_frame: int = Field(default=16, ge=1)
     include_masks_in_response: bool = False
     # Also write frame_XXXXX_masks.png copies of each frame with masks drawn on (served by /video/mask_frame).

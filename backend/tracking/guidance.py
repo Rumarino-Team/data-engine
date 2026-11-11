@@ -32,6 +32,7 @@ class TrackingGuidance:
         frame_width: int,
         frame_height: int,
         keyframe_interval: int,
+        max_keyframes: int,
         max_points_per_object_per_frame: int,
         excluded_frame_objects: Optional[set[tuple[int, int]]] = None,
     ) -> tuple[dict[int, dict[int, list[list[float]]]], int, set[int]]:
@@ -40,6 +41,13 @@ class TrackingGuidance:
         excluded_frame_objects = excluded_frame_objects or set()
         # The first and last frame of the range, and every `keyframe_interval` frames from the first.
         selected_frames = {int(range_start), int(range_end), *range(int(range_start), int(range_end) + 1, keyframe_interval)}
+        max_keyframes = max(1, int(max_keyframes))
+        if len(selected_frames) > max_keyframes:
+            # Every seeded keyframe slows every frame of the propagation, so a long range gets at most
+            # `max_keyframes` evenly spaced ones (both ends included) instead of one per interval.
+            span = int(range_end) - int(range_start)
+            selected_frames = {int(range_start)} if max_keyframes == 1 else {
+                int(range_start) + round(index * span / (max_keyframes - 1)) for index in range(max_keyframes)}
 
         batches: dict[int, dict[int, list[list[float]]]] = {}
         seeded_count = 0

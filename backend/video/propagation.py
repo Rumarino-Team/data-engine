@@ -201,6 +201,7 @@ def seed_tracked_points(run: PropagationRun, masker) -> None:
         frame_width=run.frame_width,
         frame_height=run.frame_height,
         keyframe_interval=request.tracked_point_keyframe_interval,
+        max_keyframes=request.max_tracked_keyframes,
         max_points_per_object_per_frame=request.max_tracked_points_per_object_per_frame,
         excluded_frame_objects=excluded,
     )
