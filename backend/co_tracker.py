@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Sequence, Tuple, Union
 
+from core.config import COTRACKER_REPO, COTRACKER_REVISION
+
 VIDEO_INPUT_RESO = (384, 512) # Resolution of the input video to the model
 DEFAULT_COTRACKER_MODEL = "cotracker3_online"
 # Full-resolution frames uploaded per resize step; bounds peak upload memory.
@@ -107,7 +109,7 @@ class CoTracker:
 
         # Use CoTracker's online model to keep tracking memory bounded.
         # This is independent of SAM2's online mode (video masking).
-        self.model = torch.hub.load("facebookresearch/co-tracker", model_name)
+        self.model = torch.hub.load(f"{COTRACKER_REPO}:{COTRACKER_REVISION}", model_name)
         self.model = self.model.to(self.device)
 
         # Increase support grid from default 6×6 (36 pts) to 10×10 (100 pts).

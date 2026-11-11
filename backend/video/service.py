@@ -29,7 +29,10 @@ from sessions.checkpoints import content_fingerprint, new_checkpoint_location, n
 from sessions.metadata import current_masks_dir, current_session_path, interactive_state_projection, load_session_metadata, persisted_session_fields, session_metadata_document
 from sessions.paths import path_is_relative_to, resolve_input_path, resolve_saved_session_layout, validate_video_input_path
 from video.io import copy_frames_directory_to_session, create_active_session, discard_working_session, extract_video_to_session_frames, open_checkpoint_as_working_copy
-from video.masks import mask_logits_to_2d_bool, store_mask_override, override_pixels, retain_interactive_masks, effective_mask_data
+from video.masks import (
+    mask_logits_to_2d_bool, store_mask_override, override_pixels, retain_interactive_masks, effective_mask_data,
+    validate_interactive_mask_references,
+)
 from video.manifest_cache import load_cached_mask_manifest
 from video.mask_encoding import encode_live_mask_payload
 from video.prompts import record_prompt_event, annotation_edit, create_masker_runtime
@@ -78,10 +81,11 @@ def open_saved_session(
         interactive_state = InteractiveState.model_validate(session_metadata.get("interactive_state") or {}).model_dump()
         for mask in annotations.mask_overrides:
             override_pixels(mask, session.active_session_dir)
+        interactive_mask_files = validate_interactive_mask_references(session_metadata.get("interactive_mask_files", {}))
     except (KeyError, ValidationError, ValueError) as error:
         raise OperationError(400, f"Invalid session annotations or editor state: {error}") from error
     session.annotations = annotations
-    session.interactive_mask_files = session_metadata.get("interactive_mask_files", {})
+    session.interactive_mask_files = interactive_mask_files
     session.session_metadata = persisted_session_fields(session_metadata)
     restored = {
         "annotations": session.annotations.snapshot(),

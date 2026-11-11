@@ -184,6 +184,44 @@ class SessionReplacementTests(BackendStateTestCase):
         service.discard_working_session(self.source)
         self.assertTrue(self.source.exists())
 
+    def hand_edited_checkpoint(self, **changes):
+        """A checkpoint whose session.json was edited by hand, with a readable file outside it to aim at."""
+        saved = self.root / "edited"
+        (saved / "frames").mkdir(parents=True)
+        (saved / "masks").mkdir()
+        (saved / "frames" / "00000.jpg").touch()
+        (self.root / "outside.json").write_text("{}")
+        metadata = json.loads(json.dumps(session_metadata_document(state)))
+        metadata.update(session_id="edited", checkpoint_id="edited-checkpoint", display_name="Edited")
+        metadata.update(changes)
+        (saved / "session.json").write_text(json.dumps(metadata))
+        return saved
+
+    def test_hand_edited_references_that_name_other_files_are_rejected_and_the_old_session_kept(self):
+        override = {"frame_idx": 0, "obj_id": 1, "artifact": "../../outside.json"}
+        for label, changes in (
+            ("interactive mask reference", {"interactive_mask_files": {"0": "../../outside.json"}}),
+            ("interactive mask frame key", {"interactive_mask_files": {"../0": "0" * 32 + ".json"}}),
+            ("interactive mask references that are not a map", {"interactive_mask_files": ["../../outside.json"]}),
+            ("mask override artifact", {"annotations": {**json.loads(json.dumps(session_metadata_document(state)))["annotations"],
+                                                         "mask_overrides": [override]}}),
+        ):
+            with self.subTest(label), patch.object(prompts.svm, "SAM2VideoMasker", return_value=self.masker()):
+                with self.assertRaises(OperationError) as failure:
+                    self.run_init(self.hand_edited_checkpoint(**changes))
+                self.assertEqual(failure.exception.status_code, 400)
+                self.assert_old_session()
+                shutil.rmtree(self.root / "edited")
+
+    def test_hand_edited_paths_in_metadata_are_never_followed_out_of_the_checkpoint(self):
+        saved = self.hand_edited_checkpoint(
+            mask_manifest_file="../../outside.json", latest_tracking_result_id="a" * 32,
+            latest_tracking_result_path="../../outside.json")
+        with patch.object(prompts.svm, "SAM2VideoMasker", return_value=self.masker()):
+            result = self.run_init(saved)
+        self.assertIsNone(state.mask_manifest_path)
+        self.assertNotIn("tracking_result", result)
+
     def test_saved_session_replay_failure_preserves_both_sessions_and_artifacts(self):
         saved = self.root / "saved"
         (saved / "frames").mkdir(parents=True)

@@ -4,7 +4,21 @@ from contextlib import nullcontext
 from functools import wraps
 from pathlib import Path
 from typing import Callable, Optional
-from sam2.sam2_video_predictor import SAM2VideoPredictor
+from core.config import SAM2_MODEL_ID, SAM2_MODEL_REVISION
+
+
+def load_predictor(device):
+    """SAM2's video predictor from the pinned Hugging Face revision.
+
+    `SAM2VideoPredictor.from_pretrained` downloads the latest revision and cannot be told otherwise, so this
+    fetches the pinned checkpoint itself and builds the predictor the same way `from_pretrained` does.
+    """
+    from huggingface_hub import hf_hub_download
+    from sam2.build_sam import HF_MODEL_ID_TO_FILENAMES, build_sam2_video_predictor
+
+    config_name, checkpoint_name = HF_MODEL_ID_TO_FILENAMES[SAM2_MODEL_ID]
+    checkpoint = hf_hub_download(repo_id=SAM2_MODEL_ID, filename=checkpoint_name, revision=SAM2_MODEL_REVISION)
+    return build_sam2_video_predictor(config_file=config_name, ckpt_path=checkpoint, device=device)
 
 
 def _with_inference_context(method):
@@ -69,7 +83,7 @@ class SAM2VideoMasker:
         else:
             _report("loading_sam2_model", "Loading SAM2 model", None, "Loading SAM2 model weights")
             with self._autocast_context():
-                self.predictor = SAM2VideoPredictor.from_pretrained("facebook/sam2.1-hiera-large", device=self.device)
+                self.predictor = load_predictor(self.device)
         _report("model_ready", "SAM2 model ready", 0.35, "SAM2 model loaded")
 
         self.inference_state = None

@@ -1,18 +1,21 @@
 """The API contract between the backend and the frontend, checked mechanically.
 
-Every route declares what it returns, and every field the frontend's type file names exists in the
-backend model it corresponds to, so a rename on either side fails a test instead of failing in the UI.
+Every route declares what it returns, every field the frontend's type file names exists in the
+backend model it corresponds to, so a rename on either side fails a test instead of failing in the UI,
+and every route that changes a session names the session and revision it acts on.
 """
 import re
 import sys
 import unittest
 from pathlib import Path
 
+from fastapi import Depends, FastAPI
 from fastapi.routing import APIRoute
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.factory import create_app
+from routers.video import annotation_precondition
 from schemas import responses
 from schemas.tracking import TrackingPromptPointsRequest
 from schemas.video import (
@@ -75,6 +78,25 @@ CORRESPONDING_MODELS = {
 }
 
 
+# Routes that change state but act on no accepted session: one starts a replacement session, the other only
+# discards a finished job's result. Anything else that writes must carry the session and revision (conventions).
+NO_PRECONDITION = {("POST", "/video/init_state"), ("POST", "/jobs/{job_id}/clear_result")}
+MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def depends_on(dependant, target) -> bool:
+    return any(child.call is target or depends_on(child, target) for child in dependant.dependencies)
+
+
+def mutating_routes_without_precondition(app: FastAPI) -> list[str]:
+    return sorted(
+        f"{method} {route.path}"
+        for route in app.routes if isinstance(route, APIRoute)
+        for method in route.methods & MUTATING_METHODS
+        if (method, route.path) not in NO_PRECONDITION and not depends_on(route.dependant, annotation_precondition)
+    )
+
+
 def typescript_interfaces(source: str) -> dict[str, set[str]]:
     """The fields each exported interface declares itself (inherited ones are checked on the parent)."""
     interfaces = {}
@@ -90,6 +112,16 @@ class ApiContractTests(BackendStateTestCase):
         undeclared = [f"{sorted(route.methods)} {route.path}" for route in routes
                       if route.response_model is None and route.path not in FILE_ROUTES]
         self.assertEqual(undeclared, [], "Routes without a response model: " + ", ".join(undeclared))
+
+    def test_every_route_that_changes_a_session_names_the_session_and_revision_it_acts_on(self):
+        self.assertEqual(mutating_routes_without_precondition(create_app(self.ctx)), [])
+
+    def test_the_precondition_check_would_notice_an_unprotected_route(self):
+        app = FastAPI()
+        app.post("/unprotected")(lambda: None)
+        app.put("/protected")(lambda precondition=Depends(annotation_precondition): None)
+        app.get("/read")(lambda: None)
+        self.assertEqual(mutating_routes_without_precondition(app), ["POST /unprotected"])
 
     @unittest.skipUnless(FRONTEND_TYPES.is_file(), "the frontend source is not next to the backend")
     def test_every_field_the_frontend_names_exists_in_the_backend_models(self):

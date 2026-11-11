@@ -36,7 +36,8 @@ def resolve_input_path(path_value: str, expect_dir: Optional[bool] = None) -> Pa
     if not normalized:
         raise OperationError(400, "Path cannot be empty.")
 
-    expanded = Path(os.path.expandvars(os.path.expanduser(normalized)))
+    # Only `~` is expanded: environment variables in a request path are never read.
+    expanded = Path(os.path.expanduser(normalized))
 
     if expanded.is_absolute():
         candidate_paths = [expanded.resolve()]

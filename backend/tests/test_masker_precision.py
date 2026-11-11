@@ -63,7 +63,7 @@ class MaskerPrecisionTests(unittest.TestCase):
     def make_masker(self, device):
         predictor = PrecisionPredictor(device)
         with patch("sam2_video_masker.torch.cuda.is_available", return_value=device == "cuda"), \
-                patch("sam2_video_masker.SAM2VideoPredictor.from_pretrained", return_value=predictor):
+                patch("sam2_video_masker.load_predictor", return_value=predictor):
             masker = SAM2VideoMasker()
         with tempfile.TemporaryDirectory() as directory:
             masker.init_state(directory)

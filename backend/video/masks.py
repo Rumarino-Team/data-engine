@@ -112,6 +112,20 @@ def retain_interactive_masks(session: BackendState, frame_idx: int, obj_ids: lis
     session.interactive_mask_files[str(frame_idx)] = artifact_name
 
 
+# Interactive mask artifacts are named by a uuid; session.json is hand-editable, so a reference is never a path.
+INTERACTIVE_ARTIFACT_NAME = re.compile(r"[0-9a-f]{32}\.json")
+
+
+def validate_interactive_mask_references(references: Any) -> dict[str, str]:
+    """The frame -> artifact map of a saved session, or ValueError when any entry could name another file."""
+    if not isinstance(references, dict):
+        raise ValueError("Interactive mask references must be an object.")
+    for frame, name in references.items():
+        if not str(frame).isdigit() or not isinstance(name, str) or not INTERACTIVE_ARTIFACT_NAME.fullmatch(name):
+            raise ValueError(f"Invalid interactive mask reference for frame {frame}.")
+    return references
+
+
 @lru_cache(maxsize=1)
 def _read_interactive_mask_file(path: Path) -> dict[str, Any]:
     # UUID artifacts are immutable. Keep their cache separate from the propagation manifest.
@@ -124,7 +138,7 @@ def load_interactive_masks(session: BackendState, frame_idx: int) -> dict[str, A
     artifact_name = session.interactive_mask_files.get(str(frame_idx))
     if artifact_name is None:
         return {}
-    if not isinstance(artifact_name, str) or not re.fullmatch(r"[0-9a-f]{32}\.json", artifact_name):
+    if not isinstance(artifact_name, str) or not INTERACTIVE_ARTIFACT_NAME.fullmatch(artifact_name):
         raise ValueError("Invalid interactive mask artifact reference.")
     masks_dir = current_masks_dir(session)
     if masks_dir is None:
