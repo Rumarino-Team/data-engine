@@ -14,7 +14,7 @@ from pydantic import ValidationError
 from schemas.video import AnnotationPrecondition, VideoPrompt
 from sessions.metadata import session_metadata_document
 from annotation_delta import apply_delta, same_annotations
-from support import BackendStateTestCase
+from support import SessionStateTestCase
 from video import service
 
 VALID_UPDATE = {"label": "buoy", "color": "#ff0000"}
@@ -38,7 +38,7 @@ class PositivePointTests(unittest.TestCase):
         self.assertEqual({p.key for p in points}, annotations.positive_prompt_keys())
 
 
-class ObjectLifecycleTests(BackendStateTestCase):
+class ObjectLifecycleTests(SessionStateTestCase):
     def setUp(self):
         super().setUp()
         self.session_path = self.working_session(session_id="object-session", frames=())
@@ -140,7 +140,7 @@ class ObjectLifecycleTests(BackendStateTestCase):
         self.assertEqual([obj["id"] for obj in self.session_objects()], [2])
 
 
-class PreconditionTests(BackendStateTestCase):
+class PreconditionTests(SessionStateTestCase):
     def setUp(self):
         super().setUp()
         state.active_session_dir = self.temp_dir()

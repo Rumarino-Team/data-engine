@@ -7,15 +7,15 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core.errors import OperationError
-from core.state import BackendState
+from core.state import SessionState
 from support import state
 from schemas.video import VideoInitStateRequest
 from sessions.metadata import session_metadata_document
-from support import BackendStateTestCase
+from support import SessionStateTestCase
 from video import prompts, service
 
 
-class SessionReplacementTests(BackendStateTestCase):
+class SessionReplacementTests(SessionStateTestCase):
     def setUp(self):
         super().setUp()
         self.root = self.temp_dir()
@@ -63,7 +63,7 @@ class SessionReplacementTests(BackendStateTestCase):
             with self.subTest(name), self.assertRaises(OperationError) as failure:
                 service.initialize_video_state_from_resolved_input(
                     path, online_mode=True, batch_size=1, offload_video_to_cpu=True, offload_state_to_cpu=True,
-                    async_loading_frames=False, session=BackendState(), job=self.job_handle())
+                    async_loading_frames=False, session=SessionState(), job=self.job_handle())
             self.assertEqual(failure.exception.status_code, 400)
             self.assertIn(expected, failure.exception.message)
         self.assertFalse((self.root / "candidates").exists())

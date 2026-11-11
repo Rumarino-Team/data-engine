@@ -12,7 +12,7 @@ import logging
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
-from core.state import BackendState
+from core.state import SessionState
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ def _manifest_overlays(manifest_path: str) -> frozenset[str]:
     stat = Path(manifest_path).stat()
     return _read_manifest_overlays(manifest_path, stat.st_mtime_ns, stat.st_size)
 
-def referenced_artifacts(session: BackendState) -> Optional[set[str]]:
+def referenced_artifacts(session: SessionState) -> Optional[set[str]]:
     """Session-relative paths the session's accepted state names; None when that cannot be determined."""
     refs = {f"masks/overrides/{mask.artifact}" for mask in session.annotations.mask_overrides}
     refs.update(f"masks/interactive/{name}" for name in session.interactive_mask_files.values() if isinstance(name, str))
@@ -66,7 +66,7 @@ def remove_artifacts(root: Path, relatives: set[str]) -> None:
         _unlink(path)
         _remove_empty_overlay_dir(path.parent)
 
-def reclaim_superseded_artifacts(session: BackendState) -> None:
+def reclaim_superseded_artifacts(session: SessionState) -> None:
     """After a commit: delete what the previous commit named and this one does not."""
     if session.active_session_dir is None:
         return
@@ -79,7 +79,7 @@ def reclaim_superseded_artifacts(session: BackendState) -> None:
     except Exception:
         logger.warning("Unable to reclaim superseded session artifacts", exc_info=True)
 
-def sweep_unreferenced_artifacts(session: BackendState) -> None:
+def sweep_unreferenced_artifacts(session: SessionState) -> None:
     """Full scan for files no accepted state names: leftovers of rejected edits and of opened checkpoints."""
     if session.active_session_dir is None:
         return

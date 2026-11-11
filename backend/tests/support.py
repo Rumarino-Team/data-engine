@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.factory import create_app
 from core.context import AppContext, SessionManager
 from core.jobs import JobHandle, JobManager
-from core.state import BackendState
+from core.state import SessionState
 from sessions.artifacts import reclaim_superseded_artifacts
 
 _active: Optional[AppContext] = None
@@ -41,20 +41,20 @@ class _ActiveSession:
 state = _ActiveSession()
 
 
-class BackendStateFixtures:
+class SessionStateFixtures:
     """Mixin for TestCase and IsolatedAsyncioTestCase: isolated `state`, idle jobs, temp dirs, API client."""
 
     ctx: Optional[AppContext] = None
 
-    def reset_backend_state(self, **fields: Any) -> BackendState:
+    def reset_backend_state(self, **fields: Any) -> SessionState:
         """Start from a fresh session and idle jobs. The first call creates this test's context; later calls
         (a table test starting over) reset it in place so clients already bound to it stay valid."""
         global _active
         if getattr(self, "ctx", None) is None:
-            self.ctx = _active = AppContext(SessionManager(BackendState(**fields)))
+            self.ctx = _active = AppContext(SessionManager(SessionState(**fields)))
             self.addCleanup(_deactivate)
         else:
-            self.ctx.sessions.current = BackendState(**fields)
+            self.ctx.sessions.current = SessionState(**fields)
             self.ctx.jobs = JobManager(self.ctx.sessions.lock)
         return self.ctx.session
 
@@ -127,7 +127,7 @@ def _deactivate() -> None:
     _active = None
 
 
-class BackendStateTestCase(BackendStateFixtures, unittest.TestCase):
+class SessionStateTestCase(SessionStateFixtures, unittest.TestCase):
     def setUp(self):
         super().setUp()
         self.reset_backend_state()

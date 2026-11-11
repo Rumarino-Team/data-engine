@@ -4,7 +4,7 @@ from typing import Callable, Optional
 import cv2
 import numpy as np
 from core.config import IMAGE_EXTENSIONS, SESSION_CACHE_ROOT
-from core.state import BackendState
+from core.state import SessionState
 from sessions.checkpoints import clone_session_directory
 
 def load_video_frames_as_numpy(video_dir_path: Path, frame_file_names: list[str]) -> np.ndarray:
@@ -31,7 +31,7 @@ def link_or_copy_file(source_path: Path, target_path: Path) -> None:
         except OSError:
             shutil.copy2(source_path, target_path)
 
-def create_active_session(source_path: Path, *, session: BackendState) -> Path:
+def create_active_session(source_path: Path, *, session: SessionState) -> Path:
 
     SESSION_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
     session_id = uuid.uuid4().hex
@@ -55,7 +55,7 @@ def discard_working_session(session_dir: Optional[Path]) -> None:
         # Best effort; anything left behind is removed by the startup sweep.
         logging.getLogger(__name__).warning("Unable to remove working session %s", session_dir, exc_info=True)
 
-def open_checkpoint_as_working_copy(checkpoint_dir: Path, *, session: BackendState) -> Path:
+def open_checkpoint_as_working_copy(checkpoint_dir: Path, *, session: SessionState) -> Path:
     """Edits and generated results go to a fresh working directory; the checkpoint is never written."""
     SESSION_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
     session_id = uuid.uuid4().hex

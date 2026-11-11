@@ -15,10 +15,10 @@ from tracking.results import (
     save_prompt_tracking_result,
 )
 from tracking.guidance import TrackingGuidance, TrackedGuidancePoint, load_latest_tracking_guidance
-from support import BackendStateTestCase, commit_session
+from support import SessionStateTestCase, commit_session
 
 
-class TrackingResultTests(BackendStateTestCase):
+class TrackingResultTests(SessionStateTestCase):
     def setUp(self):
         super().setUp()
         self.session_path = self.temp_dir()

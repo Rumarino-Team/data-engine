@@ -5,11 +5,11 @@ from typing import Any, Callable, Iterator
 
 from core.errors import OperationError
 from core.jobs import JobHandle, JobManager, capture_job_inputs
-from core.state import BackendState
+from core.state import SessionState
 from schemas.video import AnnotationPrecondition
 
 
-def validate_annotation_precondition(session: BackendState, precondition: AnnotationPrecondition) -> None:
+def validate_annotation_precondition(session: SessionState, precondition: AnnotationPrecondition) -> None:
     """The client's edit must target the session and revision it last saw."""
     if session.active_session_dir is None or precondition.session_id != session.active_session_id:
         raise OperationError(409, "The target session is no longer active. Refresh annotations.")
@@ -21,12 +21,12 @@ class SessionManager:
     """Owns the active session. Replacing it is one reference swap; whoever holds the old one keeps a
     consistent (now unreachable) session instead of a half-overwritten one."""
 
-    def __init__(self, session: BackendState | None = None) -> None:
-        self.current = session if session is not None else BackendState()
+    def __init__(self, session: SessionState | None = None) -> None:
+        self.current = session if session is not None else SessionState()
         # Foreground edits, snapshots, session replacement and job admission all take this lock.
         self.lock = threading.RLock()
 
-    def replace(self, candidate: BackendState) -> None:
+    def replace(self, candidate: SessionState) -> None:
         """Make `candidate` the active session; the caller holds `lock`."""
         self.current = candidate
 
@@ -39,7 +39,7 @@ class AppContext:
         self.jobs = jobs if jobs is not None else JobManager(self.sessions.lock)
 
     @property
-    def session(self) -> BackendState:
+    def session(self) -> SessionState:
         return self.sessions.current
 
     @property
@@ -47,7 +47,7 @@ class AppContext:
         return self.sessions.lock
 
     @contextmanager
-    def edit(self, precondition: AnnotationPrecondition | None = None) -> Iterator[BackendState]:
+    def edit(self, precondition: AnnotationPrecondition | None = None) -> Iterator[SessionState]:
         """Serialize a synchronous mutation of the session and yield it; refused while a job runs.
         With a precondition, the edit must also target the session and revision the client last saw.
         Never suspend/await inside this block."""

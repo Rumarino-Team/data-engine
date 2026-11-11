@@ -8,7 +8,7 @@ import torch
 from core.errors import OperationError
 
 if TYPE_CHECKING:
-    from core.state import BackendState
+    from core.state import SessionState
 
 logger = logging.getLogger(__name__)
 _UNSET = object()
@@ -215,7 +215,7 @@ class JobManager:
 
 
 
-def capture_job_inputs(session: "BackendState", operation: str) -> dict[str, Any]:
+def capture_job_inputs(session: "SessionState", operation: str) -> dict[str, Any]:
     return {
         "session_id": session.active_session_id,
         "input_revision": session.annotations.revision,
@@ -224,7 +224,7 @@ def capture_job_inputs(session: "BackendState", operation: str) -> dict[str, Any
     }
 
 
-def validate_job_inputs(session: "BackendState", inputs: dict[str, Any], operation: str) -> None:
+def validate_job_inputs(session: "SessionState", inputs: dict[str, Any], operation: str) -> None:
     current = capture_job_inputs(session, operation)
     if inputs["session_id"] != current["session_id"] or inputs["dependencies"] != current["dependencies"]:
         raise OperationError(409, "Job inputs are no longer current.")

@@ -21,7 +21,7 @@ from video.mask_encoding import encode_live_mask_payload
 from video.prompts import create_masker_runtime
 from video.runtime import MaskerSettings
 from annotation_delta import apply_delta, same_annotations
-from support import BackendStateTestCase
+from support import SessionStateTestCase
 
 
 OBJECT = {"id": 1, "label": "Hand", "color": "#ff0000"}
@@ -32,7 +32,7 @@ REMOVE = ("remove_object", {"obj_id": 1})
 NEW_POINT = {**PROMPT, "points": [[8, 9]]}
 
 
-class VideoEditTests(BackendStateTestCase):
+class VideoEditTests(SessionStateTestCase):
     def setUp(self):
         super().setUp()
         self.root = self.temp_dir()

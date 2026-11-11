@@ -5,7 +5,7 @@ from typing import Any, Callable, Protocol
 
 import numpy as np
 
-from core.state import BackendState
+from core.state import SessionState
 
 
 class VideoTracker(Protocol):
@@ -31,7 +31,7 @@ class VideoTrackerRuntime:
     """Caller serializes mutations. The tracker holds model weights only, so unlike the masker
     there are no accepted inputs to replay and nothing to restore after it is released."""
 
-    session: BackendState
+    session: SessionState
     create_tracker: TrackerFactory
     release_memory: Callable[[], None]
 

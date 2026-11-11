@@ -4,7 +4,7 @@ from typing import Any, Optional
 
 import numpy as np
 
-from core.state import BackendState
+from core.state import SessionState
 from sessions.metadata import current_session_path
 from tracking.results import current_tracking_result
 from utils import load_mask_manifest
@@ -90,7 +90,7 @@ class TrackingGuidance:
         return batches, seeded_count, seeded_frames
 
 
-def _latest_tracking_result_path(session: BackendState, session_path: Path) -> Optional[Path]:
+def _latest_tracking_result_path(session: SessionState, session_path: Path) -> Optional[Path]:
     relative_path = session.session_metadata.get("latest_tracking_result_path")
     if not relative_path:
         return None
@@ -102,7 +102,7 @@ def _latest_tracking_result_path(session: BackendState, session_path: Path) -> O
     return result_path
 
 
-def load_latest_tracking_guidance(session: BackendState, *, num_frames: int) -> TrackingGuidance:
+def load_latest_tracking_guidance(session: SessionState, *, num_frames: int) -> TrackingGuidance:
     session_path = current_session_path(session)
     if session_path is None:
         return TrackingGuidance(points=[], skipped_reason="No active session for tracking guidance.")

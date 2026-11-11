@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from support import state
 from core.annotations import SessionAnnotations
 from core.errors import OperationError
-from support import BackendStateTestCase
+from support import SessionStateTestCase
 from core.runtime import is_out_of_memory
 from tracking.prompt_tracking import run_prompt_tracking_job, track_in_batches, track_prompt_queries
 from tracking.runtime import VideoTrackerRuntime
@@ -43,7 +43,7 @@ class _FakeTracker:
 
 
 
-class PromptTrackingStatusTests(BackendStateTestCase):
+class PromptTrackingStatusTests(SessionStateTestCase):
     def setUp(self):
         super().setUp()
         self.tmp_dir = str(self.temp_dir())

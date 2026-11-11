@@ -4,7 +4,7 @@ from typing import Any, Optional
 from core.annotations import SessionAnnotations
 
 @dataclass
-class BackendState:
+class SessionState:
     video_masker: Optional[Any] = None
     tracker: Optional[Any] = None
     video_dir: Optional[str] = None

@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from core.state import BackendState
+from core.state import SessionState
 from tracking.runtime import VideoTrackerRuntime
 
 
@@ -15,7 +15,7 @@ def fake_tracker(model_name):
 
 class VideoTrackerRuntimeTests(unittest.TestCase):
     def make_runtime(self, tracker=None):
-        session = BackendState(tracker=tracker)
+        session = SessionState(tracker=tracker)
         created = []
 
         def create(*, model_name):

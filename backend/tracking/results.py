@@ -5,7 +5,7 @@ from typing import Any
 
 from core.annotations import tracked_prompt_keys
 from core.errors import OperationError
-from core.state import BackendState
+from core.state import SessionState
 from core.jobs import utc_now_iso
 from sessions.artifacts import reclaim_superseded_artifacts
 from sessions.metadata import current_session_path
@@ -30,7 +30,7 @@ def _tracking_result_path(session_path: Path, result_id: str) -> Path:
 
 
 def save_prompt_tracking_result(
-    session: BackendState,
+    session: SessionState,
     *,
     model_name: str,
     num_points: int,
@@ -90,7 +90,7 @@ def save_prompt_tracking_result(
     return {"result_id": result_id, "path": str(result_path), "summary": summary}
 
 
-def load_prompt_tracking_result(session: BackendState, result_id: str) -> dict[str, Any]:
+def load_prompt_tracking_result(session: SessionState, result_id: str) -> dict[str, Any]:
     normalized_result_id = _validate_result_id(result_id)
     session_path = current_session_path(session)
     if session_path is None:
@@ -114,7 +114,7 @@ def load_prompt_tracking_result(session: BackendState, result_id: str) -> dict[s
     return current_tracking_result(session, result)
 
 
-def current_tracking_result(session: BackendState, result: dict[str, Any]) -> dict[str, Any]:
+def current_tracking_result(session: SessionState, result: dict[str, Any]) -> dict[str, Any]:
     """One validity projection for display, guidance and session restoration."""
     if (result.get("session_id") != session.active_session_id or
             result.get("num_frames") != len(session.video_frame_files)):
@@ -131,7 +131,7 @@ def current_tracking_result(session: BackendState, result: dict[str, Any]) -> di
             "visibility": [visibility[i] for i in indices]}
 
 
-def tracking_validity(session: BackendState) -> dict[str, Any] | None:
+def tracking_validity(session: SessionState) -> dict[str, Any] | None:
     result_id = session.session_metadata.get("latest_tracking_result_id")
     summary = session.session_metadata.get("latest_tracking_result_summary", {})
     if (not result_id or summary.get("session_id") != session.active_session_id or
@@ -142,7 +142,7 @@ def tracking_validity(session: BackendState) -> dict[str, Any] | None:
             if point["obj_id"] in session.annotations.objects and tracked_prompt_keys([point])[0] in keys]}
 
 
-def restored_tracking_result_payload(session: BackendState, session_path: Path, session_metadata: dict[str, Any]) -> dict[str, Any] | None:
+def restored_tracking_result_payload(session: SessionState, session_path: Path, session_metadata: dict[str, Any]) -> dict[str, Any] | None:
     result_id = session_metadata.get("latest_tracking_result_id")
     relative_path = session_metadata.get("latest_tracking_result_path")
     if not result_id or not relative_path:

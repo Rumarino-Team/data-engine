@@ -7,7 +7,7 @@ from core.context import AppContext
 from core.errors import OperationError
 from core.jobs import JobHandle, capture_job_inputs, validate_job_inputs
 from core.runtime import cleanup_cuda_memory, is_out_of_memory
-from core.state import BackendState
+from core.state import SessionState
 from schemas.responses import PropagationResult
 from schemas.video import VideoPropagateRequest
 from sessions.checkpoints import saved_state
@@ -54,7 +54,7 @@ def start_propagation(ctx: AppContext, request: VideoPropagateRequest, precondit
 @dataclass
 class PropagationRun:
     """Everything one propagation job shares between its steps."""
-    session: BackendState
+    session: SessionState
     request: VideoPropagateRequest
     job: JobHandle
     settings: MaskerSettings
@@ -99,7 +99,7 @@ class PropagationRun:
         )
 
 
-def plan_propagation(session: BackendState, request: VideoPropagateRequest) -> tuple[MaskerSettings, int, int]:
+def plan_propagation(session: SessionState, request: VideoPropagateRequest) -> tuple[MaskerSettings, int, int]:
     """Check the session can propagate; return the settings to use and the frame range to cover."""
     if session.video_masker is None:
         raise OperationError(400, "Video masker not active.")
@@ -136,7 +136,7 @@ def plan_propagation(session: BackendState, request: VideoPropagateRequest) -> t
     return settings, start_frame_idx, end_frame_idx
 
 
-def open_run(session: BackendState, request: VideoPropagateRequest, job: JobHandle, inputs: dict[str, Any]) -> PropagationRun:
+def open_run(session: SessionState, request: VideoPropagateRequest, job: JobHandle, inputs: dict[str, Any]) -> PropagationRun:
     """Plan the job and prepare its outputs: the manifest to fill in and the tracked-point guidance."""
     settings, start_frame_idx, end_frame_idx = plan_propagation(session, request)
     expected_total_frames = end_frame_idx - start_frame_idx + 1
@@ -275,7 +275,7 @@ def propagate_range(run: PropagationRun, masker) -> None:
     run.report("propagating_masks", "Propagating masks", "Finished propagating", frame_idx=run.end_frame_idx)
 
 
-def publish_run(ctx: AppContext, run: PropagationRun, inputs: dict[str, Any]) -> BackendState:
+def publish_run(ctx: AppContext, run: PropagationRun, inputs: dict[str, Any]) -> SessionState:
     """Accept the manifest as the session's current result, replacing the frames it re-processed."""
     run.job.enter_stage(
         "saving_manifest", "Saving manifest",
@@ -292,7 +292,7 @@ def publish_run(ctx: AppContext, run: PropagationRun, inputs: dict[str, Any]) ->
     return session
 
 
-def propagation_result(run: PropagationRun, inputs: dict[str, Any], session: BackendState) -> dict[str, Any]:
+def propagation_result(run: PropagationRun, inputs: dict[str, Any], session: SessionState) -> dict[str, Any]:
     request, settings = run.request, run.settings
     seeded = run.tracked_points_seeded
     guidance = run.guidance

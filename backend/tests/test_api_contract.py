@@ -30,7 +30,7 @@ from schemas.video import (
     VideoPropagateRequest,
     VideoSaveRequest,
 )
-from support import BackendStateTestCase
+from support import SessionStateTestCase
 
 FRONTEND_TYPES = Path(__file__).resolve().parents[2] / "frontend-ng/data-engine/src/app/services/backend-api.types.ts"
 
@@ -105,7 +105,7 @@ def typescript_interfaces(source: str) -> dict[str, set[str]]:
     return interfaces
 
 
-class ApiContractTests(BackendStateTestCase):
+class ApiContractTests(SessionStateTestCase):
     def test_every_json_route_declares_what_it_returns(self):
         routes = [route for route in create_app(self.ctx).routes if isinstance(route, APIRoute)]
         self.assertGreater(len(routes), 15)

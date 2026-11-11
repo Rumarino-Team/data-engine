@@ -4,12 +4,12 @@ from typing import Any, Iterator
 
 from core.context import AppContext
 from core.jobs import validate_job_inputs
-from core.state import BackendState
+from core.state import SessionState
 from sessions.artifacts import reclaim_superseded_artifacts, sweep_unreferenced_artifacts
 
 
 @contextmanager
-def publish_results(ctx: AppContext, inputs: dict[str, Any], operation: str) -> Iterator[BackendState]:
+def publish_results(ctx: AppContext, inputs: dict[str, Any], operation: str) -> Iterator[SessionState]:
     """Hold the session lock and accept a job's results only if the inputs it ran on are still current.
 
     If publishing fails (or the inputs went stale), the references it may have changed are restored and

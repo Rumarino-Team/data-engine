@@ -6,7 +6,7 @@ from pathlib import Path
 import logging, re
 
 if TYPE_CHECKING:
-    from core.state import BackendState
+    from core.state import SessionState
     from schemas.video import InteractiveMaskRLE, MaskOverride
 import numpy as np
 from video.mask_encoding import encode_mask_payload, encode_live_mask_payload
@@ -94,7 +94,7 @@ def override_payload(ref: "MaskOverride", session_path: Path | None) -> dict[str
     return _load_override(ref, session_path)[1]
 
 
-def retain_interactive_masks(session: BackendState, frame_idx: int, obj_ids: list[int], encoded_masks: list[dict]) -> None:
+def retain_interactive_masks(session: SessionState, frame_idx: int, obj_ids: list[int], encoded_masks: list[dict]) -> None:
     from sessions.metadata import current_masks_dir
     from utils import write_mask_manifest
     masks_dir = current_masks_dir(session)
@@ -133,7 +133,7 @@ def _read_interactive_mask_file(path: Path) -> dict[str, Any]:
     return load_mask_manifest(path)
 
 
-def load_interactive_masks(session: BackendState, frame_idx: int) -> dict[str, Any]:
+def load_interactive_masks(session: SessionState, frame_idx: int) -> dict[str, Any]:
     from sessions.metadata import current_masks_dir
     artifact_name = session.interactive_mask_files.get(str(frame_idx))
     if artifact_name is None:
@@ -146,7 +146,7 @@ def load_interactive_masks(session: BackendState, frame_idx: int) -> dict[str, A
     return _read_interactive_mask_file(masks_dir / "interactive" / artifact_name)
 
 
-def effective_mask_data(session: BackendState, frame_idx: int) -> dict[str, Any]:
+def effective_mask_data(session: SessionState, frame_idx: int) -> dict[str, Any]:
     """One authoritative frame: explicit input > interactive result > propagation.
 
     Empty masks are present values, so they suppress lower-precedence sources.

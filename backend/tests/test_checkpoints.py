@@ -12,13 +12,13 @@ from core.errors import OperationError
 from support import state
 from sessions import checkpoints
 from support import commit_session
-from support import BackendStateTestCase
+from support import SessionStateTestCase
 from video import service
 
 OBJECT = {"id": 1, "label": "Hand", "color": "#ff0000"}
 
 
-class CheckpointTests(BackendStateTestCase):
+class CheckpointTests(SessionStateTestCase):
     def setUp(self):
         super().setUp()
         self.root = self.temp_dir()

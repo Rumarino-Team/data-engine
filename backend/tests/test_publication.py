@@ -9,12 +9,12 @@ from core.errors import OperationError
 from core.jobs import capture_job_inputs
 from sessions import artifacts
 from sessions.publication import publish_results
-from support import BackendStateTestCase, state
+from support import SessionStateTestCase, state
 
 OBJECT = {"id": 1, "label": "Hand", "color": "#ff0000"}
 
 
-class PublishResultsTests(BackendStateTestCase):
+class PublishResultsTests(SessionStateTestCase):
     def setUp(self):
         super().setUp()
         self.session = self.working_session(session_id="s", annotations=SessionAnnotations(objects={1: OBJECT}))

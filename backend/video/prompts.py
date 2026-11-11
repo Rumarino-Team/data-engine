@@ -4,11 +4,11 @@ from video.masks import override_pixels
 from core.errors import OperationError
 import sam2_video_masker as svm
 from core.runtime import cleanup_cuda_memory
-from core.state import BackendState
+from core.state import SessionState
 from schemas.video import VideoPrompt
 from video.runtime import MaskerRestorationError, VideoMaskerRuntime
 
-def record_prompt_event(session: BackendState, request: "VideoAddPointsOrBoxRequest"):
+def record_prompt_event(session: SessionState, request: "VideoAddPointsOrBoxRequest"):
     event = VideoPrompt.model_validate({
         "frame_idx": int(request.frame_idx),
         "obj_id": int(request.obj_id),
@@ -19,7 +19,7 @@ def record_prompt_event(session: BackendState, request: "VideoAddPointsOrBoxRequ
     session.annotations.set_prompt(event, clear_old_points=request.clear_old_points)
 
 
-def replay_annotation_prompts(session: BackendState) -> None:
+def replay_annotation_prompts(session: SessionState) -> None:
     for event in session.annotations.prompt_events():
         session.video_masker.add_new_points_or_box(
             frame_idx=event["frame_idx"], obj_id=event["obj_id"],
@@ -31,7 +31,7 @@ def replay_annotation_prompts(session: BackendState) -> None:
                                        mask=override_pixels(mask, session.active_session_dir))
 
 
-def create_masker_runtime(session: BackendState) -> VideoMaskerRuntime:
+def create_masker_runtime(session: SessionState) -> VideoMaskerRuntime:
     return VideoMaskerRuntime(
         session=session,
         create_masker=svm.SAM2VideoMasker,
@@ -41,7 +41,7 @@ def create_masker_runtime(session: BackendState) -> VideoMaskerRuntime:
 
 
 @contextmanager
-def annotation_edit(session: BackendState, *, restore_runtime: bool = True):
+def annotation_edit(session: SessionState, *, restore_runtime: bool = True):
     """Stage accepted inputs and restore them when an edit fails.
 
     Caller holds `ctx.edit()`. The edit is accepted when the block exits without error, and files its

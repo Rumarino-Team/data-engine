@@ -6,7 +6,7 @@ from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from core.state import BackendState
+from core.state import SessionState
 from video.runtime import MaskerRestorationError, MaskerSettings, VideoMaskerRuntime
 
 
@@ -26,7 +26,7 @@ class FakeMasker:
 
 class VideoMaskerRuntimeTests(unittest.TestCase):
     def make_runtime(self):
-        session = BackendState(video_dir="frames", active_session_id="session", video_masker=FakeMasker())
+        session = SessionState(video_dir="frames", active_session_id="session", video_masker=FakeMasker())
         session.annotations.create_object()
         restored = FakeMasker()
         runtime = VideoMaskerRuntime(
@@ -114,7 +114,7 @@ class VideoMaskerRuntimeTests(unittest.TestCase):
     def test_restore_acts_on_the_runtimes_own_session_only(self):
         runtime, _ = self.make_runtime()
         original = runtime.session.video_masker
-        other = BackendState(video_masker=FakeMasker())
+        other = SessionState(video_masker=FakeMasker())
 
         runtime.restore(MaskerSettings(True, 3, False, True))
 

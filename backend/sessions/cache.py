@@ -1,18 +1,18 @@
 import shutil
 from core.config import SESSION_CACHE_ROOT
-from core.state import BackendState
+from core.state import SessionState
 from core.annotations import SessionAnnotations
 from sessions.metadata import current_session_path
 from sessions.paths import path_is_relative_to
 
-def clear_active_cache_session(session: BackendState) -> None:
+def clear_active_cache_session(session: SessionState) -> None:
     session_path = current_session_path(session)
     if session_path is None:
         return
     if path_is_relative_to(session_path, SESSION_CACHE_ROOT):
         shutil.rmtree(session_path, ignore_errors=True)
 
-def release_active_session(session: BackendState, *, clear_video_masker: bool = True, clear_tracker: bool = True, clear_video_state: bool = True, clear_prompts: bool = True, clear_cache_session: bool = False) -> None:
+def release_active_session(session: SessionState, *, clear_video_masker: bool = True, clear_tracker: bool = True, clear_video_state: bool = True, clear_prompts: bool = True, clear_cache_session: bool = False) -> None:
     from core.runtime import cleanup_cuda_memory
     if clear_video_masker and session.video_masker is not None:
         session.video_masker = None
@@ -40,7 +40,7 @@ def release_active_session(session: BackendState, *, clear_video_masker: bool = 
         session.annotations.clear_prompts()
     cleanup_cuda_memory()
 
-def reset_video_session_state(session: BackendState):
+def reset_video_session_state(session: SessionState):
     session.interactive_mask_files = {}
     session.annotations.clear_prompts()
     session.annotations.invalidate_inputs()

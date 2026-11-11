@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import logging
 from typing import Callable, Iterator, Protocol
 
-from core.state import BackendState
+from core.state import SessionState
 
 
 ProgressCallback = Callable[[str, str, float | None, str], None]
@@ -54,9 +54,9 @@ class MaskerRestorationError(RuntimeError):
 class VideoMaskerRuntime:
     """Caller serializes mutations; accepted annotations and publication stay external."""
 
-    session: BackendState
+    session: SessionState
     create_masker: MaskerFactory
-    replay_inputs: Callable[[BackendState], None]
+    replay_inputs: Callable[[SessionState], None]
     release_memory: Callable[[], None]
 
     def initialize(

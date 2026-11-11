@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core.errors import OperationError
 from core.context import AppContext, SessionManager
 from core.jobs import JobHandle
-from core.state import BackendState
+from core.state import SessionState
 from core.annotations import SessionAnnotations
 from schemas.video import VideoPropagateRequest
 from utils import build_empty_mask_manifest, load_mask_manifest, write_mask_manifest
@@ -49,7 +49,7 @@ class PartialPropagationTests(unittest.TestCase):
                         for index in range(kwargs["start_frame_idx"], kwargs["start_frame_idx"] + kwargs["max_frame_num_to_track"]):
                             kwargs["frame_callback"](index, {1: np.zeros((8, 8), dtype=bool)})
                     masker.propagate_in_video.side_effect = produce
-                    state = BackendState(
+                    state = SessionState(
                         video_masker=masker, video_dir=str(frames),
                         video_frame_files=[f"{i:05d}.jpg" for i in range(5)],
                         annotations=SessionAnnotations(objects={1: {"id": 1, "label": "Object 1", "color": "#ff0000"}},

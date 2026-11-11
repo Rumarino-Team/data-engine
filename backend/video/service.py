@@ -9,7 +9,7 @@ from core.errors import OperationError
 from core.context import AppContext
 from core.jobs import JobHandle, utc_now_iso
 from core.runtime import cleanup_cuda_memory
-from core.state import BackendState
+from core.state import SessionState
 from core.annotations import SessionAnnotations
 from pydantic import ValidationError
 from schemas.video import (
@@ -42,7 +42,7 @@ from tracking.results import restored_tracking_result_payload, tracking_validity
 logger = logging.getLogger(__name__)
 
 def open_saved_session(
-    checkpoint_dir: Path, session: BackendState, job: JobHandle,
+    checkpoint_dir: Path, session: SessionState, job: JobHandle,
 ) -> tuple[Path, list[str], Optional[str], dict[str, Any]]:
     """Open a checkpoint as a new working copy and restore its accepted state into `session`.
 
@@ -99,7 +99,7 @@ def open_saved_session(
     return frames_dir, frame_files, source_video_path, restored
 
 
-def import_frames(resolved_input_path: Path, session: BackendState, job: JobHandle) -> tuple[Path, list[str], Optional[str]]:
+def import_frames(resolved_input_path: Path, session: SessionState, job: JobHandle) -> tuple[Path, list[str], Optional[str]]:
     """Extract a video file, or link a folder of frames, into a new working copy.
 
     Returns the working frames directory, its frame files and the source video path (None for a folder).
@@ -169,7 +169,7 @@ def initialize_video_state_from_resolved_input(
     offload_video_to_cpu: Optional[bool],
     offload_state_to_cpu: Optional[bool],
     async_loading_frames: bool,
-    session: BackendState,
+    session: SessionState,
     job: JobHandle,
     reuse=None,
 ):
@@ -276,7 +276,7 @@ def run_video_init_job(ctx: AppContext, request: VideoInitStateRequest, job: Job
     # new ones load (two videos are never in RAM together). The old session's accepted annotations stay
     # untouched until the replacement is published.
     reuse = previous.video_masker
-    candidate = BackendState()
+    candidate = SessionState()
     try:
         result = initialize_video_state_from_resolved_input(
             resolved_input_path,
@@ -306,7 +306,7 @@ def run_video_init_job(ctx: AppContext, request: VideoInitStateRequest, job: Job
     return result
 
 
-def restore_previous_state(session: BackendState) -> None:
+def restore_previous_state(session: SessionState) -> None:
     """After a failed load of another video, load the previous video's state back (best effort).
 
     The predictor only holds derived data. If it cannot be rebuilt the session keeps its accepted
@@ -566,7 +566,7 @@ def update_object(ctx: AppContext, obj_id: int, request: VideoObjectUpdate, prec
         return annotation_update(session, precondition)
 
 
-def annotation_update(session: BackendState, precondition: AnnotationPrecondition):
+def annotation_update(session: SessionState, precondition: AnnotationPrecondition):
     """Mutation response: only accepted changes since the validated precondition revision."""
     return {
         "session_id": session.active_session_id,
@@ -576,7 +576,7 @@ def annotation_update(session: BackendState, precondition: AnnotationPreconditio
     }
 
 
-def annotation_snapshot(session: BackendState):
+def annotation_snapshot(session: SessionState):
     return {
         "session_id": session.active_session_id,
         "annotations": session.annotations.snapshot() if current_session_path(session) is not None else None,

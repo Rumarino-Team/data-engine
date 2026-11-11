@@ -3,16 +3,16 @@ import os, re, shutil, uuid
 from pathlib import Path
 from typing import Any
 from core.errors import OperationError
-from core.state import BackendState
+from core.state import SessionState
 
 MAX_DISPLAY_NAME_LENGTH = 120
 
-def content_fingerprint(session: BackendState) -> tuple:
+def content_fingerprint(session: SessionState) -> tuple:
     """Identity of everything a checkpoint persists apart from editor preferences."""
     manifest = Path(session.mask_manifest_path).name if session.mask_manifest_path else None
     return (session.annotations.revision, manifest, session.session_metadata.get("latest_tracking_result_id"))
 
-def saved_state(session: BackendState) -> dict[str, Any]:
+def saved_state(session: SessionState) -> dict[str, Any]:
     dirty = session.saved_fingerprint is None or session.saved_fingerprint != content_fingerprint(session)
     return {
         "checkpoint_id": session.checkpoint_id,

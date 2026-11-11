@@ -4,10 +4,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from support import BackendStateTestCase
+from support import SessionStateTestCase
 
 
-class AppWiringTests(BackendStateTestCase):
+class AppWiringTests(SessionStateTestCase):
     """Every route reaches its service with the application's context, including ones no other test calls."""
 
     def test_every_route_is_served_by_the_context_it_was_created_with(self):

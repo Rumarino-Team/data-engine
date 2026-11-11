@@ -9,13 +9,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core.annotations import SessionAnnotations
 from support import state
 from sessions import artifacts
-from support import BackendStateTestCase
+from support import SessionStateTestCase
 from video.masks import retain_interactive_masks
 
 OBJECT = {"id": 1, "label": "Hand", "color": "#ff0000"}
 
 
-class ArtifactLifecycleTests(BackendStateTestCase):
+class ArtifactLifecycleTests(SessionStateTestCase):
     def setUp(self):
         super().setUp()
         self.session = self.working_session(annotations=SessionAnnotations(objects={1: OBJECT}))

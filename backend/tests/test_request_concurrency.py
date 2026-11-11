@@ -14,11 +14,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.factory import create_app
 from support import state
 from routers import video as video_routes
-from support import BackendStateFixtures
+from support import SessionStateFixtures
 from video import service
 
 
-class RequestConcurrencyTests(BackendStateFixtures, unittest.IsolatedAsyncioTestCase):
+class RequestConcurrencyTests(SessionStateFixtures, unittest.IsolatedAsyncioTestCase):
     """All requests share one ASGI loop, unlike separate TestClient portals."""
 
     async def asyncSetUp(self):
