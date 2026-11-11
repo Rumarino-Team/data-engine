@@ -1,4 +1,4 @@
-import { Injectable, inject } from '@angular/core';
+import { DestroyRef, Injectable, inject } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
 import {
   BackendService,
@@ -11,9 +11,10 @@ import { ToastService } from './toast.service';
 import { EditorJobService } from './editor-job.service';
 import { getErrorMessage } from '../video-masker.util';
 
-/** Runs point tracking and rejects results invalidated by later edits. */
+/** Displays backend-selected tracks while rejecting stale network responses. */
 @Injectable()
 export class TrackingService {
+  private readonly destroyRef = inject(DestroyRef);
   private readonly store = inject(VideoMaskerStateStore);
   private readonly backend = inject(BackendService);
   private readonly framePipeline = inject(FramePipelineService);
@@ -25,18 +26,34 @@ export class TrackingService {
 
   async runTracking(): Promise<void> {
     if (this.isBusy) return;
+    const sessionId = this.store.sessionId();
+    const revision = this.store.annotationRevision();
+    if (!sessionId || revision === null) return;
+    const precondition = { session_id: sessionId, expected_revision: revision };
     const { result: response, completedJobId } = await this.jobs.run<TrackPromptPointsJobResponse>(
       'Tracking prompt points',
       () =>
         firstValueFrom(
-          this.backend.trackPromptPoints({ add_support_grid: this.store.trackingUseSupportGrid() }),
+          this.backend.trackPromptPoints(
+            { add_support_grid: this.store.trackingUseSupportGrid() },
+            precondition,
+          ),
         ),
     );
+    if (this.destroyRef.destroyed) return;
     if (!response) {
+      this.store.annotationRecoveryRequested.set(true);
       return;
     }
-    this.store.updateStateEpoch(response.state_epoch, 'tracking restore');
-    const loaded = await this.loadTrackingResult(response.tracking_result_id, 'Tracking');
+    if (response.saved_state !== undefined) this.store.savedState.set(response.saved_state);
+    // Fetching the finished result is part of the operation, so edits wait for it.
+    this.store.isLoading.set(true);
+    let loaded: boolean;
+    try {
+      loaded = await this.loadTrackingResult(response.tracking_result_id, 'Tracking');
+    } finally {
+      this.store.isLoading.set(false);
+    }
     if (loaded && completedJobId) {
       try {
         await firstValueFrom(this.backend.clearJobResult(completedJobId));
@@ -47,18 +64,16 @@ export class TrackingService {
   }
 
   async loadTrackingResult(resultId: string, sourceLabel: string): Promise<boolean> {
-    const revision = this.store.trackingRevision;
-    const epoch = this.store.stateEpoch();
     try {
       const response = await firstValueFrom(this.backend.getTrackingResult(resultId));
-      if (revision !== this.store.trackingRevision || epoch !== this.store.stateEpoch())
-        return false;
       const result: TrackPromptPointsResult = response.result;
+      if (this.destroyRef.destroyed) return false;
       const trackedSeries: TrackedPointSeries[] = result.points.map((point, index) => ({
         ...point,
         tracks: result.tracks[index] || [],
         visibility: result.visibility[index] || [],
       }));
+      this.store.trackingResultId = resultId;
       this.store.trackedPoints.set(trackedSeries);
       this.framePipeline.redraw();
       return true;

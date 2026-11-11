@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import os
 import signal
 import subprocess
@@ -64,6 +65,30 @@ def _env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
+# Tracking runs in memory below this frame count and streams at or above it. `--streaming` starts the
+# server with a threshold of 1 so the streaming path is exercised on the short test videos.
+STREAMING = "--streaming" in sys.argv
+DEFAULT_STREAMING_THRESHOLD = 256
+TRACK_STREAMING_THRESHOLD = 1 if STREAMING else DEFAULT_STREAMING_THRESHOLD
+SAVED_DIR = BACKEND_DIR / "saved"
+
+CHECK_FAILURES: list[str] = []
+
+
+def check(name, condition, detail=""):
+    """Records a pass or fail so a run can end with a non-zero exit code."""
+    if condition:
+        print(f"  ✓ {name}")
+    else:
+        print(f"  ✗ {name}" + (f": {detail}" if detail else ""))
+        CHECK_FAILURES.append(name)
+    return bool(condition)
+
+
+def expected_tracking_mode(num_frames):
+    return "streaming" if num_frames >= TRACK_STREAMING_THRESHOLD else "in_memory"
+
+
 ONLINE_MODE = _env_bool("DATA_ENGINE_ONLINE_MODE", True)
 ONLINE_BATCH_SIZE = int(os.getenv("DATA_ENGINE_BATCH_SIZE", "32"))
 OFFLOAD_VIDEO_TO_CPU = _env_bool("DATA_ENGINE_OFFLOAD_VIDEO_TO_CPU", True)
@@ -71,30 +96,50 @@ OFFLOAD_STATE_TO_CPU = _env_bool("DATA_ENGINE_OFFLOAD_STATE_TO_CPU", False)
 JOB_POLL_INTERVAL_SECONDS = float(os.getenv("DATA_ENGINE_JOB_POLL_INTERVAL", "0.5"))
 JOB_TIMEOUT_SECONDS = float(os.getenv("DATA_ENGINE_JOB_TIMEOUT", "1800"))
 
+SUITES = {
+    "video": lambda: run_video_tests(),
+    "modes": lambda: run_tracking_mode_tests(),
+    "sessions": lambda: run_session_tests(),
+    "apple-prompt": lambda: run_apple_prompt_tracking_test(),
+}
+
+
+def run_suites(names):
+    for name in names:
+        SUITES[name]()
+    print("\n" + "=" * 60)
+    if CHECK_FAILURES:
+        print(f"{len(CHECK_FAILURES)} CHECK(S) FAILED:")
+        for failure in CHECK_FAILURES:
+            print(f"  - {failure}")
+    else:
+        print("ALL CHECKS PASSED")
+    print("=" * 60)
+
+
 def test_chooser():
     print("Choose a test with a number")
     print("Video Masking Test: 1")
-    print("CoTracker Propagation Tests: 2")
-    print("Run All Tests: 3")
+    print("Run All Tests: 2")
+    print("Tracking modes (track only, track and feed): 3")
+    print("Save, Save As and reopen: 4")
+    print("Apple prompt tracking: 5")
     print("Quit: 0")
+    print("(Non-interactive: --run video|modes|sessions|apple-prompt|all [--streaming])")
     choice = input()
 
     match choice:
         case "1":
-            run_video_tests()
-            return False
+            run_suites(["video"])
         case "2":
-            run_apple_tracking_tests()
-            return False
+            run_suites(list(SUITES))
         case "3":
-            run_video_tests()
-            run_apple_tracking_tests()
-            print("\n" + "=" * 60)
-            print("ALL TESTS COMPLETED")
-            print("=" * 60)
-            return False
-        case "0":
-            return False
+            run_suites(["modes"])
+        case "4":
+            run_suites(["sessions"])
+        case "5":
+            run_suites(["apple-prompt"])
+    return False
 
 
 def _print_job_progress(job):
@@ -102,15 +147,11 @@ def _print_job_progress(job):
     progress = job.get("progress")
     current = job.get("current")
     total = job.get("total")
-    window_index = job.get("window_index")
-    window_count = job.get("window_count")
     frame_idx = job.get("frame_idx")
     history = job.get("stage_history") or []
     message = job.get("message") or ""
 
     parts = [stage_label]
-    if window_index is not None and window_count:
-        parts.append(f"Window {window_index}/{window_count}")
     if frame_idx is not None:
         parts.append(f"Frame {frame_idx}")
     if isinstance(progress, (int, float)):
@@ -217,22 +258,6 @@ def write_json_output(output_path: Path, payload: dict) -> None:
         json.dump(payload, handle, ensure_ascii=True, indent=2)
 
 
-def copy_output_into_dir(output_video_path: str, output_dir: Path) -> str:
-    if not output_video_path:
-        return output_video_path
-    source_path = Path(output_video_path)
-    if not source_path.exists():
-        return output_video_path
-    output_dir.mkdir(parents=True, exist_ok=True)
-    target_path = output_dir / source_path.name
-    if source_path.resolve() == target_path.resolve():
-        return str(target_path)
-    if target_path.exists():
-        target_path.unlink()
-    shutil.move(str(source_path), str(target_path))
-    return str(target_path)
-
-
 def download_and_extract_bedroom():
     """Downloads and extracts the bedroom video frames if not already present."""
     if BEDROOM_DIR.exists() and BEDROOM_DIR.is_dir():
@@ -321,10 +346,18 @@ def init_video_state(video_dir):
     return False
 
 
+def annotation_headers():
+    response = requests.get(f"{BASE_URL}/video/info")
+    response.raise_for_status()
+    snapshot = response.json()
+    return {"X-Session-ID": snapshot["session_id"],
+            "X-Annotation-Revision": str(snapshot["annotations"]["revision"])}
+
+
 def reset_video_state():
     """Calls the /video/reset_state endpoint."""
     url = f"{BASE_URL}/video/reset_state"
-    response = requests.post(url)
+    response = requests.post(url, headers=annotation_headers())
     if response.status_code == 200:
         print("Video state reset successfully.")
     else:
@@ -346,7 +379,7 @@ def add_new_points_or_box(frame_idx, obj_id, points=None, labels=None, clear_old
     if box is not None:
         payload["box"] = box.tolist() if isinstance(box, np.ndarray) else box
     
-    response = requests.post(url, json=payload)
+    response = requests.post(url, json=payload, headers=annotation_headers())
     if response.status_code == 200:
         response_data = response.json()
         print(f"Added points/box for frame {frame_idx}, object {obj_id}.")
@@ -356,7 +389,7 @@ def add_new_points_or_box(frame_idx, obj_id, points=None, labels=None, clear_old
     return response.status_code == 200, response.json() if response.status_code == 200 else None
 
 
-def propagate_in_video(start_frame_idx=None, max_frame_num_to_track=None, reverse=False):
+def propagate_in_video(start_frame_idx=None, max_frame_num_to_track=None, reverse=False, use_tracked_points=True):
     """Calls the /video/propagate_in_video endpoint."""
     url = f"{BASE_URL}/video/propagate_in_video"
     payload = {
@@ -365,11 +398,12 @@ def propagate_in_video(start_frame_idx=None, max_frame_num_to_track=None, revers
         "reverse": reverse,
         "online_mode": ONLINE_MODE,
         "batch_size": ONLINE_BATCH_SIZE,
+        "use_tracked_points": use_tracked_points,
         "include_masks_in_response": False,
         # Overlay PNGs are the visual output copied to tests/bedroom/masks.
         "export_overlay_frames": True,
     }
-    response = requests.post(url, json=payload)
+    response = requests.post(url, json=payload, headers=annotation_headers())
     if response.status_code == 200:
         print("Propagation job started.")
         success, response_data = wait_for_job(response.json())
@@ -397,7 +431,7 @@ def propagate_in_video(start_frame_idx=None, max_frame_num_to_track=None, revers
 def track_prompt_points(add_support_grid=False):
     """Runs prompt-point tracking from current SAM prompt state and fetches the disk-backed result."""
     url = f"{BASE_URL}/tracking/track_prompt_points"
-    response = requests.post(url, json={"add_support_grid": bool(add_support_grid)})
+    response = requests.post(url, json={"add_support_grid": bool(add_support_grid)}, headers=annotation_headers())
     if response.status_code != 200:
         print(f"Failed to start prompt tracking. Status: {response.status_code}, Response: {response.text}")
         return False, None
@@ -440,7 +474,7 @@ def restore_bedroom_masks_output(result_payload):
     if not isinstance(result_payload, dict):
         return False
 
-    manifest_path_raw = result_payload.get("mask_manifest_path") or result_payload.get("state.mask_manifest_path")
+    manifest_path_raw = result_payload.get("mask_manifest_path")
     if not manifest_path_raw:
         print("No mask manifest path returned; cannot restore bedroom mask output folder.")
         return False
@@ -464,6 +498,11 @@ def restore_bedroom_masks_output(result_payload):
         return False
 
 
+def _kill_windows_process_tree(pid):
+    """On Windows terminate()/kill() stop only the `fastapi dev` reloader; its server worker would keep the port."""
+    subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
+
+
 def stop_server_process(server_process):
     """Stops FastAPI server process and its child processes reliably."""
     if server_process is None:
@@ -477,7 +516,7 @@ def stop_server_process(server_process):
         if os.name != "nt":
             os.killpg(server_process.pid, signal.SIGTERM)
         else:
-            server_process.terminate()
+            _kill_windows_process_tree(server_process.pid)
     except ProcessLookupError:
         print("Server process not found during shutdown.")
         return
@@ -495,7 +534,7 @@ def stop_server_process(server_process):
         if os.name != "nt":
             os.killpg(server_process.pid, signal.SIGKILL)
         else:
-            server_process.kill()
+            _kill_windows_process_tree(server_process.pid)
     except ProcessLookupError:
         pass
 
@@ -570,223 +609,225 @@ def run_video_tests():
     print(f"\nPropagating masks through video...")
     success, result = propagate_in_video()
     
-    if success:
-        restore_bedroom_masks_output(result)
-        print("\n✓ Video masking test completed successfully!")
-    else:
-        print("\n✗ Video masking test failed.")
+    if not check("video masking: propagation completed", success):
         reset_video_state()
         return
+    restore_bedroom_masks_output(result)
+    check_overlay_frame(0)
 
     print(f"\nRunning prompt-point tracking from bedroom prompts...")
     success, tracking_result = track_prompt_points(add_support_grid=False)
+    check("bedroom prompt tracking completed", success)
     if success:
-        print(
-            "\n✓ Bedroom prompt tracking test passed "
-            f"({tracking_result.get('num_points', 0)} pts × {tracking_result.get('num_frames', 0)} frames)"
-        )
-    else:
-        print("\n✗ Bedroom prompt tracking test failed.")
-    
+        print(f"  ({tracking_result.get('num_points', 0)} pts × {tracking_result.get('num_frames', 0)} frames)")
+
     # Reset video state for cleanup
     reset_video_state()
 
 
-def load_tracking_video(video_path, model_name=None):
-    """Calls the /tracking/load_video endpoint."""
-    url = f"{BASE_URL}/tracking/load_video"
-    payload = {"video_path": str(video_path)}
-    if model_name is not None:
-        payload["model_name"] = model_name
-    response = requests.post(url, json=payload)
-    if response.status_code == 200:
-        response_data = response.json()
-        print(f"Video loaded successfully: {video_path}")
-        print(f"  Model: {response_data.get('model_name', 'N/A')}")
-        print(f"  Shape: {response_data.get('shape', [])}")
-        print(f"  Num frames: {response_data.get('num_frames', 0)}")
-    else:
-        print(f"Failed to load tracking video. Status: {response.status_code}, Response: {response.text}")
-    return response.status_code == 200, response.json() if response.status_code == 200 else None
+def get_video_info():
+    response = requests.get(f"{BASE_URL}/video/info")
+    response.raise_for_status()
+    return response.json()
 
 
-def _ensure_mode_labeled_output_path(output_video_path: str, expected_mode: str | None) -> str:
-    """Ensures the output filename includes the expected mode label when requested."""
-    if not output_video_path:
-        return output_video_path
-    if expected_mode is None:
-        return output_video_path
-
-    output_path = Path(output_video_path)
-    name = output_path.name
-    opposite_mode = "online" if expected_mode == "offline" else "offline"
-
-    if f"_{expected_mode}_" in name:
-        return output_video_path
-
-    if f"_{opposite_mode}_" in name:
-        print(
-            f"Warning: Output file appears labeled as {opposite_mode}: {output_video_path}. "
-            f"Leaving filename unchanged."
-        )
-        return output_video_path
-
-    stem = output_path.stem
-    suffix = output_path.suffix
-
-    # Insert mode before trailing timestamp if present: ..._<ts>.mp4
-    prefix, sep, maybe_ts = stem.rpartition("_")
-    if sep and maybe_ts.isdigit() and prefix:
-        new_stem = f"{prefix}_{expected_mode}_{maybe_ts}"
-    else:
-        new_stem = f"{stem}_{expected_mode}"
-
-    new_path = output_path.with_name(f"{new_stem}{suffix}")
-
-    if output_path.exists() and new_path != output_path:
-        output_path.rename(new_path)
-        print(f"Renamed output file to include mode label: {new_path}")
-        return str(new_path)
-
-    return output_video_path
+def check_overlay_frame(frame_idx):
+    """The frontend shows exported overlay frames through GET /video/mask_frame/{frame_idx}."""
+    response = requests.get(f"{BASE_URL}/video/mask_frame/{frame_idx}")
+    return check(
+        f"overlay frame {frame_idx} is served",
+        response.status_code == 200 and response.headers.get("content-type", "").startswith("image/"),
+        f"status {response.status_code}, {response.text[:120]!r}" if response.status_code != 200 else "",
+    )
 
 
-def track_grid(grid_size=15, add_support_grid=True, expected_mode=None, output_dir=None):
-    """Calls the /tracking/track_grid endpoint."""
-    url = f"{BASE_URL}/tracking/track_grid"
-    payload = {
-        "grid_size": grid_size,
-        "add_support_grid": add_support_grid
-    }
-    response = requests.post(url, json=payload)
-    if response.status_code == 200:
-        response_data = response.json()
-        if expected_mode:
-            response_data["output_video_path"] = _ensure_mode_labeled_output_path(
-                response_data.get("output_video_path", ""), expected_mode
-            )
-        if output_dir:
-            response_data["output_video_path"] = copy_output_into_dir(
-                response_data.get("output_video_path", ""), Path(output_dir)
-            )
-        print(f"Grid tracking completed successfully!")
-        print(f"  Num points: {response_data.get('num_points', 0)}")
-        print(f"  Num frames: {response_data.get('num_frames', 0)}")
-        print(f"  Output video: {response_data.get('output_video_path', 'N/A')}")
-    else:
-        print(f"Failed to track grid. Status: {response.status_code}, Response: {response.text}")
-    return response.status_code == 200, response.json() if response.status_code == 200 else None
+def add_first_bedroom_point():
+    success, _ = add_new_points_or_box(
+        frame_idx=0, obj_id=1,
+        points=np.array([[210, 350]], dtype=np.float32), labels=np.array([1], np.int32),
+    )
+    return success
 
 
-def track_points(queries, add_support_grid=True, expected_mode=None, output_dir=None):
-    """Calls the /tracking/track_points endpoint."""
-    url = f"{BASE_URL}/tracking/track_points"
-    payload = {
-        "queries": queries if isinstance(queries, list) else queries.tolist(),
-        "add_support_grid": add_support_grid
-    }
-    response = requests.post(url, json=payload)
-    if response.status_code == 200:
-        response_data = response.json()
-        if expected_mode:
-            response_data["output_video_path"] = _ensure_mode_labeled_output_path(
-                response_data.get("output_video_path", ""), expected_mode
-            )
-        if output_dir:
-            response_data["output_video_path"] = copy_output_into_dir(
-                response_data.get("output_video_path", ""), Path(output_dir)
-            )
-        print(f"Point tracking completed successfully!")
-        print(f"  Num points: {response_data.get('num_points', 0)}")
-        print(f"  Num frames: {response_data.get('num_frames', 0)}")
-        print(f"  Output video: {response_data.get('output_video_path', 'N/A')}")
-    else:
-        print(f"Failed to track points. Status: {response.status_code}, Response: {response.text}")
-    return response.status_code == 200, response.json() if response.status_code == 200 else None
-
-
-def run_apple_tracking_tests():
-    """Runs apple.mp4 CoTracker tests using the current backend-supported model."""
-    generated_outputs = []
-
+def run_tracking_mode_tests():
+    """Both ways to use tracking: track only, and track then feed the result into propagation."""
     print("\n" + "=" * 60)
-    print("RUNNING APPLE TRACKING TESTS")
+    print("RUNNING TRACKING MODE TESTS")
     print("=" * 60)
+    if not VIDEO_DIR.exists():
+        print(f"\nVideo directory '{VIDEO_DIR}' not found. Skipping.")
+        return
+    if not check("modes: video initialized", init_video_state(VIDEO_DIR)):
+        return
+    if not check("modes: first point accepted", add_first_bedroom_point()):
+        reset_video_state()
+        return
 
+    print("\n--- Track only ---")
+    success, tracking = track_prompt_points(add_support_grid=False)
+    if not check("track only: tracking result saved", success and (tracking or {}).get("num_points", 0) > 0):
+        reset_video_state()
+        return
+    check(
+        f"track only: mode is {expected_tracking_mode(tracking['num_frames'])}",
+        tracking.get("tracking_mode") == expected_tracking_mode(tracking["num_frames"]),
+        f"got {tracking.get('tracking_mode')!r}",
+    )
+    info = get_video_info()
+    check("track only: result is current for the accepted prompts", info.get("tracking_validity") is not None)
+
+    print("\n--- Track, then feed propagation ---")
+    success, result = propagate_in_video(use_tracked_points=True)
+    result = result or {}
+    check("track and feed: propagation completed", success)
+    check(
+        "track and feed: propagation used the tracked points",
+        success and result.get("tracked_points_used") is True and result.get("tracked_points_seeded_count", 0) > 0,
+        f"used={result.get('tracked_points_used')} seeded={result.get('tracked_points_seeded_count')} "
+        f"reason={result.get('tracked_points_skipped_reason')!r}",
+    )
+    check_overlay_frame(0)
+
+    print("\n--- Propagate without feeding ---")
+    success, result = propagate_in_video(use_tracked_points=False)
+    result = result or {}
+    check("no feed: propagation completed", success)
+    check("no feed: tracked points were not used", success and result.get("tracked_points_used") is False)
+
+    reset_video_state()
+
+
+def file_digest(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def save_session(name=None, save_as=False):
+    payload = {"save_as": save_as}
+    if name is not None:
+        payload["name"] = name
+    response = requests.post(f"{BASE_URL}/video/save", json=payload, headers=annotation_headers())
+    if response.status_code != 200:
+        print(f"Save failed. Status: {response.status_code}, Response: {response.text}")
+        return False, None
+    return True, response.json()
+
+
+def remove_saved_checkpoint(saved_path):
+    """Removes a checkpoint the test created, and only inside the backend's saved folder."""
+    if not saved_path:
+        return
+    path = Path(saved_path).resolve()
+    if path.parent == SAVED_DIR.resolve() and path.is_dir():
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def run_session_tests():
+    """Save, re-save, Save As and reopen a checkpoint, and check the checkpoint is never written by edits."""
+    print("\n" + "=" * 60)
+    print("RUNNING SAVE AND REOPEN TESTS")
+    print("=" * 60)
+    if not VIDEO_DIR.exists():
+        print(f"\nVideo directory '{VIDEO_DIR}' not found. Skipping.")
+        return
+    created = []
+    try:
+        if not check("sessions: video initialized", init_video_state(VIDEO_DIR)):
+            return
+        if not check("sessions: first point accepted", add_first_bedroom_point()):
+            return
+        success, _ = propagate_in_video(start_frame_idx=0, max_frame_num_to_track=20, use_tracked_points=False)
+        if not check("sessions: short propagation completed", success):
+            return
+
+        print("\n--- Save ---")
+        success, first = save_session("tester checkpoint")
+        if not check("save: first save succeeded", success):
+            return
+        created.append(first["saved_path"])
+        check("save: checkpoint folder exists", Path(first["saved_path"]).is_dir())
+        check("save: session is clean afterwards", first["saved_state"]["dirty"] is False)
+        check("save: the session has the checkpoint identity",
+              get_video_info()["saved_state"]["checkpoint_id"] == first["checkpoint_id"])
+
+        print("\n--- Edit makes the session dirty; re-save keeps the checkpoint ---")
+        success, _ = add_new_points_or_box(
+            frame_idx=0, obj_id=1,
+            points=np.array([[210, 350], [250, 220]], dtype=np.float32), labels=np.array([1, 1], np.int32),
+        )
+        check("edit: second point accepted", success)
+        check("edit: session is dirty", get_video_info()["saved_state"]["dirty"] is True)
+        success, resaved = save_session()
+        check("re-save: succeeded", success)
+        if success:
+            check("re-save: same checkpoint", resaved["checkpoint_id"] == first["checkpoint_id"])
+            check("re-save: session is clean afterwards", resaved["saved_state"]["dirty"] is False)
+
+        print("\n--- Save As ---")
+        success, copy = save_session("tester copy", save_as=True)
+        if not check("save as: succeeded", success):
+            return
+        created.append(copy["saved_path"])
+        check("save as: new checkpoint", copy["checkpoint_id"] != first["checkpoint_id"]
+              and copy["saved_path"] != first["saved_path"])
+
+        saved_annotations = get_video_info()["annotations"]
+
+        print("\n--- Reopen the first checkpoint ---")
+        if not check("reopen: init from the checkpoint folder", init_video_state(first["saved_path"])):
+            return
+        info = get_video_info()
+        check("reopen: checkpoint identity restored", info["saved_state"]["checkpoint_id"] == first["checkpoint_id"])
+        check("reopen: session is clean", info["saved_state"]["dirty"] is False)
+        check("reopen: annotations match the last save of that checkpoint",
+              info["annotations"]["prompts"] == saved_annotations["prompts"]
+              and info["annotations"]["objects"] == saved_annotations["objects"])
+        mask_data = requests.get(f"{BASE_URL}/video/mask_data/0")
+        check("reopen: saved masks are readable",
+              mask_data.status_code == 200 and bool(mask_data.json().get("objects")),
+              f"status {mask_data.status_code}")
+
+        print("\n--- Edits after reopening never write the checkpoint ---")
+        before = file_digest(Path(first["saved_path"]) / "session.json")
+        success, _ = add_new_points_or_box(
+            frame_idx=0, obj_id=1,
+            points=np.array([[210, 350]], dtype=np.float32), labels=np.array([1], np.int32),
+        )
+        check("reopen: edit accepted", success)
+        check("reopen: session is dirty after the edit", get_video_info()["saved_state"]["dirty"] is True)
+        check("reopen: checkpoint session.json unchanged by the edit",
+              file_digest(Path(first["saved_path"]) / "session.json") == before)
+    finally:
+        reset_video_state()
+        for saved_path in created:
+            remove_saved_checkpoint(saved_path)
+
+
+def run_apple_prompt_tracking_test():
+    """Prompt tracking on a real video file through the routes the frontend uses (replaces the generic apple routes)."""
+    print("\n" + "=" * 60)
+    print("RUNNING APPLE PROMPT TRACKING TEST")
+    print("=" * 60)
     if not ensure_apple_test_video():
         return
-
-    print(f"\n--- Apple Test 1: Load tracking video ---")
-    success, result = load_tracking_video(TRACKING_VIDEO_PATH)
-
-    if not success:
-        print("Failed to load apple tracking video. Skipping remaining tests.")
+    if not check("apple: video initialized", init_video_state(TRACKING_VIDEO_PATH)):
         return
-
-    time.sleep(1)
-
-    print(f"\n--- Apple Test 2: Track grid of points ---")
-    success, result = track_grid(grid_size=10, add_support_grid=True, output_dir=TEST_APPLE_DIR)
-
-    if success:
-        num_points = result.get("num_points", 0)
-        num_frames = result.get("num_frames", 0)
-        if result.get("output_video_path"):
-            generated_outputs.append(result.get("output_video_path"))
-        print(f"\n✓ Apple grid tracking test passed  ({num_points} pts × {num_frames} frames)")
-    else:
-        print(f"\n✗ Apple grid tracking test failed.")
-
-    time.sleep(1)
-
-    print(f"\n--- Apple Test 3: Restored legacy point tracking ---")
-    queries = [
-        [0, 400, 350],
-        [10, 600, 500],
-        [20, 750, 600],
-        [30, 900, 200],
-    ]
-    success, result = track_points(queries, add_support_grid=False, output_dir=TEST_APPLE_DIR)
-
-    if success:
-        num_points = result.get("num_points", 0)
-        num_frames = result.get("num_frames", 0)
-        if result.get("output_video_path"):
-            generated_outputs.append(result.get("output_video_path"))
-        write_json_output(
-            TEST_APPLE_DIR / "apple_legacy_points_summary.json",
-            {
-                "queries": queries,
-                "num_points": num_points,
-                "num_frames": num_frames,
-                "output_video_path": result.get("output_video_path"),
-            },
+    try:
+        points = np.array([[400, 350], [600, 500]], dtype=np.float32)
+        success, _ = add_new_points_or_box(frame_idx=0, obj_id=1, points=points, labels=np.array([1, 1], np.int32))
+        if not check("apple: points accepted", success):
+            return
+        success, tracking = track_prompt_points(add_support_grid=True)
+        if not check("apple: prompt tracking with support grid completed", success):
+            return
+        check("apple: one tracked point per positive prompt", tracking.get("num_points") == len(points),
+              f"got {tracking.get('num_points')}")
+        check(
+            f"apple: mode is {expected_tracking_mode(tracking['num_frames'])}",
+            tracking.get("tracking_mode") == expected_tracking_mode(tracking["num_frames"]),
+            f"got {tracking.get('tracking_mode')!r}",
         )
-        print(f"\n✓ Apple legacy point tracking test passed  ({num_points} pts × {num_frames} frames)")
-    else:
-        print(f"\n✗ Apple legacy point tracking test failed.")
-
-    time.sleep(1)
-
-    print(f"\n--- Apple Test 4: Track point with support grid ---")
-    queries = [
-        [0, 320, 240],
-    ]
-    success, result = track_points(queries, add_support_grid=True, output_dir=TEST_APPLE_DIR)
-
-    if success:
-        num_points = result.get("num_points", 0)
-        num_frames = result.get("num_frames", 0)
-        if result.get("output_video_path"):
-            generated_outputs.append(result.get("output_video_path"))
-        print(f"\n✓ Apple point tracking (+ support grid) test passed  ({num_points} pts × {num_frames} frames)")
-    else:
-        print(f"\n✗ Apple point tracking (+ support grid) test failed.")
-
-    if generated_outputs:
-        print(f"\nApple generated outputs:")
-        for output_path in generated_outputs:
-            print(f"  - {output_path}")
+    finally:
+        reset_video_state()
 
 
 if __name__ == "__main__":
@@ -802,10 +843,26 @@ if __name__ == "__main__":
         print(f"API file not found: {API_FILE}")
         exit(1)
     
+    requested_suites = None
+    if "--run" in sys.argv:
+        requested = sys.argv[sys.argv.index("--run") + 1] if sys.argv.index("--run") + 1 < len(sys.argv) else ""
+        if requested != "all" and requested not in SUITES:
+            print(f"Unknown suite '{requested}'. Use one of: {', '.join(SUITES)}, all.")
+            exit(2)
+        requested_suites = list(SUITES) if requested == "all" else [requested]
+
+    # PYTHONUTF8 lets the server print non-ASCII output when its console is redirected on Windows.
+    server_env = {
+        **os.environ,
+        "PYTHONUTF8": "1",
+        "TRACK_STREAMING_FRAME_THRESHOLD": str(TRACK_STREAMING_THRESHOLD),
+    }
+
     # Start the FastAPI server as a background process
     server_process = subprocess.Popen(
         [sys.executable, "-m", "fastapi", "dev", str(API_FILE)],
         cwd=str(BACKEND_DIR),
+        env=server_env,
         start_new_session=(os.name != "nt"),
     )
     print(f"\nStarting FastAPI server with PID: {server_process.pid}...")
@@ -813,16 +870,21 @@ if __name__ == "__main__":
     try:
         # Wait for the server to be ready
         # The root endpoint in api.py returns a simple message
-        if wait_for_server(f"{BASE_URL}/", timeout=30):
-            # Run test chooser
-            active = True
-            while (active):
-                active = test_chooser()
-
+        if wait_for_server(f"{BASE_URL}/", timeout=60):
+            if requested_suites is not None:
+                run_suites(requested_suites)
+            else:
+                active = True
+                while (active):
+                    active = test_chooser()
         else:
             print("Could not connect to the server. Aborting tests.")
+            CHECK_FAILURES.append("server did not start")
 
     finally:
         # Stop the server
         print("\nShutting down the server...")
         stop_server_process(server_process)
+
+    if requested_suites is not None and CHECK_FAILURES:
+        exit(1)

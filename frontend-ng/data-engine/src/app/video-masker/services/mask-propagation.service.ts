@@ -1,4 +1,5 @@
-import { Injectable, inject } from '@angular/core';
+import { DestroyRef, Injectable, inject } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { firstValueFrom, finalize } from 'rxjs';
 import { BackendService, VideoPropagateResponse } from '../../services/backend.service';
 import { VideoMaskerStateStore } from './video-masker-state.store';
@@ -10,6 +11,7 @@ import { getErrorMessage } from '../video-masker.util';
 /** Runs propagation and clears generated masks while preserving unaffected edits. */
 @Injectable()
 export class MaskPropagationService {
+  private readonly destroyRef = inject(DestroyRef);
   private readonly store = inject(VideoMaskerStateStore);
   private readonly backend = inject(BackendService);
   private readonly framePipeline = inject(FramePipelineService);
@@ -21,6 +23,10 @@ export class MaskPropagationService {
 
   async propagate(): Promise<void> {
     if (this.isBusy) return;
+    const sessionId = this.store.sessionId();
+    const revision = this.store.annotationRevision();
+    if (!sessionId || revision === null) return;
+    const precondition = { session_id: sessionId, expected_revision: revision };
     const startFrameIdx = this.store.propagationStartFrameIdx();
     const endFrameIdx = this.store.propagationEndFrameIdx();
     if (startFrameIdx > endFrameIdx) {
@@ -35,31 +41,24 @@ export class MaskPropagationService {
       'Propagating masks',
       () =>
         firstValueFrom(
-          this.backend.propagateInVideo({
-            start_frame_idx: startFrameIdx,
-            max_frame_num_to_track: endFrameIdx - startFrameIdx + 1,
-            include_masks_in_response: false,
-            include_saved_mask_paths: false,
-          }),
+          this.backend.propagateInVideo(
+            {
+              start_frame_idx: startFrameIdx,
+              max_frame_num_to_track: endFrameIdx - startFrameIdx + 1,
+              use_tracked_points: this.store.propagationUseTrackedPoints(),
+              include_masks_in_response: false,
+              include_saved_mask_paths: false,
+            },
+            precondition,
+          ),
         ),
     );
+    if (this.destroyRef.destroyed) return;
     if (!response) {
+      this.store.annotationRecoveryRequested.set(true);
       return;
     }
-    const previousMasks = this.store.masks();
-    const previousLiveEdits = this.store.liveEditedObjectFrames();
-    this.store.updateStateEpoch(response.state_epoch, 'propagation');
-    // The restored predictor has a new epoch, but propagation only replaces this range.
-    this.store.masks.set(
-      new Map([...previousMasks].filter(([frame]) => frame < startFrameIdx || frame > endFrameIdx)),
-    );
-    this.store.liveEditedObjectFrames.set(
-      new Map(
-        [...previousLiveEdits].filter(([frame]) => frame < startFrameIdx || frame > endFrameIdx),
-      ),
-    );
-    const maskManifestPath = response.mask_manifest_path || response['state.mask_manifest_path'];
-    this.store.hasManifestMasks.set(Boolean(maskManifestPath));
+    if (response.saved_state !== undefined) this.store.savedState.set(response.saved_state);
     if (response.tracked_points_skipped_reason) {
       this.toast.show(
         'warning',
@@ -73,21 +72,29 @@ export class MaskPropagationService {
 
   clearMasks(): void {
     if (this.isBusy) return;
+    const sessionId = this.store.sessionId();
+    const revision = this.store.annotationRevision();
+    if (!sessionId || revision === null) return;
     this.store.isLoading.set(true);
     this.backend
-      .resetVideoState()
-      .pipe(finalize(() => this.store.isLoading.set(false)))
+      .resetVideoState({ session_id: sessionId, expected_revision: revision })
+      .pipe(
+        takeUntilDestroyed(this.destroyRef),
+        finalize(() => this.store.isLoading.set(false)),
+      )
       .subscribe({
         next: (response) => {
-          this.store.updateStateEpoch(response?.state_epoch, 'reset');
-          this.store.hasManifestMasks.set(false);
-          this.store.invalidateTracking();
-          this.store.resetInteractiveMaps();
+          if (!this.store.applyAnnotationUpdate(response)) {
+            this.store.annotationRecoveryRequested.set(true);
+            return;
+          }
           this.framePipeline.clearMaskDataCache();
           this.framePipeline.scheduleFrameLoad(this.store.targetFrameIdx());
         },
         error: (error) => {
-          console.error(error);
+          const status = (error as { status?: number })?.status;
+          if (status === undefined || status === 0 || status === 409 || status >= 500)
+            this.store.annotationRecoveryRequested.set(true);
           this.toast.show(
             'error',
             'Clear failed',

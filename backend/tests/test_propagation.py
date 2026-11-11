@@ -1,0 +1,142 @@
+import sys
+import tempfile
+import unittest
+from contextlib import ExitStack
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+import cv2
+import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from core.errors import OperationError
+from core.context import AppContext, SessionManager
+from core.jobs import JobHandle
+from core.state import BackendState
+from core.annotations import SessionAnnotations
+from schemas.video import VideoPropagateRequest
+from utils import build_empty_mask_manifest, load_mask_manifest, write_mask_manifest
+from video import propagation
+from video.propagation import propagation_batch_progress
+from video.masks import manifest_frame_payload, store_mask_override
+from video.prompts import replay_annotation_prompts
+from video.runtime import VideoMaskerRuntime
+
+
+class PartialPropagationTests(unittest.TestCase):
+    def test_replaces_only_processed_frames_and_preserves_earlier_and_later_outputs(self):
+        for export_overlay_frames, explicit_override in [(True, False), (False, False), (True, True), (False, True)]:
+            with self.subTest(export_overlay_frames=export_overlay_frames, explicit_override=explicit_override):
+                with tempfile.TemporaryDirectory() as directory, ExitStack() as patches:
+                    root = Path(directory)
+                    frames = root / "frames"
+                    masks = root / "masks"
+                    frames.mkdir()
+                    masks.mkdir()
+                    for i in range(5):
+                        cv2.imwrite(str(frames / f"{i:05d}.jpg"), np.zeros((8, 8, 3), dtype=np.uint8))
+                        (masks / f"frame_{i:05d}_masks.png").write_bytes(f"old-{i}".encode())
+                    old_frame = manifest_frame_payload({1: np.ones((8, 8), dtype=bool)})
+                    manifest = build_empty_mask_manifest(
+                        source_video_path=None, resolved_video_frames_dir=str(frames),
+                        num_frames=5, frame_height=8, frame_width=8,
+                    )
+                    manifest["frames"] = {str(i): old_frame for i in range(5)}
+                    write_mask_manifest(masks / "manifest.json", manifest)
+                    masker = Mock(online_mode=True, default_batch_size=2,
+                                  offload_video_to_cpu=True, offload_state_to_cpu=False)
+                    def produce(**kwargs):
+                        for index in range(kwargs["start_frame_idx"], kwargs["start_frame_idx"] + kwargs["max_frame_num_to_track"]):
+                            kwargs["frame_callback"](index, {1: np.zeros((8, 8), dtype=bool)})
+                    masker.propagate_in_video.side_effect = produce
+                    state = BackendState(
+                        video_masker=masker, video_dir=str(frames),
+                        video_frame_files=[f"{i:05d}.jpg" for i in range(5)],
+                        annotations=SessionAnnotations(objects={1: {"id": 1, "label": "Object 1", "color": "#ff0000"}},
+                                                    prompts=[{"frame_idx": 1, "obj_id": 1, "points": [[1, 1]], "labels": [1]}]),
+                        mask_manifest_path=str(masks / "manifest.json"), active_session_dir=root, active_session_id="session",
+                    )
+                    ctx = AppContext(SessionManager(state))
+                    runtime = VideoMaskerRuntime(
+                        session=state, create_masker=Mock(),
+                        replay_inputs=Mock(side_effect=replay_annotation_prompts), release_memory=Mock(),
+                    )
+                    if explicit_override:
+                        state.annotations.set_mask(store_mask_override(root, 1, 1, np.ones((8, 8), dtype=bool)))
+                    state.interactive_mask_files = {str(i): "old-artifact.json" for i in range(5)}
+                    for name, value in {
+                        "current_masks_dir": lambda session: masks,
+                        "create_masker_runtime": lambda session: runtime,
+                    }.items():
+                        patches.enter_context(patch.object(propagation, name, value))
+                    # Repeat the shorter range: neither run may remove the earlier/later data.
+                    for _ in range(2):
+                        response = propagation.run_propagation_job(ctx, VideoPropagateRequest(
+                            start_frame_idx=1, max_frame_num_to_track=2, use_tracked_points=False,
+                            export_overlay_frames=export_overlay_frames,
+                        ), Mock(spec=JobHandle))
+                        updated = load_mask_manifest(Path(state.mask_manifest_path))
+                        self.assertEqual(set(updated["frames"]), {"0", "1", "2", "3", "4"})
+                        for i in [0, 3, 4]:
+                            self.assertEqual(updated["frames"][str(i)], old_frame)
+                            self.assertEqual((masks / f"frame_{i:05d}_masks.png").read_bytes(), f"old-{i}".encode())
+                        for i in [1, 2]:
+                            self.assertEqual(updated["frames"][str(i)]["objects"]["1"]["rle"],
+                                             [[0, 64]] if explicit_override and i == 1 else [])
+                            self.assertEqual(updated["frames"][str(i)]["input_revisions"],
+                                             {"1": state.annotations.input_revisions.get(1, 0)})
+                            overlay = masks / f"frame_{i:05d}_masks.png"
+                            if export_overlay_frames:
+                                self.assertIsNotNone(cv2.imread(str(masks / updated["frames"][str(i)]["overlay_path"])))
+                                self.assertEqual(overlay.read_bytes(), f"old-{i}".encode())
+                            else:
+                                self.assertEqual(overlay.read_bytes(), f"old-{i}".encode())
+                        self.assertEqual(response["video_segments_total_frames"], 2)
+                        self.assertEqual(set(state.interactive_mask_files), {"0", "3", "4"})
+                        if explicit_override:
+                            self.assertTrue(any(call.kwargs["mask"].all() for call in masker.add_new_mask.call_args_list))
+
+                    previous_path = state.mask_manifest_path
+                    previous_masks = dict(state.interactive_mask_files)
+                    previous_manifest = Path(previous_path).read_bytes()
+                    request = VideoPropagateRequest(start_frame_idx=1, max_frame_num_to_track=2,
+                                                    use_tracked_points=False, export_overlay_frames=False)
+                    with patch.object(propagation, "write_mask_manifest", side_effect=OSError("disk full")):
+                        with self.assertRaises(OSError):
+                            propagation.run_propagation_job(ctx, request, Mock(spec=JobHandle))
+                    self.assertEqual(state.mask_manifest_path, previous_path)
+                    self.assertEqual(state.interactive_mask_files, previous_masks)
+                    self.assertEqual(Path(previous_path).read_bytes(), previous_manifest)
+                    with patch.object(masker, "propagate_in_video", side_effect=RuntimeError("inference failed")):
+                        with self.assertRaises(OperationError):
+                            propagation.run_propagation_job(ctx, request, Mock(spec=JobHandle))
+                    self.assertEqual(state.mask_manifest_path, previous_path)
+                    runtime.replay_inputs.assert_called_with(state)
+                    runtime.replay_inputs.side_effect = RuntimeError("restore failed")
+                    with self.assertLogs("video.runtime", level="ERROR"):
+                        with self.assertRaises(OperationError) as failure:
+                            propagation.run_propagation_job(ctx, request, Mock(spec=JobHandle))
+                    self.assertEqual(failure.exception.status_code, 503)
+                    self.assertIsNone(state.video_masker)
+                    self.assertEqual(state.mask_manifest_path, previous_path)
+                    self.assertEqual(state.interactive_mask_files, previous_masks)
+
+
+
+class PropagationProgressTests(unittest.TestCase):
+    def test_batch_progress_follows_the_position_within_the_range(self):
+        for name, processed, total, expected in [
+            ("a full batch reaches its total", 31, 64, (32, 32, 1, 2)),
+            ("the second batch restarts the count", 32, 64, (1, 32, 2, 2)),
+            ("the final partial batch uses its own total", 38, 39, (7, 7, 2, 2)),
+        ]:
+            with self.subTest(name):
+                progress = propagation_batch_progress(
+                    processed_before_frame=processed, total_frames=total, batch_size=32)
+                self.assertEqual(
+                    (progress["batch_current"], progress["batch_total"],
+                     progress["batch_index"], progress["batch_count"]), expected)
+
+
+if __name__ == "__main__":
+    unittest.main()

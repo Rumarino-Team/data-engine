@@ -1,3 +1,4 @@
+import { setAcceptedPoints, initializeEditorStore } from '../testing/workflow-test-helpers';
 import { TestBed } from '@angular/core/testing';
 import { Subject, of } from 'rxjs';
 import { vi } from 'vitest';
@@ -11,6 +12,7 @@ describe('FramePipelineService', () => {
   let store: VideoMaskerStateStore;
   let images: FakeImage[];
   let backend: {
+    getApiUrl: ReturnType<typeof vi.fn>;
     getVideoFrameUrl: ReturnType<typeof vi.fn>;
     getVideoMaskData: ReturnType<typeof vi.fn>;
   };
@@ -37,6 +39,9 @@ describe('FramePipelineService', () => {
   }
 
   const maskResponse = (frameIdx: number): VideoMaskDataResponse => ({
+    session_id: 'session-1',
+    annotation_revision: store.annotationRevision()!,
+    sources: { '1': 'manifest' },
     frame_idx: frameIdx,
     objects: { '1': { size: [1, 2], rle: [[0, 1]], bbox: [0, 0, 1, 1] } },
   });
@@ -46,6 +51,7 @@ describe('FramePipelineService', () => {
     viewport = { attach: vi.fn(), detach: vi.fn(), reset: vi.fn(), render: vi.fn() };
     vi.stubGlobal('Image', FakeImage);
     backend = {
+      getApiUrl: vi.fn(() => 'http://127.0.0.1:8000'),
       getVideoFrameUrl: vi.fn((idx: number) => `/frame/${idx}`),
       getVideoMaskData: vi.fn((idx: number) => of(maskResponse(idx))),
     };
@@ -59,15 +65,14 @@ describe('FramePipelineService', () => {
     });
     service = TestBed.inject(FramePipelineService);
     store = TestBed.inject(VideoMaskerStateStore);
+    initializeEditorStore(store);
+    store.displayedFrameIdx.set(-1);
+    store.selectedObjectId.set(null);
     service.attach(document.createElement('div'), () => {});
-    store.objects.set([{ id: 1, label: 'Object 1', color: '#ff0000' }]);
-    store.hasManifestMasks.set(true);
   });
 
   afterEach(() => {
     service.detach();
-    vi.restoreAllMocks();
-    vi.unstubAllGlobals();
   });
 
   async function startFrame(idx: number): Promise<FakeImage> {
@@ -76,7 +81,8 @@ describe('FramePipelineService', () => {
   }
 
   it('passes frame, mask data, and prompt coordinates to the Konva viewport', async () => {
-    store.points.set(
+    setAcceptedPoints(
+      store,
       new Map([
         [
           0,
@@ -105,94 +111,49 @@ describe('FramePipelineService', () => {
       { x: 12, y: 24, label: 1 },
       { x: 30, y: 40, label: 0 },
     ]);
-    expect(store.lastMaskSource()).toBe('none');
   });
 
-  it('suppresses a saved mask when the live edit explicitly returns an empty mask', async () => {
+  it('renders the masks the backend selected without local precedence', async () => {
     store.selectedObjectId.set(1);
-    store.liveEditedObjectFrames.set(new Map([[0, new Set([1])]]));
-    store.masks.set(new Map([[0, new Map([[1, [[false, false]]]])]]));
-    const image = await startFrame(0);
-    await image.onload?.();
-    expect(viewport.render.mock.lastCall![1]).toEqual([]);
-    expect(store.lastMaskSource()).toBe('none');
-  });
-
-  it('renders a returned live mask once even when that object was not the clicked object', async () => {
-    const liveMask = [[false, true]];
-    store.selectedObjectId.set(1);
-    store.masks.set(new Map([[0, new Map([[1, liveMask]])]]));
     const image = await startFrame(0);
     await image.onload?.();
     expect(viewport.render.mock.lastCall![1]).toEqual([
-      { objectId: 1, color: '#ff0000', source: liveMask },
+      { objectId: 1, color: '#ff0000', source: maskResponse(0).objects['1'] },
     ]);
-    expect(store.lastMaskSource()).toBe('live');
   });
 
-  it('does not resurrect a saved mask behind an empty live result for another object', async () => {
-    store.selectedObjectId.set(1);
-    store.masks.set(new Map([[0, new Map([[1, [[false, false]]]])]]));
+  it('retains a backend-selected empty override on refetch', async () => {
+    const response = maskResponse(0);
+    response.objects['1'] = { size: [1, 2], rle: [], bbox: [0, 0, 0, 0] };
+    response.sources['1'] = 'override';
+    backend.getVideoMaskData.mockReturnValue(of(response));
     const image = await startFrame(0);
     await image.onload?.();
-    expect(viewport.render.mock.lastCall![1]).toEqual([]);
-    expect(store.lastMaskSource()).toBe('none');
-  });
-
-  it('does not paint deleted objects from cached or refetched manifests', async () => {
-    const image = await startFrame(0);
-    await image.onload?.();
-    expect(viewport.render.mock.lastCall![1]).toHaveLength(1);
-    service.removeObject(1);
-    store.objects.set([]);
-
-    service.redraw();
+    service.clearMaskDataCache();
     await service.loadFrame(0);
-    expect(backend.getVideoMaskData).toHaveBeenCalledTimes(2);
+    expect(viewport.render.mock.lastCall![1][0].source).toEqual(response.objects['1']);
+  });
+
+  it('rejects cached and late masks after an accepted deletion', async () => {
+    const old = maskResponse(0);
+    const image = await startFrame(0);
+    await image.onload?.();
+    store.annotations.set({ ...store.annotations()!, revision: 2, objects: {} });
+    service.redraw();
+    expect(service.acceptMaskData(old, 0)).toBe(false);
     expect(viewport.render.mock.lastCall![1]).toEqual([]);
   });
 
-  it('renders encoded live masks directly and marks their source as live', async () => {
-    const mask = {
-      size: [1, 2] as [number, number],
-      rle: [[1, 1]],
-      bbox: [1, 0, 1, 1] as [number, number, number, number],
-    };
-    store.selectedObjectId.set(1);
-    store.liveEditedObjectFrames.set(new Map([[0, new Set([1])]]));
-    store.masks.set(new Map([[0, new Map([[1, mask]])]]));
-    const image = await startFrame(0);
-    await image.onload?.();
-    expect(viewport.render.mock.lastCall![1]).toEqual([
-      { objectId: 1, source: mask, color: '#ff0000' },
-    ]);
-    expect(viewport.render.mock.lastCall![1][0].source).toBe(mask);
-    expect(store.lastMaskSource()).toBe('live');
-  });
-
-  it('suppresses saved foreground when an encoded live edit is empty', async () => {
-    store.liveEditedObjectFrames.set(new Map([[0, new Set([1])]]));
-    store.masks.set(
-      new Map([
-        [
-          0,
-          new Map([
-            [
-              1,
-              {
-                size: [1, 2] as [number, number],
-                rle: [],
-                bbox: [0, 0, 0, 0] as [number, number, number, number],
-              },
-            ],
-          ]),
-        ],
-      ]),
-    );
-    const image = await startFrame(0);
-    await image.onload?.();
-    expect(viewport.render.mock.lastCall![1]).toEqual([]);
-  });
+  it.each(['session', 'revision', 'frame'])(
+    'rejects masks with stale %s identity',
+    async (kind) => {
+      const response = maskResponse(0);
+      if (kind === 'session') response.session_id = 'other';
+      if (kind === 'revision') response.annotation_revision++;
+      if (kind === 'frame') response.frame_idx++;
+      expect(service.acceptMaskData(response, 0)).toBe(false);
+    },
+  );
 
   it('ignores a mask response invalidated while it was in flight', async () => {
     const pending = new Subject<VideoMaskDataResponse>();
@@ -337,7 +298,6 @@ describe('FramePipelineService', () => {
   });
 
   it('keeps recently accessed images and evicts older images at the byte budget', async () => {
-    store.hasManifestMasks.set(false);
     for (const index of [0, 1]) {
       const image = await startFrame(index);
       image.width = image.height = 4096; // 64 MiB each: two fill the 128 MiB budget.
@@ -360,6 +320,102 @@ describe('FramePipelineService', () => {
     await service.loadFrame(5);
     service.redraw();
     expect(viewport.render.mock.lastCall![0]).toBe(image);
+    expect(viewport.render.mock.lastCall![1]).toHaveLength(1);
+  });
+
+  it('prefetches neighbor masks after the current pair is ready and promotes the pending request', async () => {
+    store.numFrames.set(3);
+    const responses = new Map(
+      [0, 1, 2].map((frame) => [frame, new Subject<VideoMaskDataResponse>()]),
+    );
+    backend.getVideoMaskData.mockImplementation((frame) => responses.get(frame));
+    const image = await startFrame(1);
+    const loaded = image.onload?.();
+    expect(backend.getVideoMaskData.mock.calls).toEqual([[1]]);
+    responses.get(1)!.next(maskResponse(1));
+    await loaded;
+    expect(backend.getVideoMaskData.mock.calls).toEqual([[1], [2], [0]]);
+    const neighbor = images.find((entry) => entry.src === '/frame/2')!;
+    await service.loadFrame(2);
+    expect(responses.get(2)!.observed).toBe(true);
+    expect(responses.get(0)!.observed).toBe(false);
+    const nextLoaded = neighbor.onload?.();
+    responses.get(2)!.next(maskResponse(2));
+    await nextLoaded;
+    expect(backend.getVideoMaskData.mock.calls.filter(([frame]) => frame === 2)).toHaveLength(1);
+    expect(viewport.render.mock.lastCall![6]).toBe(2);
+    expect(viewport.render.mock.lastCall![1]).toHaveLength(1);
+  });
+
+  it('cancels distant image and mask work immediately and coalesces scheduled navigation', async () => {
+    let animation: FrameRequestCallback | undefined;
+    vi.stubGlobal(
+      'requestAnimationFrame',
+      vi.fn((callback) => {
+        animation = callback;
+        return 1;
+      }),
+    );
+    const masks = new Subject<VideoMaskDataResponse>();
+    backend.getVideoMaskData.mockReturnValueOnce(masks);
+    const image = await startFrame(0);
+    const callback = image.onload;
+    service.scheduleFrameLoad(5);
+    service.scheduleFrameLoad(6);
+    expect(image.src).toBe('');
+    expect(masks.observed).toBe(false);
+    await callback?.();
+    expect(viewport.render).not.toHaveBeenCalled();
+    animation!(0);
+    expect(backend.getVideoFrameUrl).toHaveBeenCalledWith(6);
+    expect(backend.getVideoFrameUrl).not.toHaveBeenCalledWith(5);
+    expect(requestAnimationFrame).toHaveBeenCalledOnce();
+  });
+
+  it('retains useful neighbor work without allowing it to paint before scheduled navigation', async () => {
+    vi.stubGlobal(
+      'requestAnimationFrame',
+      vi.fn(() => 1),
+    );
+    const image = await startFrame(0);
+    service.scheduleFrameLoad(1);
+    expect(image.src).toBe('/frame/0');
+    await image.onload?.();
+    expect(service.currentBaseImage).toBeNull();
+    expect(viewport.render).not.toHaveBeenCalled();
+    await service.loadFrame(0);
+    expect(service.currentBaseImage).toBe(image);
+    expect(backend.getVideoFrameUrl.mock.calls.filter(([frame]) => frame === 0)).toHaveLength(1);
+  });
+
+  it('does not repaint obsolete masks between navigation intent and the next animation tick', async () => {
+    vi.stubGlobal(
+      'requestAnimationFrame',
+      vi.fn(() => 1),
+    );
+    const response = new Subject<VideoMaskDataResponse>();
+    backend.getVideoMaskData.mockReturnValueOnce(response);
+    const image = await startFrame(0);
+    const loaded = image.onload?.();
+    expect(viewport.render).toHaveBeenCalledOnce();
+    service.scheduleFrameLoad(1);
+    response.next(maskResponse(0));
+    await loaded;
+    expect(viewport.render).toHaveBeenCalledOnce();
+  });
+
+  it('keeps compressed masks when decoded images are evicted', async () => {
+    for (const frame of [0, 1, 2]) {
+      const image = await startFrame(frame);
+      image.width = image.height = 4096;
+      await image.onload?.();
+    }
+    expect(backend.getVideoMaskData).toHaveBeenCalledTimes(3);
+    const imageCount = images.length;
+    await service.loadFrame(0);
+    expect(images).toHaveLength(imageCount + 1);
+    await images.at(-1)!.onload?.();
+    expect(backend.getVideoMaskData).toHaveBeenCalledTimes(3);
     expect(viewport.render.mock.lastCall![1]).toHaveLength(1);
   });
 });

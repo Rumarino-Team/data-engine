@@ -1,0 +1,26 @@
+<div class="backdrop" *ngIf="request" (click)="answer.emit(null)">
+  <div
+    class="dialog"
+    role="alertdialog"
+    aria-modal="true"
+    aria-labelledby="confirm-dialog-title"
+    aria-describedby="confirm-dialog-message"
+    (click)="$event.stopPropagation()"
+  >
+    <h2 id="confirm-dialog-title">{{ request.title }}</h2>
+    <p id="confirm-dialog-message">{{ request.message }}</p>
+    <div class="actions">
+      <button
+        *ngFor="let action of request.actions"
+        type="button"
+        class="confirm-action"
+        [class.primary]="action.tone === 'primary'"
+        [class.danger]="action.tone === 'danger'"
+        (click)="answer.emit(action.value)"
+      >
+        {{ action.label }}
+      </button>
+      <button type="button" class="confirm-action" (click)="answer.emit(null)">Cancel</button>
+    </div>
+  </div>
+</div>

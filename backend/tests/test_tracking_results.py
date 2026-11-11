@@ -1,43 +1,36 @@
-import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 import sys
 
-from fastapi import HTTPException
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from core.state import state
-from sessions.metadata import write_session_metadata
+from core.errors import OperationError
+from support import state
+from core.annotations import SessionAnnotations
+from sessions.metadata import session_metadata_document
 from tracking.results import (
     load_prompt_tracking_result,
     restored_tracking_result_payload,
     save_prompt_tracking_result,
 )
 from tracking.guidance import TrackingGuidance, TrackedGuidancePoint, load_latest_tracking_guidance
-from utils import load_mask_manifest
+from support import BackendStateTestCase, commit_session
 
 
-class TrackingResultTests(unittest.TestCase):
+class TrackingResultTests(BackendStateTestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.session_path = Path(self.tmp.name)
+        super().setUp()
+        self.session_path = self.temp_dir()
         state.active_session_dir = self.session_path
         state.active_session_id = "session-1"
-        state.active_session_saved_name = None
         state.video_frame_files = ["00000.jpg", "00001.jpg"]
-        state.video_state_epoch = 1
-
-    def tearDown(self):
-        state.active_session_dir = None
-        state.active_session_id = None
-        state.active_session_saved_name = None
-        state.video_frame_files = []
-        state.video_prompt_events = []
-        self.tmp.cleanup()
+        state.annotations = SessionAnnotations(objects={1: {"id": 1, "label": "Object 1", "color": "#ff0000"}},
+            prompts=[{"frame_idx": 0, "obj_id": 1, "points": [[10, 20]], "labels": [1]}])
 
     def test_save_and_read_tracking_result(self):
         saved = save_prompt_tracking_result(
+            state,
             model_name="cotracker3_online",
             num_points=1,
             num_frames=2,
@@ -51,22 +44,63 @@ class TrackingResultTests(unittest.TestCase):
 
         result_path = self.session_path / "tracking" / f"{saved['result_id']}.json"
         self.assertTrue(result_path.exists())
-        loaded = load_prompt_tracking_result(saved["result_id"])
-        self.assertEqual(loaded["version"], 2)
-        self.assertEqual(loaded["state_epoch"], 1)
+        loaded = load_prompt_tracking_result(state, saved["result_id"])
+        self.assertEqual(loaded["version"], 3)
         self.assertEqual(loaded["tracked_prompt_keys"], ["obj:1|frame:0|x:10.000|y:20.000"])
         self.assertEqual(loaded["tracks"], [[[10, 20], [11, 21]]])
         self.assertEqual(loaded["visibility"], [[True, True]])
 
+    def test_failed_result_write_keeps_the_previous_reference(self):
+        kwargs = dict(model_name="cotracker3_online", num_points=1, num_frames=2,
+            add_support_grid_used=False, tracking_mode="streaming", streaming_frame_threshold=256,
+            points=[{"point_id": "p0", "obj_id": 1, "source_frame_idx": 0, "source_x": 10, "source_y": 20}],
+            tracks=[[[10, 20], [11, 21]]], visibility=[[True, True]])
+        old = save_prompt_tracking_result(state, **kwargs)
+        old_metadata = dict(state.session_metadata)
+        with patch("tracking.results.write_mask_manifest", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                save_prompt_tracking_result(state, **kwargs)
+        self.assertEqual(state.session_metadata, old_metadata)
+        self.assertEqual(load_prompt_tracking_result(state, old["result_id"])["num_points"], 1)
+        # The rejected result was never written or named, so only the previous file remains.
+        self.assertEqual([path.stem for path in (self.session_path / "tracking").glob("*.json")], [old["result_id"]])
+
+    def test_a_new_result_supersedes_the_previous_file(self):
+        kwargs = dict(model_name="cotracker3_online", num_points=1, num_frames=2,
+            add_support_grid_used=False, tracking_mode="streaming", streaming_frame_threshold=256,
+            points=[{"point_id": "p0", "obj_id": 1, "source_frame_idx": 0, "source_x": 10, "source_y": 20}],
+            tracks=[[[10, 20], [11, 21]]], visibility=[[True, True]])
+        first = save_prompt_tracking_result(state, **kwargs)
+        second = save_prompt_tracking_result(state, **kwargs)
+        self.assertNotEqual(first["result_id"], second["result_id"])
+        self.assertEqual(state.session_metadata["latest_tracking_result_id"], second["result_id"])
+        self.assertEqual([path.stem for path in (self.session_path / "tracking").glob("*.json")], [second["result_id"]])
+
+    def test_same_validity_for_retrieval_guidance_and_restore(self):
+        saved = save_prompt_tracking_result(state, model_name="cotracker3_online", num_points=1, num_frames=2,
+            add_support_grid_used=False, tracking_mode="streaming", streaming_frame_threshold=256,
+            points=[{"point_id": "p0", "obj_id": 1, "source_frame_idx": 0, "source_x": 10, "source_y": 20}],
+            tracks=[[[10, 20], [11, 21]]], visibility=[[True, True]])
+        state.annotations.objects[1].label = "Renamed"
+        self.assertEqual(load_prompt_tracking_result(state, saved["result_id"])["num_points"], 1)
+        self.assertIsNotNone(restored_tracking_result_payload(state, self.session_path, state.session_metadata))
+        state.annotations.clear_prompts(0, 1)
+        self.assertEqual(load_prompt_tracking_result(state, saved["result_id"])["points"], [])
+        self.assertEqual(load_latest_tracking_guidance(state, num_frames=2).points, [])
+        self.assertIsNone(restored_tracking_result_payload(state, self.session_path, state.session_metadata))
+        state.active_session_id = "another-session"
+        with self.assertRaises(OperationError) as mismatch:
+            load_prompt_tracking_result(state, saved["result_id"])
+        self.assertEqual(mismatch.exception.status_code, 409)
+
     def test_latest_guidance_uses_matching_tracks_with_post_tracking_prompts(self):
-        state.video_prompt_events = [
+        state.annotations = SessionAnnotations(objects={1: {"id": 1, "label": "Object 1", "color": "#ff0000"}}, prompts=[
             {
                 "frame_idx": 0,
                 "obj_id": 1,
                 "points": [[10.0, 20.0]],
                 "labels": [1],
                 "box": None,
-                "clear_old_points": True,
             },
             {
                 "frame_idx": 1,
@@ -74,10 +108,10 @@ class TrackingResultTests(unittest.TestCase):
                 "points": [[30.0, 40.0]],
                 "labels": [1],
                 "box": None,
-                "clear_old_points": False,
             },
-        ]
+        ])
         save_prompt_tracking_result(
+            state,
             model_name="cotracker3_online",
             num_points=1,
             num_frames=2,
@@ -89,24 +123,24 @@ class TrackingResultTests(unittest.TestCase):
             visibility=[[True, True]],
         )
 
-        guidance = load_latest_tracking_guidance(num_frames=2)
+        guidance = load_latest_tracking_guidance(state, num_frames=2)
 
         self.assertIsNone(guidance.skipped_reason)
         self.assertEqual(len(guidance.points), 1)
-        self.assertEqual(len(state.video_prompt_events), 2)
+        self.assertEqual(len(state.annotations.prompts), 2)
 
     def test_latest_guidance_ignores_tracks_when_source_prompt_was_removed(self):
-        state.video_prompt_events = [
+        state.annotations = SessionAnnotations(objects={1: {"id": 1, "label": "Object 1", "color": "#ff0000"}}, prompts=[
             {
                 "frame_idx": 1,
                 "obj_id": 1,
                 "points": [[30.0, 40.0]],
                 "labels": [1],
                 "box": None,
-                "clear_old_points": True,
             }
-        ]
+        ])
         save_prompt_tracking_result(
+            state,
             model_name="cotracker3_online",
             num_points=1,
             num_frames=2,
@@ -118,23 +152,23 @@ class TrackingResultTests(unittest.TestCase):
             visibility=[[True, True]],
         )
 
-        guidance = load_latest_tracking_guidance(num_frames=2)
+        guidance = load_latest_tracking_guidance(state, num_frames=2)
 
         self.assertEqual(guidance.points, [])
         self.assertIn("No CoTracker points match", guidance.skipped_reason)
 
     def test_latest_guidance_skips_frame_count_mismatch(self):
-        state.video_prompt_events = [
+        state.annotations = SessionAnnotations(objects={1: {"id": 1, "label": "Object 1", "color": "#ff0000"}}, prompts=[
             {
                 "frame_idx": 0,
                 "obj_id": 1,
                 "points": [[10.0, 20.0]],
                 "labels": [1],
                 "box": None,
-                "clear_old_points": True,
             }
-        ]
+        ])
         save_prompt_tracking_result(
+            state,
             model_name="cotracker3_online",
             num_points=1,
             num_frames=2,
@@ -146,7 +180,7 @@ class TrackingResultTests(unittest.TestCase):
             visibility=[[True, True]],
         )
 
-        guidance = load_latest_tracking_guidance(num_frames=3)
+        guidance = load_latest_tracking_guidance(state, num_frames=3)
 
         self.assertEqual(guidance.points, [])
         self.assertIn("does not match", guidance.skipped_reason)
@@ -169,13 +203,13 @@ class TrackingResultTests(unittest.TestCase):
             ]
         )
 
-        batches, seeded_count, seeded_frames = guidance.build_window_batches(
-            window_start=0,
-            window_end=4,
-            propagation_start_frame_idx=0,
+        batches, seeded_count, seeded_frames = guidance.build_seed_batches(
+            range_start=0,
+            range_end=4,
             frame_width=32,
             frame_height=32,
             keyframe_interval=2,
+            max_keyframes=100,
             max_points_per_object_per_frame=1,
         )
 
@@ -196,13 +230,13 @@ class TrackingResultTests(unittest.TestCase):
             ]
         )
 
-        batches, seeded_count, seeded_frames = guidance.build_window_batches(
-            window_start=2,
-            window_end=4,
-            propagation_start_frame_idx=0,
+        batches, seeded_count, seeded_frames = guidance.build_seed_batches(
+            range_start=2,
+            range_end=4,
             frame_width=64,
             frame_height=64,
             keyframe_interval=2,
+            max_keyframes=100,
             max_points_per_object_per_frame=16,
             excluded_frame_objects={(2, 1)},
         )
@@ -210,6 +244,34 @@ class TrackingResultTests(unittest.TestCase):
         self.assertNotIn(0, batches)
         self.assertEqual(seeded_count, 1)
         self.assertEqual(seeded_frames, {4})
+
+    def guidance_over(self, frames):
+        return TrackingGuidance(points=[TrackedGuidancePoint(
+            obj_id=1, source_frame_idx=0, tracks=[[10, 10]] * frames, visibility=[True] * frames)])
+
+    def seeded_frames(self, frames, *, interval, cap, start=0):
+        _, _, seeded = self.guidance_over(frames).build_seed_batches(
+            range_start=start, range_end=frames - 1, frame_width=64, frame_height=64,
+            keyframe_interval=interval, max_keyframes=cap, max_points_per_object_per_frame=16)
+        return sorted(seeded)
+
+    def test_keyframes_follow_the_interval_while_they_stay_under_the_cap(self):
+        self.assertEqual(self.seeded_frames(21, interval=8, cap=16), [0, 8, 16, 20])
+
+    def test_a_long_range_gets_at_most_the_cap_evenly_spaced_with_both_ends(self):
+        frames = self.seeded_frames(923, interval=8, cap=16)
+        self.assertEqual(len(frames), 16)
+        self.assertEqual((frames[0], frames[-1]), (0, 922))
+        gaps = {later - earlier for earlier, later in zip(frames, frames[1:])}
+        self.assertLessEqual(max(gaps) - min(gaps), 1)
+
+    def test_the_cap_counts_from_the_start_of_a_custom_range(self):
+        frames = self.seeded_frames(300, interval=1, cap=5, start=100)
+        self.assertEqual(frames, [100, 150, 200, 249, 299])
+
+    def test_a_cap_of_one_seeds_only_the_first_frame_and_a_short_range_is_unaffected(self):
+        self.assertEqual(self.seeded_frames(300, interval=8, cap=1), [0])
+        self.assertEqual(self.seeded_frames(3, interval=1, cap=16), [0, 1, 2])
 
     def test_guidance_skips_bad_coordinate_values(self):
         guidance = TrackingGuidance(
@@ -223,13 +285,13 @@ class TrackingResultTests(unittest.TestCase):
             ]
         )
 
-        batches, seeded_count, seeded_frames = guidance.build_window_batches(
-            window_start=0,
-            window_end=1,
-            propagation_start_frame_idx=0,
+        batches, seeded_count, seeded_frames = guidance.build_seed_batches(
+            range_start=0,
+            range_end=1,
             frame_width=64,
             frame_height=64,
             keyframe_interval=1,
+            max_keyframes=100,
             max_points_per_object_per_frame=16,
         )
 
@@ -238,34 +300,34 @@ class TrackingResultTests(unittest.TestCase):
         self.assertEqual(batches[1][1], [[10.0, 10.0]])
 
     def test_latest_guidance_no_result_does_not_warn(self):
-        guidance = load_latest_tracking_guidance(num_frames=2)
+        guidance = load_latest_tracking_guidance(state, num_frames=2)
 
         self.assertEqual(guidance.points, [])
         self.assertFalse(guidance.should_warn)
         self.assertIn("No CoTracker result", guidance.skipped_reason)
 
     def test_invalid_result_id_returns_400(self):
-        with self.assertRaises(HTTPException) as context:
-            load_prompt_tracking_result("../bad")
+        with self.assertRaises(OperationError) as context:
+            load_prompt_tracking_result(state, "../bad")
         self.assertEqual(context.exception.status_code, 400)
 
     def test_missing_result_returns_404(self):
-        with self.assertRaises(HTTPException) as context:
-            load_prompt_tracking_result("missing")
+        with self.assertRaises(OperationError) as context:
+            load_prompt_tracking_result(state, "missing")
         self.assertEqual(context.exception.status_code, 404)
 
-    def test_metadata_preserves_latest_tracking_keys(self):
-        write_session_metadata(
-            {
+    def test_saved_metadata_document_keeps_the_latest_tracking_keys(self):
+        commit_session(
+            state, {
                 "latest_tracking_result_id": "abc",
                 "latest_tracking_result_path": "tracking/abc.json",
                 "latest_tracking_result_updated_at": "now",
                 "latest_tracking_result_summary": {"num_points": 1},
             }
         )
-        write_session_metadata({"schema_version": 2})
+        commit_session(state, {"created_at": "then"})
 
-        metadata = load_mask_manifest(self.session_path / "session.json")
+        metadata = session_metadata_document(state)
         self.assertEqual(metadata["latest_tracking_result_id"], "abc")
         self.assertEqual(metadata["latest_tracking_result_summary"], {"num_points": 1})
 
@@ -279,10 +341,9 @@ class TrackingResultTests(unittest.TestCase):
             "latest_tracking_result_summary": {"num_points": 1},
         }
 
-        restored = restored_tracking_result_payload(self.session_path, metadata)
+        restored = restored_tracking_result_payload(state, self.session_path, metadata)
 
-        self.assertEqual(restored["result_id"], "abc")
-        self.assertEqual(restored["summary"], {"num_points": 1})
+        self.assertIsNone(restored)
 
 
 if __name__ == "__main__":

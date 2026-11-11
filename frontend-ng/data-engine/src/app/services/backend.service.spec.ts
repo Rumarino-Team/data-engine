@@ -4,44 +4,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BackendService } from './backend.service';
 
 describe('BackendService', () => {
-  const originalGlobalApiUrl = (globalThis as { __DATA_ENGINE_API_URL__?: string })
-    .__DATA_ENGINE_API_URL__;
-  const originalLocalStorage = globalThis.localStorage;
-  let storage: Record<string, string>;
+  const globals = globalThis as { __DATA_ENGINE_API_URL__?: string };
+  const originalGlobalApiUrl = globals.__DATA_ENGINE_API_URL__;
 
   beforeEach(() => {
-    storage = {};
-    Object.defineProperty(globalThis, 'localStorage', {
-      value: {
-        getItem: vi.fn((key: string) => storage[key] ?? null),
-        setItem: vi.fn((key: string, value: string) => {
-          storage[key] = String(value);
-        }),
-        removeItem: vi.fn((key: string) => {
-          delete storage[key];
-        }),
-        clear: vi.fn(() => {
-          storage = {};
-        }),
-      },
-      configurable: true,
-    });
     localStorage.clear();
-    delete (globalThis as { __DATA_ENGINE_API_URL__?: string }).__DATA_ENGINE_API_URL__;
+    delete globals.__DATA_ENGINE_API_URL__;
   });
 
   afterEach(() => {
     localStorage.clear();
-    Object.defineProperty(globalThis, 'localStorage', {
-      value: originalLocalStorage,
-      configurable: true,
-    });
-    if (originalGlobalApiUrl === undefined) {
-      delete (globalThis as { __DATA_ENGINE_API_URL__?: string }).__DATA_ENGINE_API_URL__;
-      return;
-    }
-    (globalThis as { __DATA_ENGINE_API_URL__?: string }).__DATA_ENGINE_API_URL__ =
-      originalGlobalApiUrl;
+    if (originalGlobalApiUrl === undefined) delete globals.__DATA_ENGINE_API_URL__;
+    else globals.__DATA_ENGINE_API_URL__ = originalGlobalApiUrl;
   });
 
   it('defaults to localhost when no override exists', () => {
@@ -50,6 +24,53 @@ describe('BackendService', () => {
     const service = new BackendService(http);
 
     expect(service.getApiUrl()).toBe('http://127.0.0.1:8000');
+  });
+
+  it('sends required identity and revision headers on every object mutation', () => {
+    const http = { post: vi.fn(), put: vi.fn() };
+    const service = new BackendService(http as unknown as HttpClient);
+    const precondition = { session_id: 'session-a', expected_revision: 7 };
+    const headers = { 'X-Session-ID': 'session-a', 'X-Annotation-Revision': '7' };
+    service.createObject(precondition);
+    service.updateObject({ id: 2, label: 'Hand', color: '#123456' }, precondition);
+    service.removeObject(2, precondition);
+    service.resetVideoState(precondition);
+    service.clearAllPromptsInFrame(3, 2, precondition);
+    const prompt = { frame_idx: 3, obj_id: 2, points: [[1, 2]], labels: [1] };
+    service.addNewPointsOrBox(prompt, precondition);
+    service.saveVideoSession({ name: 'review-run' }, precondition);
+    expect(http.post).toHaveBeenCalledWith('http://127.0.0.1:8000/video/objects', null, {
+      headers,
+    });
+    expect(http.post).toHaveBeenCalledWith(
+      'http://127.0.0.1:8000/video/reset_state',
+      {},
+      { headers },
+    );
+    expect(http.post).toHaveBeenCalledWith(
+      'http://127.0.0.1:8000/video/clear_all_prompts_in_frame',
+      null,
+      { headers, params: { frame_idx: '3', obj_id: '2' } },
+    );
+    expect(http.post).toHaveBeenCalledWith(
+      'http://127.0.0.1:8000/video/add_new_points_or_box',
+      prompt,
+      { headers },
+    );
+    expect(http.post).toHaveBeenCalledWith(
+      'http://127.0.0.1:8000/video/save',
+      { name: 'review-run' },
+      { headers },
+    );
+    expect(http.put).toHaveBeenCalledWith(
+      'http://127.0.0.1:8000/video/objects/2',
+      { label: 'Hand', color: '#123456' },
+      { headers },
+    );
+    expect(http.post).toHaveBeenCalledWith('http://127.0.0.1:8000/video/remove_object', null, {
+      headers,
+      params: { obj_id: '2' },
+    });
   });
 
   it('prefers stored API URL over global config', () => {
@@ -89,117 +110,63 @@ describe('BackendService', () => {
     expect(localStorage.getItem('dataEngineApiUrl')).toBeNull();
   });
 
-  it('calls the health endpoint', () => {
-    const http = {
-      post: vi.fn(),
-      get: vi.fn(() => of({ status: 'ok' })),
-    } as unknown as HttpClient;
-    const service = new BackendService(http);
+  describe('request shapes', () => {
+    const precondition = { session_id: 'session-1', expected_revision: 0 };
+    const preferences = {
+      version: 1,
+      selected_object_id: 1,
+      interaction_mode: 'positive' as const,
+      current_frame_idx: 3,
+    };
+    type Call = (service: BackendService) => { subscribe: () => unknown };
+    const cases: [string, Call, 'get' | 'post', string, unknown?][] = [
+      ['health', (s) => s.health(), 'get', '/health'],
+      ['job status', (s) => s.getJob('abc123'), 'get', '/jobs/abc123'],
+      ['tracking result', (s) => s.getTrackingResult('abc123'), 'get', '/tracking/results/abc123'],
+      [
+        'clear job result',
+        (s) => s.clearJobResult('job-1'),
+        'post',
+        '/jobs/job-1/clear_result',
+        {},
+      ],
+      [
+        'prompt tracking without a model selector',
+        (s) => s.trackPromptPoints({ add_support_grid: true }, precondition),
+        'post',
+        '/tracking/track_prompt_points',
+        { add_support_grid: true },
+      ],
+      [
+        'first save by name',
+        (s) => s.saveVideoSession({ name: 'review-run' }, precondition),
+        'post',
+        '/video/save',
+        { name: 'review-run' },
+      ],
+      ['re-save without a name', (s) => s.saveVideoSession({}, precondition), 'post', '/video/save', {}],
+      [
+        'Save As',
+        (s) => s.saveVideoSession({ name: 'copy', saveAs: true }, precondition),
+        'post',
+        '/video/save',
+        { name: 'copy', save_as: true },
+      ],
+      [
+        'save with editor preferences',
+        (s) => s.saveVideoSession({ name: 'review-run' }, precondition, preferences),
+        'post',
+        '/video/save',
+        { name: 'review-run', interactive_state: preferences },
+      ],
+    ];
 
-    service.health().subscribe();
-
-    expect((http.get as any).mock.calls[0][0]).toBe('http://127.0.0.1:8000/health');
-  });
-
-  it('fetches job status by id', () => {
-    const http = {
-      post: vi.fn(),
-      get: vi.fn(() => of({ job: null })),
-    } as unknown as HttpClient;
-    const service = new BackendService(http);
-
-    service.getJob('abc123').subscribe();
-
-    expect((http.get as any).mock.calls[0][0]).toBe('http://127.0.0.1:8000/jobs/abc123');
-  });
-
-  it('starts prompt tracking without a model selector payload', () => {
-    const http = {
-      post: vi.fn(() => of({})),
-      get: vi.fn(),
-    } as unknown as HttpClient;
-    const service = new BackendService(http);
-
-    service.trackPromptPoints({ add_support_grid: true }).subscribe();
-
-    expect((http.post as any).mock.calls[0][0]).toBe(
-      'http://127.0.0.1:8000/tracking/track_prompt_points',
-    );
-    expect((http.post as any).mock.calls[0][1]).toEqual({ add_support_grid: true });
-    expect((http.post as any).mock.calls[0][1]).not.toHaveProperty('model_name');
-  });
-
-  it('fetches a persisted tracking result by id', () => {
-    const http = {
-      post: vi.fn(),
-      get: vi.fn(() => of({ result: {} })),
-    } as unknown as HttpClient;
-    const service = new BackendService(http);
-
-    service.getTrackingResult('abc123').subscribe();
-
-    expect((http.get as any).mock.calls[0][0]).toBe(
-      'http://127.0.0.1:8000/tracking/results/abc123',
-    );
-  });
-
-  it('clears a completed job result by id', () => {
-    const http = {
-      post: vi.fn(() => of({ cleared: true })),
-      get: vi.fn(),
-    } as unknown as HttpClient;
-    const service = new BackendService(http);
-
-    service.clearJobResult('job-1').subscribe();
-
-    expect((http.post as any).mock.calls[0][0]).toBe(
-      'http://127.0.0.1:8000/jobs/job-1/clear_result',
-    );
-    expect((http.post as any).mock.calls[0][1]).toEqual({});
-  });
-
-  it('saves a video session by name', () => {
-    const http = {
-      post: vi.fn(() => of({})),
-      get: vi.fn(),
-    } as unknown as HttpClient;
-    const service = new BackendService(http);
-
-    service.saveVideoSession('review-run').subscribe();
-
-    expect((http.post as any).mock.calls[0][0]).toBe('http://127.0.0.1:8000/video/save');
-    expect((http.post as any).mock.calls[0][1]).toEqual({ name: 'review-run' });
-  });
-
-  it('sends interactive state when saving a session snapshot', () => {
-    const http = {
-      post: vi.fn(() => of({})),
-      get: vi.fn(),
-    } as unknown as HttpClient;
-    const service = new BackendService(http);
-
-    service
-      .saveVideoSession('review-run', {
-        version: 1,
-        selected_object_id: 1,
-        interaction_mode: 'positive',
-        current_frame_idx: 3,
-        points: [{ frame_idx: 3, obj_id: 1, x: 10, y: 20, label: 1 }],
-        live_masks: [{ frame_idx: 3, obj_id: 1, height: 2, width: 2, counts: [0, 1, 3] }],
-      })
-      .subscribe();
-
-    expect((http.post as any).mock.calls[0][0]).toBe('http://127.0.0.1:8000/video/save');
-    expect((http.post as any).mock.calls[0][1]).toEqual({
-      name: 'review-run',
-      interactive_state: {
-        version: 1,
-        selected_object_id: 1,
-        interaction_mode: 'positive',
-        current_frame_idx: 3,
-        points: [{ frame_idx: 3, obj_id: 1, x: 10, y: 20, label: 1 }],
-        live_masks: [{ frame_idx: 3, obj_id: 1, height: 2, width: 2, counts: [0, 1, 3] }],
-      },
+    it.each(cases)('%s', (_name, call, method, path, body) => {
+      const http = { get: vi.fn(() => of({})), post: vi.fn(() => of({})) };
+      call(new BackendService(http as unknown as HttpClient)).subscribe();
+      const request = http[method].mock.calls[0] as unknown[];
+      expect(request[0]).toBe(`http://127.0.0.1:8000${path}`);
+      if (body !== undefined) expect(request[1]).toEqual(body);
     });
   });
 });

@@ -1,77 +1,76 @@
-from typing import Optional
+from contextlib import contextmanager
+from sessions.artifacts import reclaim_superseded_artifacts, sweep_unreferenced_artifacts
+from video.masks import override_pixels
+from core.errors import OperationError
 import sam2_video_masker as svm
-from core.jobs import update_job
-from core.state import state
-from sessions.cache import bump_video_state_epoch
-from sessions.metadata import write_session_metadata
+from core.runtime import cleanup_cuda_memory
+from core.state import BackendState
+from schemas.video import VideoPrompt
+from video.runtime import MaskerRestorationError, VideoMaskerRuntime
 
-def record_prompt_event(request: "VideoAddPointsOrBoxRequest"):
-
-    if request.clear_old_points:
-        state.video_prompt_events = [
-            event
-            for event in state.video_prompt_events
-            if not (event["frame_idx"] == request.frame_idx and event["obj_id"] == request.obj_id)
-        ]
-
-    event = {
+def record_prompt_event(session: BackendState, request: "VideoAddPointsOrBoxRequest"):
+    event = VideoPrompt.model_validate({
         "frame_idx": int(request.frame_idx),
         "obj_id": int(request.obj_id),
         "points": [list(map(float, point)) for point in (request.points or [])],
         "labels": [int(label) for label in (request.labels or [])],
         "box": [float(v) for v in request.box] if request.box is not None else None,
-        "clear_old_points": bool(request.clear_old_points),
-    }
-    state.video_prompt_events.append(event)
+    })
+    session.annotations.set_prompt(event, clear_old_points=request.clear_old_points)
 
-def restore_video_masker_from_prompt_events(
-    *,
-    online_mode: bool,
-    batch_size: Optional[int],
-    offload_video_to_cpu: Optional[bool],
-    offload_state_to_cpu: Optional[bool],
-    increment_epoch: bool = True,
-    progress_stage_override: Optional[str] = None,
-    progress_label_override: Optional[str] = None,
-    progress_message_prefix: Optional[str] = None,
-) -> None:
 
-    if state.video_dir is None:
-        return
-
-    def _on_progress(stage: str, label: str, progress: Optional[float], message: str) -> None:
-        update_job(
-            stage=progress_stage_override or stage,
-            stage_label=progress_label_override or label,
-            progress=progress,
-            message=f"{progress_message_prefix}: {message}" if progress_message_prefix else message,
+def replay_annotation_prompts(session: BackendState) -> None:
+    for event in session.annotations.prompt_events():
+        session.video_masker.add_new_points_or_box(
+            frame_idx=event["frame_idx"], obj_id=event["obj_id"],
+            points=event["points"] or None, labels=event["labels"] or None,
+            clear_old_points=True, box=event["box"],
         )
+    for mask in session.annotations.mask_overrides:
+        session.video_masker.add_new_mask(frame_idx=mask.frame_idx, obj_id=mask.obj_id,
+                                       mask=override_pixels(mask, session.active_session_dir))
 
-    if state.video_masker is None:
-        state.video_masker = svm.SAM2VideoMasker(progress_callback=_on_progress)
 
-    state.video_masker.init_state(
-        state.video_dir,
-        online_mode=online_mode,
-        batch_size=batch_size,
-        offload_video_to_cpu=offload_video_to_cpu,
-        offload_state_to_cpu=offload_state_to_cpu,
-        async_loading_frames=False,
-        progress_callback=_on_progress,
+def create_masker_runtime(session: BackendState) -> VideoMaskerRuntime:
+    return VideoMaskerRuntime(
+        session=session,
+        create_masker=svm.SAM2VideoMasker,
+        replay_inputs=replay_annotation_prompts,
+        release_memory=cleanup_cuda_memory,
     )
 
-    for event in state.video_prompt_events:
-        points = event["points"] if event["points"] else None
-        labels = event["labels"] if event["labels"] else None
-        state.video_masker.add_new_points_or_box(
-            frame_idx=int(event["frame_idx"]),
-            obj_id=int(event["obj_id"]),
-            points=points,
-            labels=labels,
-            clear_old_points=bool(event.get("clear_old_points", True)),
-            box=event.get("box"),
-        )
 
-    if increment_epoch:
-        bump_video_state_epoch()
-        write_session_metadata()
+@contextmanager
+def annotation_edit(session: BackendState, *, restore_runtime: bool = True):
+    """Stage accepted inputs and restore them when an edit fails.
+
+    Caller holds `ctx.edit()`. The edit is accepted when the block exits without error, and files its
+    new state no longer names are deleted then.
+    Set restore_runtime=False for changes that never touch the predictor.
+    """
+    # Frame entries are replaced, never mutated by foreground edits.
+    previous_manifest = session.mask_manifest_path
+    previous_masks = session.interactive_mask_files
+    session.interactive_mask_files = dict(previous_masks)
+    previous = session.annotations
+    session.annotations = previous.model_copy(deep=True)
+    try:
+        yield
+    except Exception:
+        session.annotations = previous
+        session.interactive_mask_files = previous_masks
+        session.mask_manifest_path = previous_manifest
+        # Artifacts published by the rejected edit were never committed.
+        sweep_unreferenced_artifacts(session)
+        if not restore_runtime:
+            raise
+        try:
+            create_masker_runtime(session).rebuild_inputs()
+        except MaskerRestorationError as recovery_error:
+            raise OperationError(
+                503, "The edit was rejected and the predictor could not be restored. Reload the video."
+            ) from recovery_error
+        raise
+    else:
+        # Files become garbage only after the accepted state stops naming them.
+        reclaim_superseded_artifacts(session)

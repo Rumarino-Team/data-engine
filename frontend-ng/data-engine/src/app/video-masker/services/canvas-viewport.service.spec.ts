@@ -79,8 +79,6 @@ describe('CanvasViewportService', () => {
   afterEach(() => {
     viewport.detach();
     host.remove();
-    vi.restoreAllMocks();
-    vi.unstubAllGlobals();
   });
 
   function render(): void {

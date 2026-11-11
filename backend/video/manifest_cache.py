@@ -1,4 +1,9 @@
-"""Keep only the most recently requested mask manifest, invalidating on file changes."""
+"""Keep only the most recently requested mask manifest, invalidating on file changes.
+
+Manifests are published by atomic replacement, so a change shows up as a new file identity
+(size, inode/file ID, creation time) or modification time. An in-place rewrite that keeps the
+size and forges the modification time is not detected; nothing writes manifests that way, and
+checking content on every mask read would cost more than the parse this cache avoids."""
 
 from functools import lru_cache
 import json

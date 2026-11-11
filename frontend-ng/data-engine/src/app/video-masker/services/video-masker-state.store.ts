@@ -3,16 +3,15 @@ import {
   ApiHealthStatus,
   BackendJob,
   TrackPromptPointMetadata,
-  LiveMask,
+  VideoAnnotations,
+  AnnotationSnapshot,
+  AnnotationUpdate,
+  SavedState,
+  TrackingValidity,
 } from '../../services/backend.service';
-import {
-  DebugMaskSource,
-  LoadSourceMode,
-  TrackingOverlayStyle,
-} from '../state/video-masker-ui.types';
+import { LoadSourceMode, TrackingOverlayStyle } from '../state/video-masker-ui.types';
 
 import { ToastService } from './toast.service';
-import { resolveStateEpoch } from '../video-masker.util';
 
 export interface MaskObject {
   id: number;
@@ -42,25 +41,142 @@ export class VideoMaskerStateStore {
   displayedFrameIdx = signal<number>(-1);
   propagationStartFrameIdx = signal<number>(0);
   propagationEndFrameIdx = signal<number>(0);
-  stateEpoch = signal<number>(0);
 
-  // Session-scoped bookkeeping shared by object and tracking workflows.
-  nextObjectId = 1;
-  trackingRevision = 0;
+  sessionId = signal<string | null>(null);
+  annotations = signal<VideoAnnotations | null>(null);
+  annotationRevision = computed(() => this.annotations()?.revision ?? null);
+  objects = computed(() =>
+    Object.values(this.annotations()?.objects ?? {}).sort((a, b) => a.id - b.id),
+  );
+  points = computed(() => {
+    const frames = new Map<number, Map<number, Point[]>>();
+    for (const prompt of this.annotations()?.prompts ?? []) {
+      let objects = frames.get(prompt.frame_idx);
+      if (!objects) frames.set(prompt.frame_idx, (objects = new Map()));
+      objects.set(
+        prompt.obj_id,
+        (prompt.points ?? []).map(([x, y], index) => ({ x, y, label: prompt.labels[index] })),
+      );
+    }
+    for (const [frameIdx, objects] of frames) {
+      for (const [objId, points] of objects) if (!points.length) objects.delete(objId);
+      if (!objects.size) frames.delete(frameIdx);
+    }
+    return frames;
+  });
+  /** Backend-owned checkpoint identity and dirty flag; the frontend only displays and forwards it. */
+  savedState = signal<SavedState | null>(null);
+  hasUnsavedChanges = computed(() => this.isInitialized() && this.savedState()?.dirty === true);
+  saveStatus = computed<'new' | 'saved' | 'unsaved'>(() => {
+    const saved = this.savedState();
+    if (saved?.dirty) return 'unsaved';
+    return saved?.checkpoint_id ? 'saved' : 'new';
+  });
+  pendingObjectUpdates = signal(0);
+  annotationRecoveryRequested = signal(false);
+  isRecoveringAnnotations = signal(false);
+
+  /** Replaces accepted inputs without changing navigation or other presentation state. */
+  applyAnnotationSnapshot(info: AnnotationSnapshot, replaceSession = false): boolean {
+    if (!info.session_id || !info.annotations) return false;
+    if (!replaceSession && info.annotations.revision < (this.annotationRevision() ?? 0))
+      return false;
+
+    this.acceptAnnotations(info.session_id, structuredClone(info.annotations));
+    this.applyTrackingValidity(info.tracking_validity);
+    if (info.saved_state !== undefined || replaceSession)
+      this.savedState.set(info.saved_state ?? null);
+    return true;
+  }
+
+  /** Patches the accepted snapshot; a delta for any other revision requires recovery. */
+  applyAnnotationUpdate(update: AnnotationUpdate): boolean {
+    const current = this.annotations();
+    const delta = update.annotation_delta;
+    if (!update.session_id || !delta || !current) return false;
+    if (this.sessionId() !== update.session_id || current.revision !== delta.base_revision)
+      return false;
+
+    const key = (entry: { frame_idx: number; obj_id: number }) =>
+      `${entry.frame_idx}:${entry.obj_id}`;
+    const replace = <T extends { frame_idx: number; obj_id: number }>(
+      entries: T[],
+      removed: [number, number][],
+      upserts: T[],
+    ): T[] => {
+      const replaced = new Set([
+        ...removed.map(([frame_idx, obj_id]) => key({ frame_idx, obj_id })),
+        ...upserts.map(key),
+      ]);
+      return [...entries.filter((entry) => !replaced.has(key(entry))), ...structuredClone(upserts)];
+    };
+    const objects = { ...current.objects };
+    for (const id of delta.removed_objects) delete objects[id];
+    Object.assign(objects, structuredClone(delta.objects));
+    const inputRevisions = { ...current.input_revisions };
+    for (const id of delta.removed_input_revisions) delete inputRevisions[id];
+    Object.assign(inputRevisions, delta.input_revisions);
+
+    this.acceptAnnotations(update.session_id, {
+      ...current,
+      revision: delta.revision,
+      next_object_id: delta.next_object_id,
+      objects,
+      prompts: replace(current.prompts, delta.removed_prompts, delta.prompts),
+      mask_overrides: replace(
+        current.mask_overrides ?? [],
+        delta.removed_mask_overrides,
+        delta.mask_overrides,
+      ),
+      input_revisions: inputRevisions,
+    });
+    this.applyTrackingValidity(update.tracking_validity);
+    if (update.saved_state !== undefined) this.savedState.set(update.saved_state);
+    return true;
+  }
+
+  private acceptAnnotations(sessionId: string, annotations: VideoAnnotations): void {
+    this.sessionId.set(sessionId);
+    this.annotations.set(annotations);
+    this.pendingPointEdit.set(null);
+    if (!this.objects().some((object) => object.id === this.selectedObjectId())) {
+      this.selectedObjectId.set(this.objects()[0]?.id ?? null);
+    }
+  }
+
+  trackingResultId: string | null = null;
+
+  private applyTrackingValidity(validity?: TrackingValidity | null): void {
+    const ids = new Set(validity?.point_ids ?? []);
+    this.trackedPoints.update((points) =>
+      validity?.result_id === this.trackingResultId
+        ? points.filter((point) => ids.has(point.point_id))
+        : [],
+    );
+  }
 
   invalidateTracking(): void {
-    this.trackingRevision++;
+    this.trackingResultId = null;
     this.trackedPoints.set([]);
   }
 
-  objects = signal<MaskObject[]>([]);
   selectedObjectId = signal<number | null>(null);
   interactionMode = signal<'positive' | 'negative'>('positive');
 
-  masks = signal<Map<number, Map<number, LiveMask>>>(new Map());
-  points = signal<Map<number, Map<number, Point[]>>>(new Map());
+  pendingPointEdit = signal<{ frameIdx: number; objId: number; points: Point[] } | null>(null);
+  previewPoints = computed(() => {
+    const pending = this.pendingPointEdit();
+    if (!pending) return this.points();
+    const frames = new Map(this.points());
+    const objects = new Map(frames.get(pending.frameIdx));
+    if (pending.points.length) objects.set(pending.objId, pending.points);
+    else objects.delete(pending.objId);
+    if (objects.size) frames.set(pending.frameIdx, objects);
+    else frames.delete(pending.frameIdx);
+    return frames;
+  });
   objectPointGroups = computed(() => {
-    const frames = Array.from(this.points().entries()).sort(([a], [b]) => a - b);
+    const frames = Array.from(this.previewPoints().entries()).sort(([a], [b]) => a - b);
     return this.objects().map((object) => ({
       ...object,
       children: frames.flatMap(([frameIdx, objects]) =>
@@ -72,62 +188,43 @@ export class VideoMaskerStateStore {
       ),
     }));
   });
-  liveEditedObjectFrames = signal<Map<number, Set<number>>>(new Map());
-  hasManifestMasks = signal<boolean>(false);
   saveName = signal<string>('');
 
   trackingOverlayStyle = signal<TrackingOverlayStyle>('short');
   trackingUseSupportGrid = signal<boolean>(false);
+  // Whether propagation seeds the latest tracking result's points. Each seeded keyframe slows every frame.
+  propagationUseTrackedPoints = signal<boolean>(true);
   trackedPoints = signal<TrackedPointSeries[]>([]);
 
   isLoading = signal<boolean>(false);
   isFrameLoading = signal<boolean>(false);
   isPointRequestInFlight = signal<boolean>(false);
-  isInteractionBusy = computed(() => this.isLoading() || this.isPointRequestInFlight());
+  isInteractionBusy = computed(
+    () =>
+      this.isLoading() ||
+      this.isPointRequestInFlight() ||
+      this.pendingObjectUpdates() > 0 ||
+      this.isRecoveringAnnotations(),
+  );
   apiHealthStatus = signal<ApiHealthStatus>('checking');
   activeJob = signal<BackendJob | null>(null);
   activeJobTitle = signal<string>('');
   readonly toasts = inject(ToastService).toasts;
-  lastClickRequestFrameIdx = signal<number | null>(null);
-  lastBackendResponseFrameIdx = signal<number | null>(null);
-  lastBackendResponseFrameFile = signal<string>('n/a');
-  lastBackendResponseStateEpoch = signal<number | null>(null);
-  lastDebugObjectId = signal<number | null>(null);
-  lastMaskPixelCount = signal<number | null>(null);
-  lastFallbackUsed = signal<boolean>(false);
-  lastMaskSource = signal<DebugMaskSource>('none');
-  lastDiscardReason = signal<string | null>(null);
-
-  updateStateEpoch(nextEpoch: number | undefined, source: string): void {
-    const resolution = resolveStateEpoch(this.stateEpoch(), nextEpoch);
-    if (!resolution) {
-      return;
-    }
-    if (resolution.shouldClearLiveState) {
-      this.masks.set(new Map());
-      this.liveEditedObjectFrames.set(new Map());
-      this.lastDiscardReason.set(
-        `State epoch changed (${this.stateEpoch()} -> ${resolution.normalizedEpoch}) during ${source}; cleared live masks.`,
-      );
-    }
-    this.stateEpoch.set(resolution.normalizedEpoch);
-  }
-
-  resetInteractiveMaps(): void {
-    this.masks.set(new Map());
-    this.points.set(new Map());
-    this.liveEditedObjectFrames.set(new Map());
-  }
-
-  resetDebugState(): void {
-    this.lastClickRequestFrameIdx.set(null);
-    this.lastBackendResponseFrameIdx.set(null);
-    this.lastBackendResponseFrameFile.set('n/a');
-    this.lastBackendResponseStateEpoch.set(null);
-    this.lastDebugObjectId.set(null);
-    this.lastMaskPixelCount.set(null);
-    this.lastFallbackUsed.set(false);
-    this.lastMaskSource.set('none');
-    this.lastDiscardReason.set(null);
+  resetSession(): void {
+    this.isInitialized.set(false);
+    this.sessionId.set(null);
+    this.annotations.set(null);
+    this.savedState.set(null);
+    this.selectedObjectId.set(null);
+    this.numFrames.set(0);
+    this.targetFrameIdx.set(0);
+    this.displayedFrameIdx.set(-1);
+    this.propagationStartFrameIdx.set(0);
+    this.propagationEndFrameIdx.set(0);
+    this.videoDir.set('');
+    this.saveName.set('');
+    this.annotationRecoveryRequested.set(false);
+    this.invalidateTracking();
+    this.pendingPointEdit.set(null);
   }
 }

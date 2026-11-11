@@ -19,7 +19,6 @@ export interface VideoAddPointsOrBoxRequest {
 export interface VideoPropagateRequest {
   start_frame_idx?: number;
   max_frame_num_to_track?: number;
-  reverse?: boolean;
   batch_size?: number;
   online_mode?: boolean;
   use_tracked_points?: boolean;
@@ -28,8 +27,6 @@ export interface VideoPropagateRequest {
   include_masks_in_response?: boolean;
   export_overlay_frames?: boolean;
   include_saved_mask_paths?: boolean;
-  max_frames_in_response?: number;
-  max_mask_values_in_response?: number;
 }
 
 export interface VideoAddMaskRequest {
@@ -38,29 +35,39 @@ export interface VideoAddMaskRequest {
   mask: boolean[][];
 }
 
+/**
+ * Backend-owned save status. `dirty` means accepted state differs from the last load or save;
+ * a never-saved session has no checkpoint.
+ */
+export interface SavedState {
+  checkpoint_id: string | null;
+  display_name: string | null;
+  saved_at: string | null;
+  dirty: boolean;
+}
+
+/** `name` is required for a first save and Save As; re-save without one keeps the display name. */
 export interface VideoSaveRequest {
-  name: string;
+  name?: string;
+  save_as?: boolean;
   interactive_state?: VideoSaveInteractiveState;
 }
 
 export interface VideoSaveResponse {
   message: string;
   name: string;
+  checkpoint_id: string;
   saved_path: string;
-  state_epoch: number;
+  saved_state: SavedState;
 }
 
-export interface VideoAddPointsResponse {
+export interface VideoAddPointsResponse extends AnnotationUpdate {
   request_frame_idx: number;
   frame_idx: number;
   frame_file: string;
-  out_obj_ids: number[];
-  out_masks: LiveMask[];
-  mask_encoding?: 'rle' | 'mixed';
   mask_pixel_counts: Record<number, number>;
   mask_shapes: Record<number, [number, number]>;
   single_frame_fallback_used?: boolean;
-  state_epoch: number;
 }
 
 export interface VideoInitStateResponse {
@@ -72,7 +79,6 @@ export interface VideoInitStateResponse {
   batch_size: number;
   offload_video_to_cpu: boolean;
   offload_state_to_cpu: boolean;
-  state_epoch: number;
   source_type?: 'frames_dir' | 'video_file' | 'saved_session';
   restored_session?: RestoredSessionPayload;
 }
@@ -84,20 +90,11 @@ export interface VideoObject {
   color: string;
 }
 
-export interface InteractivePoint {
+/** Accepted explicit mask; pixels are served through mask data, never in annotations. */
+export interface MaskOverride {
   frame_idx: number;
   obj_id: number;
-  x: number;
-  y: number;
-  label: 0 | 1;
-}
-
-export interface InteractiveMaskRle {
-  frame_idx: number;
-  obj_id: number;
-  height: number;
-  width: number;
-  counts: number[];
+  artifact: string;
 }
 
 export interface VideoSaveInteractiveState {
@@ -105,16 +102,78 @@ export interface VideoSaveInteractiveState {
   selected_object_id?: number | null;
   interaction_mode?: 'positive' | 'negative' | null;
   current_frame_idx?: number | null;
-  points: InteractivePoint[];
-  live_masks: InteractiveMaskRle[];
+}
+
+/** One accepted prompt per frame/object; points are the complete accepted set. */
+export interface VideoPrompt {
+  frame_idx: number;
+  obj_id: number;
+  points: number[][];
+  labels: number[];
+  box: number[] | null;
+}
+
+export interface VideoAnnotations {
+  version: 1;
+  revision: number;
+  next_object_id: number;
+  objects: Record<string, VideoObject>;
+  prompts: VideoPrompt[];
+  mask_overrides?: MaskOverride[];
+  input_revisions?: Record<string, number>;
+}
+
+/** Current values for keys a mutation changed, applicable only at `base_revision`. */
+export interface AnnotationDelta {
+  base_revision: number;
+  revision: number;
+  next_object_id: number;
+  objects: Record<string, VideoObject>;
+  removed_objects: number[];
+  prompts: VideoPrompt[];
+  removed_prompts: [number, number][];
+  mask_overrides: MaskOverride[];
+  removed_mask_overrides: [number, number][];
+  input_revisions: Record<string, number>;
+  removed_input_revisions: number[];
+}
+
+export interface TrackingValidity {
+  result_id: string;
+  point_ids: string[];
+}
+
+export interface AnnotationSnapshot {
+  tracking_validity?: TrackingValidity | null;
+  saved_state?: SavedState | null;
+  mask_data?: VideoMaskDataResponse;
+  session_id: string | null;
+  annotations: VideoAnnotations | null;
+}
+
+/** Mutation response; full snapshots come only from /video/info and initialization. */
+export interface AnnotationUpdate {
+  tracking_validity?: TrackingValidity | null;
+  saved_state?: SavedState | null;
+  mask_data?: VideoMaskDataResponse;
+  session_id: string | null;
+  annotation_delta: AnnotationDelta;
+}
+
+export interface ObjectCreationResponse extends AnnotationUpdate {
+  created_object_id: number;
+}
+
+export interface VideoInfoResponse extends AnnotationSnapshot {
+  predictor_ready: boolean;
+  num_frames: number;
+  frame_files: string[];
 }
 
 export interface RestoredSessionPayload {
-  session_meta: Record<string, unknown>;
-  objects: VideoObject[];
+  annotations: VideoAnnotations;
   interactive_state?: VideoSaveInteractiveState | null;
   has_mask_manifest: boolean;
-  interactive_state_warnings?: string[];
   tracking_result?: {
     result_id: string;
     summary?: Record<string, unknown>;
@@ -127,15 +186,12 @@ export interface VideoPropagateResponse {
   saved_mask_frame_count?: number;
   video_segments_total_frames?: number;
   video_segments_returned_frames?: number;
-  video_segments_returned_mask_values?: number;
-  video_segments_truncated?: boolean;
   mask_manifest_path?: string;
-  'state.mask_manifest_path'?: string;
   tracked_points_used?: boolean;
   tracked_points_skipped_reason?: string | null;
   tracked_points_seeded_count?: number;
   tracked_points_seeded_frames?: number;
-  state_epoch?: number;
+  saved_state?: SavedState | null;
 }
 
 export interface VideoMaskObjectData {
@@ -155,8 +211,11 @@ export interface PackedBitMask {
 export type LiveMask = VideoMaskObjectData | PackedBitMask | boolean[][];
 
 export interface VideoMaskDataResponse {
+  session_id: string;
+  annotation_revision: number;
+  sources: Record<string, 'live' | 'manifest' | 'override'>;
   frame_idx: number;
-  objects: { [obj_id: string]: VideoMaskObjectData };
+  objects: { [obj_id: string]: VideoMaskObjectData | PackedBitMask };
 }
 
 export interface TrackPromptPointsRequest {
@@ -180,10 +239,12 @@ export interface TrackPromptPointsJobResponse {
   tracking_mode?: 'streaming' | 'in_memory';
   streaming_frame_threshold?: number;
   tracking_result_id: string;
-  state_epoch?: number;
+  saved_state?: SavedState | null;
 }
 
 export interface TrackPromptPointsResult {
+  session_id: string;
+  annotation_revision: number;
   version: number;
   result_id: string;
   model_name: string;
@@ -235,8 +296,6 @@ export interface BackendJob<T = unknown> {
   progress: number | null;
   current: number | null;
   total: number | null;
-  window_index: number | null;
-  window_count: number | null;
   frame_idx: number | null;
   batch_current: number | null;
   batch_total: number | null;
@@ -257,4 +316,9 @@ export interface JobResponse<T = unknown> {
 
 export interface CurrentJobResponse {
   job: BackendJob | null;
+}
+
+export interface AnnotationPrecondition {
+  session_id: string;
+  expected_revision: number;
 }

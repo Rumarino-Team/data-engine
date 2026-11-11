@@ -2,16 +2,19 @@ import {
   AfterViewInit,
   Component,
   ElementRef,
+  HostListener,
   OnDestroy,
   ViewChild,
   effect,
   inject,
-  isDevMode,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { JobStatusPanelComponent } from './components/job-status-panel/job-status-panel.component';
 import { ToastStackComponent } from './components/toast-stack/toast-stack.component';
+import { ConfirmDialogComponent } from './components/confirm-dialog/confirm-dialog.component';
+import { ConfirmService } from './services/confirm.service';
+import { SessionLeaveService } from './services/session-leave.service';
 import { VideoMaskerStateStore } from './services/video-masker-state.store';
 import { FramePipelineService } from './services/frame-pipeline.service';
 import { CanvasViewportService } from './services/canvas-viewport.service';
@@ -48,6 +51,7 @@ import {
     ToastStackComponent,
     JobStatusPanelComponent,
     ObjectSidebarComponent,
+    ConfirmDialogComponent,
   ],
   templateUrl: './video-masker.component.html',
   styleUrls: ['./video-masker.component.css'],
@@ -63,6 +67,8 @@ import {
     ToastService,
     EditorJobService,
     ObjectOperationsService,
+    ConfirmService,
+    SessionLeaveService,
   ],
 })
 export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
@@ -77,10 +83,11 @@ export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
   readonly propagation = inject(MaskPropagationService);
   readonly tracking = inject(TrackingService);
   readonly toast = inject(ToastService);
+  readonly confirm = inject(ConfirmService);
+  readonly leave = inject(SessionLeaveService);
   private readonly desktopBridge = inject(DesktopBridgeService);
   readonly framePipeline = inject(FramePipelineService);
   readonly viewport = inject(CanvasViewportService);
-  readonly showDebugUi = isDevMode();
   apiUrlInputHasFocus = false;
 
   constructor() {
@@ -110,6 +117,43 @@ export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
 
   ngOnDestroy(): void {
     this.framePipeline.detach();
+  }
+
+  /** Closing or reloading the window would drop unsaved working changes. */
+  @HostListener('window:beforeunload', ['$event'])
+  warnBeforeUnload(event: BeforeUnloadEvent): void {
+    if (!this.store.hasUnsavedChanges()) return;
+    event.preventDefault();
+    event.returnValue = '';
+  }
+
+  saveStatusLabel(): string {
+    switch (this.store.saveStatus()) {
+      case 'unsaved':
+        return 'Unsaved changes';
+      case 'saved':
+        return 'Saved';
+      default:
+        return 'Not saved yet';
+    }
+  }
+
+  canSave(): boolean {
+    if (!this.store.isInitialized() || this.store.isInteractionBusy()) return false;
+    const saved = this.store.savedState();
+    const name = this.store.saveName().trim();
+    // A first save needs a name; a re-save is useful when something changed or the name did.
+    if (!saved?.checkpoint_id) return name !== '';
+    return saved.dirty || (name !== '' && name !== saved.display_name);
+  }
+
+  canSaveAs(): boolean {
+    return (
+      this.store.isInitialized() &&
+      !this.store.isInteractionBusy() &&
+      Boolean(this.store.savedState()?.checkpoint_id) &&
+      this.store.saveName().trim() !== ''
+    );
   }
 
   // --- load-source copy (pure) -------------------------------------------

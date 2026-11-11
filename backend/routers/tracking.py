@@ -1,39 +1,29 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
-from schemas.tracking import (
-    TrackingGridRequest,
-    TrackingLoadVideoRequest,
-    TrackingPointsRequest,
-    TrackingPromptPointsRequest,
-)
+from app.dependencies import get_context
+from core.context import AppContext
+from routers.video import annotation_precondition
+from schemas.video import AnnotationPrecondition
+
+from schemas.responses import JobStartResponse, TrackingResultResponse
+from schemas.tracking import TrackingPromptPointsRequest
 from tracking.prompt_tracking import start_prompt_tracking
 from tracking.results import load_prompt_tracking_result
-from tracking.service import load_tracking_video, track_grid, track_points
 
 
 router = APIRouter()
 
 
-@router.post("/tracking/load_video")
-async def load_tracking_video_route(request: TrackingLoadVideoRequest):
-    return await load_tracking_video(request)
+@router.post("/tracking/track_prompt_points", response_model=JobStartResponse)
+def track_prompt_points(
+    request: TrackingPromptPointsRequest,
+    precondition: AnnotationPrecondition = Depends(annotation_precondition),
+    ctx: AppContext = Depends(get_context),
+):
+    return start_prompt_tracking(ctx, request, precondition)
 
 
-@router.post("/tracking/track_prompt_points")
-async def track_prompt_points(request: TrackingPromptPointsRequest):
-    return await start_prompt_tracking(request)
-
-
-@router.post("/tracking/track_grid")
-async def track_grid_route(request: TrackingGridRequest):
-    return await track_grid(request)
-
-
-@router.post("/tracking/track_points")
-async def track_points_route(request: TrackingPointsRequest):
-    return await track_points(request)
-
-
-@router.get("/tracking/results/{result_id}")
-async def get_tracking_result(result_id: str):
-    return {"result": load_prompt_tracking_result(result_id)}
+@router.get("/tracking/results/{result_id}", response_model=TrackingResultResponse)
+def get_tracking_result(result_id: str, ctx: AppContext = Depends(get_context)):
+    with ctx.lock:
+        return {"result": load_prompt_tracking_result(ctx.session, result_id)}

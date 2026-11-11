@@ -1,10 +1,6 @@
 name: frontend-ng-ci
 
 on:
-  pull_request:
-    paths:
-      - 'frontend-ng/data-engine/**'
-      - '.github/workflows/frontend-ng-ci.yml'
   push:
     branches: [main]
     paths:

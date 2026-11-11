@@ -1,3 +1,4 @@
+import { setAcceptedPoints } from '../../testing/workflow-test-helpers';
 import { describe, beforeEach, expect, it, vi } from 'vitest';
 import { createVideoMaskerFixture } from '../../testing/component-test-helpers';
 import { By } from '@angular/platform-browser';
@@ -27,7 +28,10 @@ describe('ObjectSidebarComponent', () => {
     expect(component.store.objects().map((object) => object.id)).toEqual([1, 2]);
     expect(component.store.selectedObjectId()).toBe(2);
     buttons[1].click();
-    expect(backendMock.removeObject).toHaveBeenCalledWith(2);
+    expect(backendMock.removeObject).toHaveBeenCalledWith(2, {
+      session_id: 'session-1',
+      expected_revision: 1,
+    });
     expect(component.store.objects().map((object) => object.id)).toEqual([1]);
     expect(component.store.selectedObjectId()).toBe(1);
   });
@@ -49,7 +53,8 @@ describe('ObjectSidebarComponent', () => {
 
   it('navigates to a child frame and sends the correct index when removing its point', () => {
     component.store.numFrames.set(20);
-    component.store.points.set(
+    setAcceptedPoints(
+      component.store,
       new Map([
         [
           2,
@@ -78,12 +83,19 @@ describe('ObjectSidebarComponent', () => {
   });
 
   it('shows separately placed points under their owning object and navigates to their frame', () => {
-    component.store.objects.set([
-      { id: 1, label: 'Car', color: '#ff0000' },
-      { id: 2, label: 'Person', color: '#00ff00' },
-    ]);
+    component.store.annotations.set({
+      version: 1,
+      revision: 0,
+      next_object_id: 3,
+      objects: {
+        '1': { id: 1, label: 'Car', color: '#ff0000' },
+        '2': { id: 2, label: 'Person', color: '#00ff00' },
+      },
+      prompts: [],
+    });
     component.store.numFrames.set(20);
-    component.store.points.set(
+    setAcceptedPoints(
+      component.store,
       new Map([
         [10, new Map([[1, [{ x: 4, y: 5, label: 0 }]]])],
         [

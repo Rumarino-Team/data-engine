@@ -54,11 +54,4 @@ export class JobStatusPanelComponent {
       this.activeJob.total > 0
     );
   }
-
-  windowLabel(): string | null {
-    if (!this.activeJob?.window_count) {
-      return null;
-    }
-    return `Window ${this.activeJob.window_index || 1} of ${this.activeJob.window_count}`;
-  }
 }

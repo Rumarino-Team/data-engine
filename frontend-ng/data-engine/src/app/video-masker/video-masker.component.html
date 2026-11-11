@@ -43,6 +43,14 @@
       >
         Load
       </button>
+      <button
+        *ngIf="store.isInitialized()"
+        (click)="leave.closeSession()"
+        [disabled]="store.isInteractionBusy()"
+        title="Close this session so another one can be loaded."
+      >
+        Close Session
+      </button>
     </div>
     <div class="api-url-controls">
       <div class="api-input-combo">
@@ -269,6 +277,19 @@
             [disabled]="store.isInteractionBusy()"
           />
         </label>
+        <label
+          class="inline-checkbox-label"
+          title="Tracked points guide propagation but make it slower, roughly in proportion to how many keyframes they add."
+        >
+          Propagate With Tracked Points
+          <input
+            type="checkbox"
+            data-testid="propagate-with-tracked-points"
+            [checked]="store.propagationUseTrackedPoints()"
+            (change)="store.propagationUseTrackedPoints.set($any($event.target).checked)"
+            [disabled]="store.isInteractionBusy()"
+          />
+        </label>
         <div class="save-panel">
           <label class="save-controls">
             <span>Save Current Session</span>
@@ -280,39 +301,33 @@
               [disabled]="!store.isInitialized() || store.isInteractionBusy()"
             />
           </label>
-          <button
-            class="action-button action-button-primary"
-            (click)="sessions.save()"
-            [disabled]="
-              !store.isInitialized() || store.isInteractionBusy() || !store.saveName().trim()
-            "
+          <span
+            class="save-status"
+            [class.save-status-unsaved]="store.saveStatus() === 'unsaved'"
+            [class.save-status-saved]="store.saveStatus() === 'saved'"
+            role="status"
+            data-testid="save-status"
           >
-            Save
-          </button>
+            {{ saveStatusLabel() }}
+          </span>
+          <div class="save-buttons">
+            <button
+              class="action-button action-button-primary"
+              (click)="sessions.save()"
+              [disabled]="!canSave()"
+            >
+              Save
+            </button>
+            <button
+              class="panel-action-btn"
+              (click)="sessions.save(true)"
+              [disabled]="!canSaveAs()"
+              title="Save a copy under the typed name; this session continues in the copy."
+            >
+              Save As
+            </button>
+          </div>
         </div>
-      </div>
-
-      <div class="section debug-section" *ngIf="store.isInitialized() && showDebugUi">
-        <h3>Sync Debug</h3>
-        <div class="debug-grid">
-          <span>Target frame</span><strong>{{ store.targetFrameIdx() }}</strong>
-          <span>Displayed frame</span><strong>{{ store.displayedFrameIdx() }}</strong>
-          <span>Last request frame</span
-          ><strong>{{ store.lastClickRequestFrameIdx() ?? 'n/a' }}</strong>
-          <span>Last response frame</span
-          ><strong>{{ store.lastBackendResponseFrameIdx() ?? 'n/a' }}</strong>
-          <span>Response frame file</span
-          ><strong>{{ store.lastBackendResponseFrameFile() }}</strong> <span>State epoch</span
-          ><strong>{{ store.stateEpoch() }}</strong> <span>Response epoch</span
-          ><strong>{{ store.lastBackendResponseStateEpoch() ?? 'n/a' }}</strong>
-          <span>Last object</span><strong>{{ store.lastDebugObjectId() ?? 'n/a' }}</strong>
-          <span>Last pixel count</span><strong>{{ store.lastMaskPixelCount() ?? 'n/a' }}</strong>
-          <span>Fallback used</span><strong>{{ store.lastFallbackUsed() ? 'yes' : 'no' }}</strong>
-          <span>Last mask source</span><strong>{{ store.lastMaskSource() }}</strong>
-        </div>
-        <p class="debug-discard" *ngIf="store.lastDiscardReason()">
-          {{ store.lastDiscardReason() }}
-        </p>
       </div>
     </div>
   </div>
@@ -352,4 +367,9 @@
   ></app-job-status-panel>
 
   <app-toast-stack [toasts]="store.toasts()" (dismiss)="toast.dismiss($event)"></app-toast-stack>
+
+  <app-confirm-dialog
+    [request]="confirm.request()"
+    (answer)="confirm.answer($event)"
+  ></app-confirm-dialog>
 </div>
