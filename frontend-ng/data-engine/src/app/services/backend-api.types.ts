@@ -296,8 +296,6 @@ export interface BackendJob<T = unknown> {
   progress: number | null;
   current: number | null;
   total: number | null;
-  window_index: number | null;
-  window_count: number | null;
   frame_idx: number | null;
   batch_current: number | null;
   batch_total: number | null;

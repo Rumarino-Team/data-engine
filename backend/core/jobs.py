@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 _UNSET = object()
 _POSITION_FIELDS = (
-    "current", "total", "frame_idx", "window_index", "window_count",
+    "current", "total", "frame_idx",
     "batch_current", "batch_total", "batch_index", "batch_count",
 )
 # A finished job keeps its position only as a count; the rest is meaningless once it is done.
@@ -62,7 +62,7 @@ class JobHandle:
         self, stage: str, stage_label: str, *, message: str, progress: Any = _UNSET,
         status: Optional[str] = None, append_history: bool = True, **position: Any,
     ) -> None:
-        """Start a stage: position fields (frame, window, batch counters) not given are cleared.
+        """Start a stage: position fields (frame and batch counters) not given are cleared.
 
         `update` only touches what it is given, so a stage that forgot to reset a counter
         would show the previous stage's position.

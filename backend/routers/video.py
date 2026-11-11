@@ -85,8 +85,12 @@ def add_new_mask_route(
 
 
 @router.post("/video/save", response_model=SaveResponse)
-def save_video_session_route(request: VideoSaveRequest, ctx: AppContext = Depends(get_context)):
-    return save_video_session(ctx, request)
+def save_video_session_route(
+    request: VideoSaveRequest,
+    precondition: AnnotationPrecondition = Depends(annotation_precondition),
+    ctx: AppContext = Depends(get_context),
+):
+    return save_video_session(ctx, request, precondition)
 
 
 @router.post("/video/propagate_in_video", response_model=JobStartResponse)

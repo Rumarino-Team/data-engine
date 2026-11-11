@@ -471,8 +471,9 @@ def add_new_mask(ctx: AppContext, request: VideoAddMaskRequest, precondition: An
             mask_data = effective_mask_data(session, request.frame_idx)
             return {**annotation_update(session, precondition), "mask_data": mask_data}
 
-def save_video_session(ctx: AppContext, request: VideoSaveRequest):
-    with ctx.edit():
+def save_video_session(ctx: AppContext, request: VideoSaveRequest, precondition: AnnotationPrecondition):
+    # Save persists the backend's current state, so it must be the state this client last saw.
+    with ctx.edit(precondition):
         session = ctx.session
 
         session_path = current_session_path(session)

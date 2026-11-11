@@ -25,11 +25,11 @@ logger = logging.getLogger(__name__)
 def propagation_batch_progress(
     *,
     processed_before_frame: int,
-    window_total_frames: int,
+    total_frames: int,
     batch_size: int,
 ) -> dict[str, int]:
     effective_batch_size = max(1, int(batch_size))
-    total_frames = max(1, int(window_total_frames))
+    total_frames = max(1, int(total_frames))
     processed_before = min(max(0, int(processed_before_frame)), total_frames - 1)
     batch_index = (processed_before // effective_batch_size) + 1
     batch_count = (total_frames + effective_batch_size - 1) // effective_batch_size
@@ -195,10 +195,9 @@ def seed_tracked_points(run: PropagationRun, masker) -> None:
     run.report("seeding_tracked_points", "Seeding tracked points", "Seeding tracked points from the latest tracking result",
                frame_idx=run.start_frame_idx)
     excluded = {(mask.frame_idx, mask.obj_id) for mask in session.annotations.mask_overrides}
-    batches, seeded_count, seeded_frames = guidance.build_window_batches(
-        window_start=run.start_frame_idx,
-        window_end=run.end_frame_idx,
-        propagation_start_frame_idx=run.start_frame_idx,
+    batches, seeded_count, seeded_frames = guidance.build_seed_batches(
+        range_start=run.start_frame_idx,
+        range_end=run.end_frame_idx,
         frame_width=run.frame_width,
         frame_height=run.frame_height,
         keyframe_interval=request.tracked_point_keyframe_interval,
@@ -225,7 +224,7 @@ def collect_frame(run: PropagationRun, frame_idx: int, frame_masks: dict[int, np
 
     batch_progress = propagation_batch_progress(
         processed_before_frame=len(run.processed_frames),
-        window_total_frames=run.expected_total_frames,
+        total_frames=run.expected_total_frames,
         batch_size=run.settings.batch_size,
     )
     run.processed_frames.add(frame_idx)

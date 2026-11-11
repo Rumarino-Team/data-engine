@@ -30,12 +30,6 @@
   margin-bottom: 8px;
 }
 
-.progress-window {
-  margin-bottom: 10px;
-  color: #666;
-  font-size: 0.82rem;
-}
-
 .progress-bars {
   display: flex;
   flex-direction: column;

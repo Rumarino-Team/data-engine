@@ -49,7 +49,7 @@ class JobManagerTests(unittest.TestCase):
         started = self.start(lambda handle: {"ok": True})
         job = self.wait_for("completed")
         self.assertEqual((job["job_id"], job["result"]), (started["job_id"], {"ok": True}))
-        for field in ("batch_current", "batch_total", "batch_index", "batch_count", "window_index"):
+        for field in ("batch_current", "batch_total", "batch_index", "batch_count"):
             self.assertIsNone(job[field], field)
 
     def test_a_second_active_job_is_refused_while_one_runs(self):
@@ -65,7 +65,7 @@ class JobManagerTests(unittest.TestCase):
 
     def test_update_refines_a_stage_and_entering_one_clears_the_previous_position(self):
         handle = self.hold()
-        handle.update(stage="working", progress=0.25, batch_current=8, batch_total=32, window_index=1, frame_idx=9)
+        handle.update(stage="working", progress=0.25, batch_current=8, batch_total=32, frame_idx=9)
         job = self.jobs.snapshot()
         self.assertEqual((job["stage"], job["progress"], job["batch_current"], job["batch_total"]),
                          ("working", 0.25, 8, 32))
@@ -73,7 +73,7 @@ class JobManagerTests(unittest.TestCase):
         handle.enter_stage("saving", "Saving", message="saving", progress=0.9, total=5)
         job = self.jobs.snapshot()
         self.assertEqual((job["stage"], job["progress"], job["total"]), ("saving", 0.9, 5))
-        for field in ("current", "frame_idx", "window_index", "batch_current", "batch_total"):
+        for field in ("current", "frame_idx", "batch_current", "batch_total"):
             self.assertIsNone(job[field], field)
         with self.assertRaises(TypeError):
             handle.enter_stage("saving", "Saving", message="saving", frame=1)

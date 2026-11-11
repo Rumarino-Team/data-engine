@@ -25,7 +25,7 @@ class AppWiringTests(BackendStateTestCase):
             ("POST", "/video/reset_state", None, {409}),
             ("POST", "/video/add_new_points_or_box", {"frame_idx": 0, "obj_id": 1, "points": [[1, 1]], "labels": [1]}, {409}),
             ("POST", "/video/add_new_mask", {"frame_idx": 0, "obj_id": 1, "mask": [[1]]}, {409, 422}),
-            ("POST", "/video/save", {"name": "x"}, {400}),
+            ("POST", "/video/save", {"name": "x"}, {409}),
             ("POST", "/video/propagate_in_video", {}, {409}),
             ("POST", "/video/clear_all_prompts_in_frame?frame_idx=0&obj_id=1", None, {409}),
             ("POST", "/video/objects", None, {409}),

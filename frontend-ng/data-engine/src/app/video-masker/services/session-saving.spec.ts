@@ -144,6 +144,46 @@ describe('saving workflows', () => {
     expect(editor.store.isLoading()).toBe(false);
   });
 
+  it('sends the session and revision it last saw with the save', async () => {
+    editor.store.savedState.set(saved({ dirty: true }));
+    editor.store.saveName.set('Bedroom');
+    backendMock.saveVideoSession.mockReturnValue(of(saveResponse()));
+
+    await expect(editor.sessions.save()).resolves.toBe(true);
+
+    expect(backendMock.saveVideoSession.mock.calls[0][1]).toEqual({
+      session_id: editor.store.sessionId(),
+      expected_revision: editor.store.annotationRevision(),
+    });
+  });
+
+  it('asks for a refresh when the backend refuses a save from a stale session', async () => {
+    editor.store.savedState.set(saved({ dirty: true }));
+    editor.store.saveName.set('Bedroom');
+    backendMock.saveVideoSession.mockReturnValue(
+      throwError(() => ({
+        status: 409,
+        error: { detail: 'Annotations changed. Refresh before editing again.' },
+      })),
+    );
+
+    await expect(editor.sessions.save()).resolves.toBe(false);
+
+    expect(editor.store.annotationRecoveryRequested()).toBe(true);
+    expect(editor.store.savedState()).toEqual(saved({ dirty: true }));
+    expect(editor.store.toasts()[0].title).toBe('Save failed');
+  });
+
+  it('does not ask for a refresh when a save fails for another reason', async () => {
+    editor.store.savedState.set(saved({ dirty: true }));
+    editor.store.saveName.set('Bedroom');
+    backendMock.saveVideoSession.mockReturnValue(throwError(() => ({ status: 500 })));
+
+    await expect(editor.sessions.save()).resolves.toBe(false);
+
+    expect(editor.store.annotationRecoveryRequested()).toBe(false);
+  });
+
   it('blocks saving while another workflow is busy', async () => {
     editor.store.savedState.set(saved({ dirty: true }));
     editor.store.isLoading.set(true);

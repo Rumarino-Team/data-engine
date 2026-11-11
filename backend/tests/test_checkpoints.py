@@ -50,6 +50,35 @@ class CheckpointTests(BackendStateTestCase):
         response = self.client.put("/video/objects/1", json={"label": label, "color": "#ff0000"})
         self.assertEqual(response.status_code, 200)
 
+    def assert_nothing_saved(self):
+        self.assertFalse(self.saved_root.exists() and any(self.saved_root.iterdir()))
+        self.assertIsNone(self.info()["checkpoint_id"])
+
+    def test_save_from_a_stale_revision_is_refused_and_writes_nothing(self):
+        stale = {"X-Session-ID": "first-session", "X-Annotation-Revision": str(state.annotations.revision)}
+        self.edit("Another tab's edit")  # the session moves past the revision `stale` carries
+        response = self.client.post("/video/save", json={"name": "Bedroom"}, headers=stale)
+        self.assertEqual(response.status_code, 409)
+        self.assert_nothing_saved()
+
+    def test_save_from_another_session_is_refused_and_writes_nothing(self):
+        other = {"X-Session-ID": "another-session", "X-Annotation-Revision": str(state.annotations.revision)}
+        response = self.client.post("/video/save", json={"name": "Bedroom"}, headers=other)
+        self.assertEqual(response.status_code, 409)
+        self.assert_nothing_saved()
+
+    def test_save_without_a_precondition_is_rejected(self):
+        response = self.make_client(preconditions=False).post("/video/save", json={"name": "Bedroom"})
+        self.assertEqual(response.status_code, 422)
+        self.assert_nothing_saved()
+
+    def test_saving_does_not_change_the_revision_other_tabs_edit_against(self):
+        # Another tab took its headers before this save; its next edit must still be accepted.
+        other_tab = {"X-Session-ID": "first-session", "X-Annotation-Revision": str(state.annotations.revision)}
+        self.assertEqual(self.save(name="Bedroom").status_code, 200)
+        response = self.client.put("/video/objects/1", json={"label": "Later", "color": "#ff0000"}, headers=other_tab)
+        self.assertEqual(response.status_code, 200)
+
     def test_dirty_state_follows_save_edit_and_reopen(self):
         self.assertTrue(self.info()["dirty"])
         self.assertIsNone(self.info()["checkpoint_id"])

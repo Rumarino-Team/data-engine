@@ -203,10 +203,9 @@ class TrackingResultTests(BackendStateTestCase):
             ]
         )
 
-        batches, seeded_count, seeded_frames = guidance.build_window_batches(
-            window_start=0,
-            window_end=4,
-            propagation_start_frame_idx=0,
+        batches, seeded_count, seeded_frames = guidance.build_seed_batches(
+            range_start=0,
+            range_end=4,
             frame_width=32,
             frame_height=32,
             keyframe_interval=2,
@@ -230,10 +229,9 @@ class TrackingResultTests(BackendStateTestCase):
             ]
         )
 
-        batches, seeded_count, seeded_frames = guidance.build_window_batches(
-            window_start=2,
-            window_end=4,
-            propagation_start_frame_idx=0,
+        batches, seeded_count, seeded_frames = guidance.build_seed_batches(
+            range_start=2,
+            range_end=4,
             frame_width=64,
             frame_height=64,
             keyframe_interval=2,
@@ -257,10 +255,9 @@ class TrackingResultTests(BackendStateTestCase):
             ]
         )
 
-        batches, seeded_count, seeded_frames = guidance.build_window_batches(
-            window_start=0,
-            window_end=1,
-            propagation_start_frame_idx=0,
+        batches, seeded_count, seeded_frames = guidance.build_seed_batches(
+            range_start=0,
+            range_end=1,
             frame_width=64,
             frame_height=64,
             keyframe_interval=1,

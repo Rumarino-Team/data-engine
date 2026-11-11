@@ -11,7 +11,7 @@ from pathlib import Path
 BACKEND = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND))
 
-SKIPPED_DIRECTORIES = {"tests", "cache", "saved", ".venv", "__pycache__"}
+SKIPPED_DIRECTORIES = {"tests", "tools", "cache", "saved", ".venv", "__pycache__"}
 
 # What each lower layer may import (any import, including function-local ones). Higher layers
 # (video, tracking, routers, app) may import anything below them.

@@ -158,8 +158,6 @@ export function jobResponse(operation: string, job: Record<string, unknown> = {}
       progress: 1,
       current: null,
       total: null,
-      window_index: null,
-      window_count: null,
       frame_idx: null,
       stage_history: [],
       message: 'done',

@@ -124,6 +124,7 @@ export class BackendService {
 
   saveVideoSession(
     options: { name?: string; saveAs?: boolean },
+    precondition: AnnotationPrecondition,
     interactiveState?: VideoSaveInteractiveState,
   ): Observable<VideoSaveResponse> {
     const payload: VideoSaveRequest = {
@@ -131,7 +132,9 @@ export class BackendService {
       ...(options.saveAs ? { save_as: true } : {}),
       ...(interactiveState ? { interactive_state: interactiveState } : {}),
     };
-    return this.http.post<VideoSaveResponse>(this.endpoint('/video/save'), payload);
+    return this.http.post<VideoSaveResponse>(this.endpoint('/video/save'), payload, {
+      headers: this.annotationHeaders(precondition),
+    });
   }
 
   clearAllPromptsInFrame(

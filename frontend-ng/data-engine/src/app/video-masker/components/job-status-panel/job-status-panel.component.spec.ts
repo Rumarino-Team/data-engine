@@ -10,13 +10,11 @@ describe('JobStatusPanelComponent', () => {
     job_id: 'job-1',
     operation: 'mask_propagation',
     status: 'running',
-    stage: 'propagating_window',
+    stage: 'propagating_masks',
     stage_label: 'Propagating masks',
     progress: 0.5,
     current: 64,
     total: 128,
-    window_index: 1,
-    window_count: 2,
     frame_idx: 64,
     batch_current: 32,
     batch_total: 32,
@@ -54,7 +52,7 @@ describe('JobStatusPanelComponent', () => {
     expect(element.textContent).toContain('Overall');
     expect(element.textContent).toContain('64 / 128');
     expect(element.textContent).toContain('50%');
-    expect(element.textContent).toContain('Window 1 of 2');
+    expect(element.textContent).not.toContain('Window');
     expect(element.textContent).not.toContain('Frame 64');
     expect(element.textContent).not.toContain('Recent activity');
     expect(element.querySelectorAll('.progress-track').length).toBe(2);
@@ -68,8 +66,6 @@ describe('JobStatusPanelComponent', () => {
       current: 8,
       total: 10,
       progress: 0.8,
-      window_index: null,
-      window_count: null,
       frame_idx: null,
       batch_current: null,
       batch_total: null,

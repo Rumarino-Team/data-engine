@@ -24,12 +24,11 @@ class TrackingGuidance:
     skipped_reason: Optional[str] = None
     should_warn: bool = False
 
-    def build_window_batches(
+    def build_seed_batches(
         self,
         *,
-        window_start: int,
-        window_end: int,
-        propagation_start_frame_idx: int,
+        range_start: int,
+        range_end: int,
         frame_width: int,
         frame_height: int,
         keyframe_interval: int,
@@ -39,15 +38,8 @@ class TrackingGuidance:
         keyframe_interval = max(1, int(keyframe_interval))
         max_points_per_object_per_frame = max(1, int(max_points_per_object_per_frame))
         excluded_frame_objects = excluded_frame_objects or set()
-        selected_frames = {int(window_start), int(window_end)}
-        first_interval_frame = int(propagation_start_frame_idx)
-        if first_interval_frame < window_start:
-            offset = window_start - first_interval_frame
-            steps = (offset + keyframe_interval - 1) // keyframe_interval
-            first_interval_frame += steps * keyframe_interval
-        for frame_idx in range(first_interval_frame, window_end + 1, keyframe_interval):
-            if frame_idx >= window_start:
-                selected_frames.add(frame_idx)
+        # The first and last frame of the range, and every `keyframe_interval` frames from the first.
+        selected_frames = {int(range_start), int(range_end), *range(int(range_start), int(range_end) + 1, keyframe_interval)}
 
         batches: dict[int, dict[int, list[list[float]]]] = {}
         seeded_count = 0
@@ -55,7 +47,7 @@ class TrackingGuidance:
 
         for tracked_point in self.points:
             candidate_frames = set(selected_frames)
-            if window_start <= tracked_point.source_frame_idx <= window_end:
+            if range_start <= tracked_point.source_frame_idx <= range_end:
                 candidate_frames.add(tracked_point.source_frame_idx)
             for global_frame_idx in sorted(candidate_frames):
                 if (int(global_frame_idx), int(tracked_point.obj_id)) in excluded_frame_objects:
@@ -78,7 +70,7 @@ class TrackingGuidance:
                 x_coord = min(max(x_coord, 0.0), float(frame_width - 1))
                 y_coord = min(max(y_coord, 0.0), float(frame_height - 1))
 
-                local_frame_idx = int(global_frame_idx - window_start)
+                local_frame_idx = int(global_frame_idx - range_start)
                 obj_batches = batches.setdefault(local_frame_idx, {})
                 points = obj_batches.setdefault(int(tracked_point.obj_id), [])
                 if len(points) >= max_points_per_object_per_frame:

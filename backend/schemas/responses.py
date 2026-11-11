@@ -168,8 +168,6 @@ class JobSnapshot(Response):
     progress: Optional[float]
     current: Optional[int]
     total: Optional[int]
-    window_index: Optional[int]
-    window_count: Optional[int]
     frame_idx: Optional[int]
     batch_current: Optional[int]
     batch_total: Optional[int]

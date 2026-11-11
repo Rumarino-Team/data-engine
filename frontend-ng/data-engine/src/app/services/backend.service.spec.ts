@@ -38,6 +38,7 @@ describe('BackendService', () => {
     service.clearAllPromptsInFrame(3, 2, precondition);
     const prompt = { frame_idx: 3, obj_id: 2, points: [[1, 2]], labels: [1] };
     service.addNewPointsOrBox(prompt, precondition);
+    service.saveVideoSession({ name: 'review-run' }, precondition);
     expect(http.post).toHaveBeenCalledWith('http://127.0.0.1:8000/video/objects', null, {
       headers,
     });
@@ -54,6 +55,11 @@ describe('BackendService', () => {
     expect(http.post).toHaveBeenCalledWith(
       'http://127.0.0.1:8000/video/add_new_points_or_box',
       prompt,
+      { headers },
+    );
+    expect(http.post).toHaveBeenCalledWith(
+      'http://127.0.0.1:8000/video/save',
+      { name: 'review-run' },
       { headers },
     );
     expect(http.put).toHaveBeenCalledWith(
@@ -133,22 +139,22 @@ describe('BackendService', () => {
       ],
       [
         'first save by name',
-        (s) => s.saveVideoSession({ name: 'review-run' }),
+        (s) => s.saveVideoSession({ name: 'review-run' }, precondition),
         'post',
         '/video/save',
         { name: 'review-run' },
       ],
-      ['re-save without a name', (s) => s.saveVideoSession({}), 'post', '/video/save', {}],
+      ['re-save without a name', (s) => s.saveVideoSession({}, precondition), 'post', '/video/save', {}],
       [
         'Save As',
-        (s) => s.saveVideoSession({ name: 'copy', saveAs: true }),
+        (s) => s.saveVideoSession({ name: 'copy', saveAs: true }, precondition),
         'post',
         '/video/save',
         { name: 'copy', save_as: true },
       ],
       [
         'save with editor preferences',
-        (s) => s.saveVideoSession({ name: 'review-run' }, preferences),
+        (s) => s.saveVideoSession({ name: 'review-run' }, precondition, preferences),
         'post',
         '/video/save',
         { name: 'review-run', interactive_state: preferences },

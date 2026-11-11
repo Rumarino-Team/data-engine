@@ -124,7 +124,7 @@ class PartialPropagationTests(unittest.TestCase):
 
 
 class PropagationProgressTests(unittest.TestCase):
-    def test_batch_progress_follows_the_position_within_the_window(self):
+    def test_batch_progress_follows_the_position_within_the_range(self):
         for name, processed, total, expected in [
             ("a full batch reaches its total", 31, 64, (32, 32, 1, 2)),
             ("the second batch restarts the count", 32, 64, (1, 32, 2, 2)),
@@ -132,7 +132,7 @@ class PropagationProgressTests(unittest.TestCase):
         ]:
             with self.subTest(name):
                 progress = propagation_batch_progress(
-                    processed_before_frame=processed, window_total_frames=total, batch_size=32)
+                    processed_before_frame=processed, total_frames=total, batch_size=32)
                 self.assertEqual(
                     (progress["batch_current"], progress["batch_total"],
                      progress["batch_index"], progress["batch_count"]), expected)

@@ -224,11 +224,15 @@ export class SessionService {
       return false;
     }
     const sendName = needsName || (name !== '' && name !== saved?.display_name);
+    const sessionId = this.store.sessionId();
+    const revision = this.store.annotationRevision();
+    if (!sessionId || revision === null) return false;
     this.store.isLoading.set(true);
     try {
       const response: VideoSaveResponse = await firstValueFrom(
         this.backend.saveVideoSession(
           { name: sendName ? name : undefined, saveAs },
+          { session_id: sessionId, expected_revision: revision },
           this.buildSnapshot(),
         ),
       );
@@ -239,6 +243,9 @@ export class SessionService {
       return true;
     } catch (error: unknown) {
       console.error(error);
+      // The session or its annotations changed elsewhere since this tab last saw them: nothing was saved,
+      // and the tab reloads what the backend holds before the user saves again.
+      if ((error as { status?: number })?.status === 409) this.store.annotationRecoveryRequested.set(true);
       this.toast.show('error', 'Save failed', getErrorMessage(error, 'Session save failed'));
       return false;
     } finally {

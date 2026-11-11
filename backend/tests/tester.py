@@ -147,15 +147,11 @@ def _print_job_progress(job):
     progress = job.get("progress")
     current = job.get("current")
     total = job.get("total")
-    window_index = job.get("window_index")
-    window_count = job.get("window_count")
     frame_idx = job.get("frame_idx")
     history = job.get("stage_history") or []
     message = job.get("message") or ""
 
     parts = [stage_label]
-    if window_index is not None and window_count:
-        parts.append(f"Window {window_index}/{window_count}")
     if frame_idx is not None:
         parts.append(f"Frame {frame_idx}")
     if isinstance(progress, (int, float)):
@@ -709,7 +705,7 @@ def save_session(name=None, save_as=False):
     payload = {"save_as": save_as}
     if name is not None:
         payload["name"] = name
-    response = requests.post(f"{BASE_URL}/video/save", json=payload)
+    response = requests.post(f"{BASE_URL}/video/save", json=payload, headers=annotation_headers())
     if response.status_code != 200:
         print(f"Save failed. Status: {response.status_code}, Response: {response.text}")
         return False, None

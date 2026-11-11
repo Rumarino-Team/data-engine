@@ -208,8 +208,9 @@ describe('session workflows', () => {
 
     await expect(editor.sessions.save()).resolves.toBe(true);
 
-    const [request, interactiveState] = backendMock.saveVideoSession.mock.calls[0];
+    const [request, precondition, interactiveState] = backendMock.saveVideoSession.mock.calls[0];
     expect(request).toEqual({ name: 'review-run', saveAs: false });
+    expect(precondition).toEqual(expect.objectContaining({ session_id: 'session-1' }));
     expect(interactiveState).toEqual(
       expect.objectContaining({
         version: 1,
