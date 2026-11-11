@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from core.context import AppContext
 from core.errors import OperationError
-from core.runtime import cleanup_backend_cache_on_shutdown, sweep_stale_sessions_on_startup
+from app.lifecycle import cleanup_backend_cache_on_shutdown, sweep_stale_sessions_on_startup
 from routers import jobs, root, tracking, video
 
 

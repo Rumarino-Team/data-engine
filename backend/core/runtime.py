@@ -1,6 +1,5 @@
-import gc, shutil
+import gc
 import torch
-from core.config import CACHE_ROOT
 
 def cleanup_cuda_memory():
     gc.collect()
@@ -11,15 +10,3 @@ def is_out_of_memory(error: BaseException) -> bool:
     return isinstance(error, torch.OutOfMemoryError) or (
         isinstance(error, RuntimeError) and "out of memory" in str(error).lower()
     )
-
-def sweep_stale_sessions_on_startup() -> None:
-    # Working changes are discarded across restarts; only checkpoints are durable.
-    from core.config import SAVED_ROOT, SESSION_CACHE_ROOT
-    from sessions.checkpoints import sweep_stale_session_storage
-    sweep_stale_session_storage(SESSION_CACHE_ROOT, SAVED_ROOT)
-
-def cleanup_backend_cache_on_shutdown(context) -> None:
-    from sessions.cache import release_active_session
-    release_active_session(context.session, clear_cache_session=False)
-    shutil.rmtree(CACHE_ROOT, ignore_errors=True)
-    cleanup_cuda_memory()

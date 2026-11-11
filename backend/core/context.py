@@ -68,5 +68,5 @@ class AppContext:
             inputs["parameters"] = parameters
             return self.jobs.start(
                 operation=operation, stage=stage, stage_label=stage_label, message=message,
-                worker=lambda job: run(job, inputs), inputs=inputs,
+                worker=lambda job: run(job, inputs),
             )

@@ -34,7 +34,11 @@ class SessionReplacementTests(BackendStateTestCase):
         self.client = self.make_client(preconditions=False)
 
     def masker(self):
-        return self.make_masker(offload_state_to_cpu=True)
+        masker = self.make_masker(offload_state_to_cpu=True)
+        masker.state_loaded = True
+        masker.release_state.side_effect = lambda: setattr(masker, "state_loaded", False)
+        masker.init_state.side_effect = lambda *args, **kwargs: setattr(masker, "state_loaded", True)
+        return masker
 
     @staticmethod
     def directory_files(directory):
@@ -44,13 +48,13 @@ class SessionReplacementTests(BackendStateTestCase):
         return service.run_video_init_job(
             self.ctx, VideoInitStateRequest(video_frames_dir=str(path or self.source)), self.job_handle())
 
-    def assert_old_session(self):
+    def assert_old_session(self, state_loaded=True):
         self.assertEqual(state.active_session_id, "old")
         self.assertIs(state.video_masker, self.old_masker)
         self.assertEqual(state.annotations.snapshot(), self.before)
         self.assertEqual(self.directory_files(self.old_dir), self.old_files)
         self.assertTrue((self.old_dir / "frames" / "00000.jpg").exists())
-        self.old_masker.init_state.assert_not_called()
+        self.assertEqual(self.old_masker.state_loaded, state_loaded)
 
     def test_unsupported_input_files_are_rejected_before_a_working_copy_exists(self):
         for name, expected in [("notes.txt", "Unsupported input file type"), ("frame.png", "single image file")]:
@@ -72,6 +76,8 @@ class SessionReplacementTests(BackendStateTestCase):
                 with self.subTest(path=path), self.assertRaises(OperationError):
                     self.run_init(path)
                 self.assert_old_session()
+                self.old_masker.release_state.assert_not_called()
+                self.old_masker.init_state.assert_not_called()
             constructor.assert_not_called()
 
     def test_model_and_late_failures_preserve_current_session(self):
@@ -81,23 +87,60 @@ class SessionReplacementTests(BackendStateTestCase):
             with self.assertRaises(RuntimeError):
                 self.run_init()
         self.assert_old_session()
+        self.assert_old_state_was_freed_then_rebuilt()
         with (patch.object(prompts.svm, "SAM2VideoMasker", return_value=self.masker()),
               patch.object(service, "content_fingerprint", side_effect=OSError("disk full"))):
             with self.assertRaises(OSError):
                 self.run_init()
         self.assert_old_session()
 
+    def assert_old_state_was_freed_then_rebuilt(self):
+        self.old_masker.release_state.assert_called_once()
+        self.old_masker.init_state.assert_called_once()
+        self.assertEqual(self.old_masker.init_state.call_args.args, (str(self.old_dir / "frames"),))
+
+    def test_a_new_video_frees_the_old_state_first_and_takes_over_its_weights(self):
+        candidate = self.masker()
+        events = []
+        self.old_masker.release_state.side_effect = lambda: events.append("old state freed")
+        candidate.init_state.side_effect = lambda *args, **kwargs: events.append("new frames load")
+        with patch.object(prompts.svm, "SAM2VideoMasker", return_value=candidate) as constructor:
+            self.run_init()
+        self.assertEqual(events, ["old state freed", "new frames load"])
+        self.assertIs(constructor.call_args.kwargs["reuse"], self.old_masker)
+        self.old_masker.init_state.assert_not_called()
+
+    def test_the_first_video_has_no_weights_to_take_over(self):
+        state.video_masker = None
+        with patch.object(prompts.svm, "SAM2VideoMasker", return_value=self.masker()) as constructor:
+            self.run_init()
+        self.assertNotIn("reuse", constructor.call_args.kwargs)
+
+    def test_an_old_predictor_that_cannot_be_rebuilt_is_dropped_but_its_annotations_stay(self):
+        candidate = self.masker()
+        candidate.init_state.side_effect = RuntimeError("model failed")
+        self.old_masker.init_state.side_effect = RuntimeError("rebuild failed")
+        with (patch.object(prompts.svm, "SAM2VideoMasker", return_value=candidate),
+              self.assertLogs("video.service", level="ERROR")):
+            with self.assertRaises(RuntimeError) as failure:
+                self.run_init()
+        self.assertEqual(str(failure.exception), "model failed")
+        self.assertEqual(state.active_session_id, "old")
+        self.assertIsNone(state.video_masker)
+        self.assertEqual(state.annotations.snapshot(), self.before)
+
     def test_old_snapshot_remains_visible_until_candidate_is_published(self):
         candidate = self.masker()
         def preparing(*args, **kwargs):
-            self.assert_old_session()
+            # The old video's frames are already freed; its annotations and files are still the visible session.
+            self.assert_old_session(state_loaded=False)
             info = self.client.get("/video/info").json()
             self.assertEqual(info["session_id"], "old")
-            self.assertTrue(info["predictor_ready"])
+            self.assertFalse(info["predictor_ready"])
         candidate.init_state.side_effect = preparing
         real_sweep = service.sweep_unreferenced_artifacts
         def late_step(session):
-            self.assert_old_session()
+            self.assert_old_session(state_loaded=False)
             self.assertIsNot(session, state)
             real_sweep(session)
         with (patch.object(prompts.svm, "SAM2VideoMasker", return_value=candidate),

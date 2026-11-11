@@ -115,21 +115,20 @@ class JobManager:
 
     def start(
         self, *, operation: str, stage: str, stage_label: str, message: str,
-        worker: Callable[[JobHandle], dict[str, Any]], inputs: Optional[dict[str, Any]] = None,
+        worker: Callable[[JobHandle], dict[str, Any]],
     ) -> dict[str, Any]:
         """Admit a job and run `worker(handle)` on a thread; raises 409 while another job is active."""
-        job_id = self._admit(operation, stage=stage, stage_label=stage_label, message=message, inputs=inputs)
+        job_id = self._admit(operation, stage=stage, stage_label=stage_label, message=message)
         threading.Thread(target=self._run, args=(job_id, worker), daemon=True).start()
         return {"job_id": job_id, "status": "queued", "operation": operation, "message": message}
 
-    def _admit(self, operation: str, *, stage: str, stage_label: str, message: str, inputs) -> str:
+    def _admit(self, operation: str, *, stage: str, stage_label: str, message: str) -> str:
         with self._foreground_lock, self._lock:
             if self._active():
                 raise OperationError(409, "Another operation is already running.")
             now = utc_now_iso()
             self._job = {
                 "job_id": uuid.uuid4().hex,
-                "inputs": inputs,
                 "operation": operation,
                 "status": "queued",
                 "stage": stage,

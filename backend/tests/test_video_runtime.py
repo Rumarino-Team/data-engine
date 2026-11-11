@@ -18,6 +18,10 @@ class FakeMasker:
 
     def __init__(self):
         self.init_state = Mock()
+        self.reset_state = Mock()
+        self.offload_weights = Mock()
+        self.reload_weights = Mock()
+        self.release_state = Mock()
 
 
 class VideoMaskerRuntimeTests(unittest.TestCase):
@@ -31,88 +35,81 @@ class VideoMaskerRuntimeTests(unittest.TestCase):
         )
         return runtime, restored
 
-    def test_suspension_releases_weights_and_restores_in_order_with_original_settings(self):
-        runtime, restored = self.make_runtime()
+    def test_offloaded_moves_the_weights_around_the_work_and_never_rebuilds_the_state(self):
+        runtime, _ = self.make_runtime()
         session = runtime.session
-        original = weakref.ref(session.video_masker)
-        accepted = session.annotations.snapshot()
+        masker = session.video_masker
         events = []
-        runtime.release_memory.side_effect = lambda: events.append("release")
-        restored.init_state.side_effect = lambda *args, **kwargs: events.append("initialize")
-        runtime.replay_inputs.side_effect = lambda active: events.append("replay")
-        progress = Mock()
+        masker.offload_weights.side_effect = lambda: events.append("offload")
+        runtime.release_memory.side_effect = lambda: events.append("free memory")
+        masker.reload_weights.side_effect = lambda: events.append("reload")
 
-        with runtime.suspended(progress_callback=progress):
-            self.assertIsNone(session.video_masker)
-            self.assertIsNone(original())
+        with runtime.offloaded():
+            self.assertIs(session.video_masker, masker)
             events.append("compute")
 
-        self.assertEqual(events, ["release", "compute", "initialize", "replay"])
-        self.assertIs(session.video_masker, restored)
-        self.assertEqual(session.annotations.snapshot(), accepted)
-        runtime.create_masker.assert_called_once_with(progress_callback=progress)
-        restored.init_state.assert_called_once_with(
-            "frames", online_mode=False, batch_size=7,
-            offload_video_to_cpu=True, offload_state_to_cpu=False,
-            async_loading_frames=False, progress_callback=progress,
-        )
-        runtime.replay_inputs.assert_called_once_with(session)
+        self.assertEqual(events, ["offload", "free memory", "compute", "reload"])
+        self.assertIs(session.video_masker, masker)
+        masker.init_state.assert_not_called()
+        runtime.create_masker.assert_not_called()
+        runtime.replay_inputs.assert_not_called()
 
-    def test_successful_computation_requires_successful_restoration(self):
-        for failure_stage in ("construction", "initialization", "replay"):
-            with self.subTest(stage=failure_stage):
-                runtime, restored = self.make_runtime()
-                before = runtime.session.annotations.snapshot()
-                failure = RuntimeError(f"{failure_stage} failed")
-                collaborator = {
-                    "construction": runtime.create_masker,
-                    "initialization": restored.init_state,
-                    "replay": runtime.replay_inputs,
-                }[failure_stage]
-                collaborator.side_effect = failure
-
-                with self.assertLogs("video.runtime", level="ERROR"):
-                    with self.assertRaises(MaskerRestorationError) as caught:
-                        with runtime.suspended():
-                            pass
-
-                self.assertIs(caught.exception.__cause__, failure)
-                self.assertIsNone(runtime.session.video_masker)
-                self.assertEqual(runtime.session.annotations.snapshot(), before)
-
-    def test_computation_error_survives_failed_restoration(self):
-        runtime, _ = self.make_runtime()
-        computation_error = ValueError("computation failed")
-        runtime.create_masker.side_effect = RuntimeError("restoration failed")
-
-        with self.assertLogs("video.runtime", level="ERROR"):
-            with self.assertRaises(ValueError) as caught:
-                with runtime.suspended():
-                    raise computation_error
-
-        self.assertIs(caught.exception, computation_error)
-        self.assertIsNone(runtime.session.video_masker)
-
-    def test_computation_error_still_restores_interactive_masker(self):
-        runtime, restored = self.make_runtime()
-        computation_error = ValueError("computation failed")
-
-        with self.assertRaises(ValueError) as caught:
-            with runtime.suspended():
-                raise computation_error
-
-        self.assertIs(caught.exception, computation_error)
-        self.assertIs(runtime.session.video_masker, restored)
-
-    def test_absent_masker_is_not_loaded_on_exit(self):
+    def test_offloaded_leaves_an_absent_masker_alone(self):
         runtime, _ = self.make_runtime()
         runtime.session.video_masker = None
-
-        with runtime.suspended():
+        with runtime.offloaded():
             pass
-
         runtime.create_masker.assert_not_called()
         runtime.release_memory.assert_not_called()
+
+    def test_a_successful_computation_requires_the_weights_to_come_back(self):
+        runtime, _ = self.make_runtime()
+        runtime.session.video_masker.reload_weights.side_effect = RuntimeError("cannot move back")
+        with self.assertLogs("video.runtime", level="ERROR"):
+            with self.assertRaises(MaskerRestorationError) as caught:
+                with runtime.offloaded():
+                    pass
+        self.assertIsInstance(caught.exception.__cause__, RuntimeError)
+        self.assertIsNone(runtime.session.video_masker)
+
+    def test_a_failed_computation_still_returns_the_weights_and_its_error_wins(self):
+        runtime, _ = self.make_runtime()
+        masker = runtime.session.video_masker
+        failure = ValueError("computation failed")
+        with self.assertRaises(ValueError) as caught:
+            with runtime.offloaded():
+                raise failure
+        self.assertIs(caught.exception, failure)
+        masker.reload_weights.assert_called_once()
+        self.assertIs(runtime.session.video_masker, masker)
+
+    def test_a_failed_return_after_a_failed_computation_keeps_the_original_error(self):
+        runtime, _ = self.make_runtime()
+        runtime.session.video_masker.reload_weights.side_effect = RuntimeError("cannot move back")
+        failure = ValueError("computation failed")
+        with self.assertLogs("video.runtime", level="ERROR"):
+            with self.assertRaises(ValueError) as caught:
+                with runtime.offloaded():
+                    raise failure
+        self.assertIs(caught.exception, failure)
+        self.assertIsNone(runtime.session.video_masker)
+
+    def test_weights_that_cannot_be_moved_off_are_put_back_and_the_error_is_raised(self):
+        runtime, _ = self.make_runtime()
+        masker = runtime.session.video_masker
+        masker.offload_weights.side_effect = RuntimeError("cannot move off")
+        with self.assertRaises(RuntimeError):
+            with runtime.offloaded():
+                self.fail("the computation must not run")
+        masker.reload_weights.assert_called_once()
+        self.assertIs(runtime.session.video_masker, masker)
+
+    def test_initialization_can_take_the_weights_another_masker_loaded(self):
+        runtime, _ = self.make_runtime()
+        previous = runtime.session.video_masker
+        runtime.session.video_masker = None
+        runtime.initialize(MaskerSettings(True, 2, False, True), reuse=previous)
+        runtime.create_masker.assert_called_once_with(progress_callback=None, reuse=previous)
 
     def test_restore_acts_on_the_runtimes_own_session_only(self):
         runtime, _ = self.make_runtime()
@@ -149,37 +146,68 @@ class VideoMaskerRuntimeTests(unittest.TestCase):
         runtime.initialize(settings)
         runtime.create_masker.assert_called_once()
 
-    def test_borrowed_masker_returns_to_the_sessions_own_frames_and_inputs(self):
+    def test_propagating_resets_the_sessions_own_state_before_and_after_without_loading_frames_again(self):
         runtime, _ = self.make_runtime()
         session = runtime.session
-        lent = session.video_masker
-        settings = MaskerSettings(True, 3, False, True)
+        masker = session.video_masker
+        events = []
+        masker.reset_state.side_effect = lambda: events.append("reset")
+        runtime.replay_inputs.side_effect = lambda active: events.append("replay")
 
-        with runtime.borrowed(settings) as masker:
-            self.assertIs(masker, lent)
-            masker.init_state("window", online_mode=True, batch_size=3)
+        with runtime.propagating() as lent:
+            self.assertIs(lent, masker)
+            events.append("compute")
 
-        self.assertIs(session.video_masker, lent)
-        self.assertEqual(lent.init_state.call_args.args, ("frames",))
-        runtime.replay_inputs.assert_called_once_with(session)
+        self.assertEqual(events, ["reset", "replay", "compute", "reset", "replay"])
+        masker.init_state.assert_not_called()
+        runtime.create_masker.assert_not_called()
+        self.assertIs(session.video_masker, masker)
 
-        runtime.replay_inputs.side_effect = RuntimeError("restoration failed")
+    def test_propagating_needs_a_masker(self):
+        runtime, _ = self.make_runtime()
+        runtime.session.video_masker = None
+        with self.assertRaises(ValueError):
+            with runtime.propagating():
+                self.fail("must not start without a masker")
+
+    def test_a_state_that_cannot_be_prepared_stops_the_computation(self):
+        runtime, _ = self.make_runtime()
+        runtime.replay_inputs.side_effect = RuntimeError("replay failed")
         with self.assertLogs("video.runtime", level="ERROR"):
             with self.assertRaises(MaskerRestorationError):
-                with runtime.borrowed(settings):
-                    pass
-        self.assertIsNone(session.video_masker)
+                with runtime.propagating():
+                    self.fail("the computation must not run on an unprepared state")
+        self.assertIsNone(runtime.session.video_masker)
 
-        runtime.session.video_masker = FakeMasker()
+    def test_a_failed_computation_still_resets_the_state_and_its_error_wins(self):
+        runtime, _ = self.make_runtime()
+        masker = runtime.session.video_masker
+        failure = ValueError("computation failed")
+        with self.assertRaises(ValueError) as caught:
+            with runtime.propagating():
+                raise failure
+        self.assertIs(caught.exception, failure)
+        self.assertEqual(masker.reset_state.call_count, 2)
+        self.assertIs(runtime.session.video_masker, masker)
+
+    def test_a_failed_reset_after_a_failed_computation_keeps_the_original_error(self):
+        runtime, _ = self.make_runtime()
+        failure = ValueError("computation failed")
         with self.assertLogs("video.runtime", level="ERROR"):
-            with self.assertRaises(ValueError):
-                with runtime.borrowed(settings):
-                    raise ValueError("computation failed")
-        self.assertIsNone(session.video_masker)
+            with self.assertRaises(ValueError) as caught:
+                with runtime.propagating():
+                    runtime.replay_inputs.side_effect = RuntimeError("replay failed")
+                    raise failure
+        self.assertIs(caught.exception, failure)
+        self.assertIsNone(runtime.session.video_masker)
 
-        with self.assertRaises(ValueError):
-            with runtime.borrowed(settings):
-                pass
+    def test_a_successful_computation_requires_the_state_to_be_put_back(self):
+        runtime, _ = self.make_runtime()
+        with self.assertLogs("video.runtime", level="ERROR"):
+            with self.assertRaises(MaskerRestorationError):
+                with runtime.propagating():
+                    runtime.replay_inputs.side_effect = RuntimeError("replay failed")
+        self.assertIsNone(runtime.session.video_masker)
 
     def test_rebuilding_inputs_disables_the_predictor_when_replay_fails(self):
         runtime, _ = self.make_runtime()

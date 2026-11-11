@@ -19,6 +19,7 @@ from utils import build_empty_mask_manifest, load_mask_manifest, write_mask_mani
 from video import propagation
 from video.propagation import propagation_batch_progress
 from video.masks import manifest_frame_payload, store_mask_override
+from video.prompts import replay_annotation_prompts
 from video.runtime import VideoMaskerRuntime
 
 
@@ -53,18 +54,18 @@ class PartialPropagationTests(unittest.TestCase):
                         video_frame_files=[f"{i:05d}.jpg" for i in range(5)],
                         annotations=SessionAnnotations(objects={1: {"id": 1, "label": "Object 1", "color": "#ff0000"}},
                                                     prompts=[{"frame_idx": 1, "obj_id": 1, "points": [[1, 1]], "labels": [1]}]),
-                        mask_manifest_path=str(masks / "manifest.json"), active_session_dir=root,
+                        mask_manifest_path=str(masks / "manifest.json"), active_session_dir=root, active_session_id="session",
                     )
                     ctx = AppContext(SessionManager(state))
                     runtime = VideoMaskerRuntime(
-                        session=state, create_masker=Mock(), replay_inputs=Mock(), release_memory=Mock(),
+                        session=state, create_masker=Mock(),
+                        replay_inputs=Mock(side_effect=replay_annotation_prompts), release_memory=Mock(),
                     )
                     if explicit_override:
                         state.annotations.set_mask(store_mask_override(root, 1, 1, np.ones((8, 8), dtype=bool)))
                     state.interactive_mask_files = {str(i): "old-artifact.json" for i in range(5)}
                     for name, value in {
-                        "WINDOW_FRAMES_ROOT": root / "windows",
-                        "current_masks_dir": lambda session: masks, "clear_window_cache": Mock(),
+                        "current_masks_dir": lambda session: masks,
                         "create_masker_runtime": lambda session: runtime,
                     }.items():
                         patches.enter_context(patch.object(propagation, name, value))

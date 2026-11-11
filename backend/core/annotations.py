@@ -13,6 +13,19 @@ def prompt_point_key(*, obj_id: int, frame_idx: int, x: float, y: float) -> str:
     return f"obj:{int(obj_id)}|frame:{int(frame_idx)}|x:{float(x):.3f}|y:{float(y):.3f}"
 
 
+def tracked_prompt_keys(points: list[dict]) -> list[str]:
+    """The key of each tracked point, in the same scheme as the prompt points it was started from."""
+    return [
+        prompt_point_key(
+            obj_id=int(point["obj_id"]),
+            frame_idx=int(point["source_frame_idx"]),
+            x=float(point["source_x"]),
+            y=float(point["source_y"]),
+        )
+        for point in points
+    ]
+
+
 @dataclass(frozen=True)
 class PromptPoint:
     """One accepted positive click: what tracking follows and what a tracking result is validated against."""

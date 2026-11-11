@@ -8,6 +8,7 @@ from core.config import IMAGE_EXTENSIONS, SAVED_ROOT
 from core.errors import OperationError
 from core.context import AppContext
 from core.jobs import JobHandle, utc_now_iso
+from core.runtime import cleanup_cuda_memory
 from core.state import BackendState
 from core.annotations import SessionAnnotations
 from pydantic import ValidationError
@@ -21,6 +22,7 @@ from schemas.video import (
     VideoSaveRequest,
 )
 from sessions.cache import reset_video_session_state
+from schemas.responses import InitResult
 from schemas.video import InteractiveState
 from sessions.artifacts import referenced_artifacts, sweep_unreferenced_artifacts
 from sessions.checkpoints import content_fingerprint, new_checkpoint_location, normalize_display_name, saved_state, write_checkpoint
@@ -165,6 +167,7 @@ def initialize_video_state_from_resolved_input(
     async_loading_frames: bool,
     session: BackendState,
     job: JobHandle,
+    reuse=None,
 ):
     # Preparation may target a detached session; helpers must use that same session.
     restored_session_payload: Optional[dict[str, Any]] = None
@@ -197,6 +200,10 @@ def initialize_video_state_from_resolved_input(
             message=message,
         )
 
+    if reuse is not None:
+        # A different video replaces the previous one: free its frames before the new ones load.
+        reuse.release_state()
+        cleanup_cuda_memory()
     try:
         create_masker_runtime(session).initialize(
             MaskerSettings(
@@ -205,6 +212,7 @@ def initialize_video_state_from_resolved_input(
             ),
             async_loading_frames=async_loading_frames,
             progress_callback=_on_sam2_progress,
+            reuse=reuse,
         )
     except ValueError as error:
         raise OperationError(400, str(error)) from error
@@ -238,7 +246,7 @@ def initialize_video_state_from_resolved_input(
     session.checkpoint_artifacts = set(session.committed_artifacts) if source_type == "saved_session" else set()
     # A freshly loaded session has nothing to lose until its first edit, saved or not.
     session.saved_fingerprint = content_fingerprint(session)
-    return response_payload
+    return InitResult(**response_payload).model_dump(exclude_unset=True)
 
 def start_video_init(ctx: AppContext, request: VideoInitStateRequest):
     return ctx.jobs.start(
@@ -258,9 +266,12 @@ def run_video_init_job(ctx: AppContext, request: VideoInitStateRequest, job: Job
     )
     resolved_input_path = resolve_input_path(request.video_frames_dir)
     validate_video_input_path(resolved_input_path)
-    # Keep accepted state and its runtime readable until the replacement is ready.
     previous = ctx.session
     previous_session_id = previous.active_session_id
+    # The new video takes over the previous one's loaded weights and the previous frames are freed before the
+    # new ones load (two videos are never in RAM together). The old session's accepted annotations stay
+    # untouched until the replacement is published.
+    reuse = previous.video_masker
     candidate = BackendState()
     try:
         result = initialize_video_state_from_resolved_input(
@@ -272,6 +283,7 @@ def run_video_init_job(ctx: AppContext, request: VideoInitStateRequest, job: Job
             async_loading_frames=request.async_loading_frames,
             session=candidate,
             job=job,
+            reuse=reuse,
         )
         with ctx.lock:
             if ctx.session.active_session_id != previous_session_id:
@@ -281,10 +293,33 @@ def run_video_init_job(ctx: AppContext, request: VideoInitStateRequest, job: Job
     except BaseException:
         # The rejected candidate never became active; its working directory is unreachable.
         discard_working_session(candidate.active_session_dir)
+        if candidate.video_masker is not None:
+            candidate.video_masker.release_state()
+        restore_previous_state(previous)
         raise
     # The replaced working copy is unreachable once the candidate is published.
     discard_working_session(previous_dir)
     return result
+
+
+def restore_previous_state(session: BackendState) -> None:
+    """After a failed load of another video, load the previous video's state back (best effort).
+
+    The predictor only holds derived data. If it cannot be rebuilt the session keeps its accepted
+    annotations and loses its predictor, and the video must be reloaded.
+    """
+    masker = session.video_masker
+    if masker is None or masker.state_loaded or session.video_dir is None:
+        return
+    settings = MaskerSettings(
+        online_mode=masker.online_mode, batch_size=masker.default_batch_size,
+        offload_video_to_cpu=masker.offload_video_to_cpu, offload_state_to_cpu=masker.offload_state_to_cpu,
+    )
+    try:
+        create_masker_runtime(session).restore(settings)
+    except Exception:
+        session.video_masker = None
+        logger.exception("Could not rebuild the previous video's predictor state; the video must be reloaded.")
 
 
 def reset_video_state(ctx: AppContext, precondition: AnnotationPrecondition):
@@ -550,7 +585,7 @@ def get_video_info(ctx: AppContext):
         session = ctx.session
         return {
             **annotation_snapshot(session),
-            "predictor_ready": session.video_masker is not None,
+            "predictor_ready": session.video_masker is not None and bool(session.video_masker.state_loaded),
             "num_frames": len(session.video_frame_files),
             "frame_files": list(session.video_frame_files),
         }

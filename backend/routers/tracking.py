@@ -5,6 +5,7 @@ from core.context import AppContext
 from routers.video import annotation_precondition
 from schemas.video import AnnotationPrecondition
 
+from schemas.responses import JobStartResponse, TrackingResultResponse
 from schemas.tracking import TrackingPromptPointsRequest
 from tracking.prompt_tracking import start_prompt_tracking
 from tracking.results import load_prompt_tracking_result
@@ -13,7 +14,7 @@ from tracking.results import load_prompt_tracking_result
 router = APIRouter()
 
 
-@router.post("/tracking/track_prompt_points")
+@router.post("/tracking/track_prompt_points", response_model=JobStartResponse)
 def track_prompt_points(
     request: TrackingPromptPointsRequest,
     precondition: AnnotationPrecondition = Depends(annotation_precondition),
@@ -22,7 +23,7 @@ def track_prompt_points(
     return start_prompt_tracking(ctx, request, precondition)
 
 
-@router.get("/tracking/results/{result_id}")
+@router.get("/tracking/results/{result_id}", response_model=TrackingResultResponse)
 def get_tracking_result(result_id: str, ctx: AppContext = Depends(get_context)):
     with ctx.lock:
         return {"result": load_prompt_tracking_result(ctx.session, result_id)}

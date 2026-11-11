@@ -2,6 +2,18 @@ from fastapi import APIRouter, Depends, Header, Path
 
 from app.dependencies import get_context
 from core.context import AppContext
+from schemas.responses import (
+    AnnotationUpdate,
+    ClearPromptsResponse,
+    JobStartResponse,
+    MaskData,
+    MaskEditResponse,
+    ObjectCreationResponse,
+    PointsResponse,
+    ResetResponse,
+    SaveResponse,
+    VideoInfoResponse,
+)
 from schemas.video import (
     VideoAddMaskRequest,
     VideoAddPointsOrBoxRequest,
@@ -41,12 +53,12 @@ def annotation_precondition(
     return AnnotationPrecondition(session_id=session_id, expected_revision=expected_revision)
 
 
-@router.post("/video/init_state")
+@router.post("/video/init_state", response_model=JobStartResponse)
 def init_video_state(request: VideoInitStateRequest, ctx: AppContext = Depends(get_context)):
     return start_video_init(ctx, request)
 
 
-@router.post("/video/reset_state")
+@router.post("/video/reset_state", response_model=ResetResponse)
 def reset_video_state_route(
     precondition: AnnotationPrecondition = Depends(annotation_precondition),
     ctx: AppContext = Depends(get_context),
@@ -54,7 +66,7 @@ def reset_video_state_route(
     return reset_video_state(ctx, precondition)
 
 
-@router.post("/video/add_new_points_or_box")
+@router.post("/video/add_new_points_or_box", response_model=PointsResponse)
 def add_new_points_or_box_route(
     request: VideoAddPointsOrBoxRequest,
     precondition: AnnotationPrecondition = Depends(annotation_precondition),
@@ -63,7 +75,7 @@ def add_new_points_or_box_route(
     return add_new_points_or_box(ctx, request, precondition)
 
 
-@router.post("/video/add_new_mask")
+@router.post("/video/add_new_mask", response_model=MaskEditResponse)
 def add_new_mask_route(
     request: VideoAddMaskRequest,
     precondition: AnnotationPrecondition = Depends(annotation_precondition),
@@ -72,12 +84,12 @@ def add_new_mask_route(
     return add_new_mask(ctx, request, precondition)
 
 
-@router.post("/video/save")
+@router.post("/video/save", response_model=SaveResponse)
 def save_video_session_route(request: VideoSaveRequest, ctx: AppContext = Depends(get_context)):
     return save_video_session(ctx, request)
 
 
-@router.post("/video/propagate_in_video")
+@router.post("/video/propagate_in_video", response_model=JobStartResponse)
 def propagate_in_video(
     request: VideoPropagateRequest,
     precondition: AnnotationPrecondition = Depends(annotation_precondition),
@@ -86,7 +98,7 @@ def propagate_in_video(
     return start_propagation(ctx, request, precondition)
 
 
-@router.post("/video/clear_all_prompts_in_frame")
+@router.post("/video/clear_all_prompts_in_frame", response_model=ClearPromptsResponse)
 def clear_all_prompts_in_frame_route(
     frame_idx: int,
     obj_id: int,
@@ -96,7 +108,7 @@ def clear_all_prompts_in_frame_route(
     return clear_all_prompts_in_frame(ctx, frame_idx, obj_id, precondition)
 
 
-@router.post("/video/objects")
+@router.post("/video/objects", response_model=ObjectCreationResponse)
 def create_object_route(
     precondition: AnnotationPrecondition = Depends(annotation_precondition),
     ctx: AppContext = Depends(get_context),
@@ -104,7 +116,7 @@ def create_object_route(
     return create_object(ctx, precondition)
 
 
-@router.put("/video/objects/{obj_id}")
+@router.put("/video/objects/{obj_id}", response_model=AnnotationUpdate)
 def update_object_route(
     request: VideoObjectUpdate,
     obj_id: int = Path(ge=1),
@@ -114,7 +126,7 @@ def update_object_route(
     return update_object(ctx, obj_id, request, precondition)
 
 
-@router.post("/video/remove_object")
+@router.post("/video/remove_object", response_model=AnnotationUpdate)
 def remove_object_route(
     obj_id: int,
     precondition: AnnotationPrecondition = Depends(annotation_precondition),
@@ -123,12 +135,12 @@ def remove_object_route(
     return remove_object(ctx, obj_id, precondition)
 
 
-@router.get("/video/info")
+@router.get("/video/info", response_model=VideoInfoResponse)
 def get_video_info_route(ctx: AppContext = Depends(get_context)):
     return get_video_info(ctx)
 
 
-@router.get("/video/mask_data/{frame_idx}")
+@router.get("/video/mask_data/{frame_idx}", response_model=MaskData)
 def get_mask_data_route(frame_idx: int, ctx: AppContext = Depends(get_context)):
     return get_mask_data(ctx, frame_idx)
 

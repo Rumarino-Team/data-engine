@@ -10,6 +10,7 @@ from core.jobs import JobHandle, capture_job_inputs, validate_job_inputs
 from core.runtime import cleanup_cuda_memory, is_out_of_memory
 from sessions.checkpoints import saved_state
 from sessions.publication import publish_results
+from schemas.responses import TrackingJobResult
 from schemas.tracking import TrackingPromptPointsRequest
 from tracking.results import save_prompt_tracking_result
 from tracking.runtime import VideoTracker, VideoTrackerRuntime
@@ -197,16 +198,9 @@ def run_prompt_tracking_job(
     runtime = masker_runtime if masker_runtime is not None else create_masker_runtime(session)
     tracker_runtime = tracker_runtime if tracker_runtime is not None else create_tracker_runtime(session)
 
-    def report_restore_progress(_stage: str, _label: str, progress: float | None, message: str) -> None:
-        job.enter_stage(
-            "restoring_masker", "Restoring interactive masking state",
-            progress=progress,
-            message=f"Restoring masking state after prompt tracking: {message}",
-        )
-
     try:
-        # Leaving this scope restores interactive masking before result publication.
-        with runtime.suspended(progress_callback=report_restore_progress):
+        # SAM2's weights wait in CPU RAM meanwhile and are back on the GPU before the result is published.
+        with runtime.offloaded():
             output = track_prompts(session, tracker_runtime, request, job, queries)
             cleanup_cuda_memory()
             job.enter_stage(
@@ -214,7 +208,7 @@ def run_prompt_tracking_job(
                 progress=0.95,
                 current=int(output.tracks.shape[0]),
                 total=total_queries,
-                message="Restoring masking state after prompt tracking",
+                message="Moving SAM2 back to the GPU after prompt tracking",
             )
             validate_job_inputs(session, inputs, "prompt_tracking")
     except MaskerRestorationError as error:
@@ -237,7 +231,7 @@ def run_prompt_tracking_job(
             visibility=output.visibility.tolist(),
         )
 
-    return {
+    result = {
         "session_id": inputs["session_id"],
         "input_revision": inputs["input_revision"],
         "message": "Prompt-point tracking completed",
@@ -250,3 +244,4 @@ def run_prompt_tracking_job(
         "tracking_result_id": tracking_result["result_id"],
         "saved_state": saved_state(session),
     }
+    return TrackingJobResult(**result).model_dump()

@@ -25,6 +25,10 @@ class _FakeInteractiveMasker:
     offload_video_to_cpu = True
     offload_state_to_cpu = True
 
+    def __init__(self):
+        self.offload_weights = Mock()
+        self.reload_weights = Mock()
+
 
 class _FakeTracker:
     model_name = "cotracker3_online"
@@ -37,21 +41,6 @@ class _FakeTracker:
     def track(self, video, *, queries, add_support_grid):
         return np.array([[[10.0, 20.0], [11.0, 21.0]]], dtype=np.float32), np.array([[True, True]])
 
-
-class _FakeRestoreMasker:
-    def init_state(self, *args, progress_callback=None, **kwargs):
-        self.init_args = args
-        self.init_kwargs = kwargs
-        if progress_callback is not None:
-            progress_callback(
-                "loading_sam2_model",
-                "Loading SAM2 model",
-                0.25,
-                "Loading SAM2 model weights",
-            )
-
-    def add_new_points_or_box(self, *args, **kwargs):
-        return None
 
 
 class PromptTrackingStatusTests(BackendStateTestCase):
@@ -67,8 +56,8 @@ class PromptTrackingStatusTests(BackendStateTestCase):
                 prompts=[{"frame_idx": 0, "obj_id": 1, "points": [[10.0, 20.0]], "labels": [1], "box": None}]),
         )
         self.job = self.job_handle()
-        self.restored_masker = _FakeRestoreMasker()
-        self.factory = Mock(return_value=self.restored_masker)
+        self.masker = state.video_masker
+        self.factory = Mock()
         self.replay = Mock()
         self.tracker_runtime = VideoTrackerRuntime(
             session=state, create_tracker=Mock(return_value=state.tracker), release_memory=Mock(),
@@ -95,50 +84,48 @@ class PromptTrackingStatusTests(BackendStateTestCase):
             stack.enter_context(patch("tracking.prompt_tracking.cleanup_cuda_memory"))
             yield stack.enter_context(patch("tracking.prompt_tracking.save_prompt_tracking_result"))
 
-    def test_prompt_tracking_uses_tracking_labels_and_restore_progress(self):
-        def publish_after_restoration(*args, **kwargs):
-            self.assertIs(state.video_masker, self.restored_masker)
-            self.replay.assert_called_once_with(state)
+    def assert_masker_untouched_but_for_its_weights(self):
+        """Tracking never rebuilds the predictor: same masker, no new model, no replay."""
+        self.assertIs(state.video_masker, self.masker)
+        self.factory.assert_not_called()
+        self.replay.assert_not_called()
+
+    def test_prompt_tracking_moves_sam2_weights_aside_and_back_before_publishing(self):
+        events = []
+        self.masker.offload_weights.side_effect = lambda: events.append("offload")
+        self.masker.reload_weights.side_effect = lambda: events.append("reload")
+
+        def track(*args, **kwargs):
+            events.append("track")
+            return np.array([[[10.0, 20.0], [11.0, 21.0]]], dtype=np.float32), np.array([[True, True]])
+
+        def publish(*args, **kwargs):
+            events.append("publish")
             return {"result_id": "track-1", "summary": {}}
 
-        with (
-            patch("tracking.prompt_tracking.should_stream_tracking", return_value=False),
-            patch(
-                "tracking.prompt_tracking.load_tracking_video_from_current_video_state",
-                return_value=(np.zeros((2, 2, 2, 3), dtype=np.uint8), str(self.tmp_dir)),
-            ),
-            patch("tracking.prompt_tracking.cleanup_cuda_memory", return_value=None),
-            patch(
-                "tracking.prompt_tracking.save_prompt_tracking_result",
-                side_effect=publish_after_restoration,
-            ),
-        ):
+        with self.tracking_environment() as saved, patch.object(state.tracker, "track", side_effect=track):
+            saved.side_effect = publish
             result = self.run_tracking()
 
+        self.assertEqual(events, ["offload", "track", "reload", "publish"])
         labels = [call.args[1] for call in self.job.enter_stage.call_args_list]
         self.assertIn("Loading tracker", labels)
         self.assertIn("Preparing tracking frames", labels)
         self.assertIn("Tracking prompt points", labels)
         self.assertIn("Restoring interactive masking state", labels)
-        self.assertNotIn("Loading state.tracker", labels)
-        self.assertNotIn("Loading frames", labels)
-        self.assertNotIn("Restoring masking state", labels)
-        self.factory.assert_called_once()
-        self.replay.assert_called_once_with(state)
-        self.assertEqual(self.restored_masker.init_args, (self.tmp_dir,))
-        self.assertEqual(self.restored_masker.init_kwargs["batch_size"], 32)
+        self.assert_masker_untouched_but_for_its_weights()
         self.assertEqual(result["tracking_result_id"], "track-1")
 
-    def test_failed_restore_disables_predictor_without_publishing(self):
-        self.factory.side_effect = RuntimeError("restore failed")
-        with self.tracking_environment() as publish:
+    def test_weights_that_cannot_return_disable_the_predictor_without_publishing(self):
+        self.masker.reload_weights.side_effect = RuntimeError("restore failed")
+        with self.tracking_environment() as publish, self.assertLogs("video.runtime", level="ERROR"):
             with self.assertRaises(OperationError) as failure:
                 self.run_tracking()
         self.assertEqual(failure.exception.status_code, 503)
         publish.assert_not_called()
         self.assertIsNone(state.video_masker)
 
-    def test_tracker_loading_failure_restores_masker_without_publishing(self):
+    def test_tracker_loading_failure_puts_the_weights_back_without_publishing(self):
         state.tracker = None
         self.tracker_runtime.create_tracker.side_effect = ValueError("unsupported tracker")
         with patch("tracking.prompt_tracking.save_prompt_tracking_result") as publish:
@@ -146,10 +133,11 @@ class PromptTrackingStatusTests(BackendStateTestCase):
                 self.run_tracking()
 
         self.assertEqual(failure.exception.status_code, 400)
-        self.assertIs(state.video_masker, self.restored_masker)
+        self.masker.reload_weights.assert_called_once()
+        self.assert_masker_untouched_but_for_its_weights()
         publish.assert_not_called()
 
-    def test_computation_errors_keep_their_status_when_restoration_fails(self):
+    def test_computation_errors_keep_their_status_when_the_weights_cannot_return(self):
         for error, status in (
             (ValueError("invalid query"), 400),
             (RuntimeError("tracking failed"), 500),
@@ -157,7 +145,7 @@ class PromptTrackingStatusTests(BackendStateTestCase):
         ):
             with self.subTest(error=type(error).__name__):
                 state.video_masker = _FakeInteractiveMasker()
-                self.factory.side_effect = RuntimeError("restore failed")
+                state.video_masker.reload_weights.side_effect = RuntimeError("restore failed")
                 with (
                     self.tracking_environment() as publish,
                     patch.object(state.tracker, "track", side_effect=error),
@@ -170,17 +158,21 @@ class PromptTrackingStatusTests(BackendStateTestCase):
                 self.assertIsNone(state.video_masker)
                 publish.assert_not_called()
 
-    def test_inputs_are_revalidated_after_restoration_before_publication(self):
-        self.replay.side_effect = lambda session: session.annotations.clear_prompts()
-        with self.tracking_environment() as publish:
+    def test_inputs_are_revalidated_after_tracking_before_publication(self):
+        def edit_during_tracking(*args, **kwargs):
+            state.annotations.clear_prompts()
+            return np.array([[[10.0, 20.0], [11.0, 21.0]]], dtype=np.float32), np.array([[True, True]])
+
+        with self.tracking_environment() as publish, patch.object(state.tracker, "track", side_effect=edit_during_tracking):
             with self.assertRaises(OperationError) as failure:
                 self.run_tracking()
 
         self.assertEqual(failure.exception.status_code, 409)
-        self.assertIs(state.video_masker, self.restored_masker)
+        self.masker.reload_weights.assert_called_once()
+        self.assert_masker_untouched_but_for_its_weights()
         publish.assert_not_called()
 
-    def test_invalid_tracking_coverage_restores_masker_without_publishing(self):
+    def test_invalid_tracking_coverage_puts_the_weights_back_without_publishing(self):
         shapes = [
             ((1, 1, 2), (1, 1)),  # Missing frame.
             ((1, 3, 2), (1, 3)),  # Extra frame.
@@ -192,8 +184,7 @@ class PromptTrackingStatusTests(BackendStateTestCase):
             for tracks_shape, visibility_shape in shapes:
                 with self.subTest(streaming=streaming, tracks=tracks_shape, visibility=visibility_shape):
                     masker = _FakeInteractiveMasker()
-                    state.video_masker = masker
-                    self.factory.reset_mock()
+                    state.video_masker = self.masker = masker
                     previous_metadata = state.session_metadata
                     state.session_metadata = {"latest_tracking_result_id": "previous-result"}
                     before_annotations = state.annotations.snapshot()
@@ -210,8 +201,8 @@ class PromptTrackingStatusTests(BackendStateTestCase):
                         self.assertEqual(failure.exception.status_code, 500)
                         self.assertIn("Tracking returned", failure.exception.message)
                         publish.assert_not_called()
-                        self.factory.assert_called_once()
-                        self.assertIs(state.video_masker, self.restored_masker)
+                        masker.reload_weights.assert_called_once()
+                        self.assert_masker_untouched_but_for_its_weights()
                         self.assertEqual(state.session_metadata["latest_tracking_result_id"], "previous-result")
                         self.assertEqual(state.annotations.snapshot(), before_annotations)
                     finally:
@@ -233,8 +224,8 @@ class PromptTrackingStatusTests(BackendStateTestCase):
             self.assertIn("Unable to read frame 1:", failure.exception.message)
             inference.assert_not_called()
             publish.assert_not_called()
-            self.factory.assert_called_once()
-            self.assertIs(state.video_masker, self.restored_masker)
+            self.masker.reload_weights.assert_called_once()
+            self.assert_masker_untouched_but_for_its_weights()
             self.assertEqual(state.session_metadata["latest_tracking_result_id"], "previous-result")
             self.assertEqual(state.annotations.snapshot(), before_annotations)
 

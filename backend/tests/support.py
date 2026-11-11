@@ -97,7 +97,7 @@ class BackendStateFixtures:
     def activate_job(self, status: str = "running") -> str:
         """Make the job manager report an active job, as a long operation would; returns its id."""
         jobs = self.ctx.jobs
-        job_id = jobs._admit("video_init", stage="working", stage_label="Working", message="working", inputs=None)
+        job_id = jobs._admit("video_init", stage="working", stage_label="Working", message="working")
         jobs._job["status"] = status
         return job_id
 

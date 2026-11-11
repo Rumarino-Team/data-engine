@@ -3,12 +3,12 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from core.annotations import tracked_prompt_keys
 from core.errors import OperationError
 from core.state import BackendState
 from core.jobs import utc_now_iso
 from sessions.artifacts import reclaim_superseded_artifacts
 from sessions.metadata import current_session_path
-from tracking.guidance import tracked_prompt_keys
 from utils import load_mask_manifest, write_mask_manifest
 
 _RESULT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")

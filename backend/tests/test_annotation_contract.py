@@ -200,12 +200,16 @@ class PreconditionTests(BackendStateTestCase):
 
     def test_job_admission_captures_inputs_and_rejects_stale_worker(self):
         state.annotations.set_prompt(VideoPrompt(frame_idx=0, obj_id=1, points=[[1, 2]], labels=[1]))
-        for route, module in [("/video/propagate_in_video", "video.propagation"),
-                              ("/tracking/track_prompt_points", "tracking.prompt_tracking")]:
-            with patch.object(self.ctx.jobs, "start", return_value={"job_id": "test"}) as queue:
+        for route, module, runner, operation in [
+                ("/video/propagate_in_video", "video.propagation", "run_propagation_job", "mask_propagation"),
+                ("/tracking/track_prompt_points", "tracking.prompt_tracking", "run_prompt_tracking_job", "prompt_tracking")]:
+            started = {"job_id": "test", "status": "queued", "operation": operation, "message": "queued"}
+            with patch.object(self.ctx.jobs, "start", return_value=started) as queue:
                 response = self.client.post(route, json={}, headers=self.headers(revision=state.annotations.revision))
                 self.assertEqual(response.status_code, 200)
-                inputs = queue.call_args.kwargs["inputs"]
+                with patch(f"{module}.{runner}") as run:
+                    queue.call_args.kwargs["worker"](self.job_handle())
+                inputs = run.call_args.args[3]
                 self.assertEqual(inputs["session_id"], "current")
                 self.assertEqual(inputs["input_revision"], state.annotations.revision)
                 state.active_session_id = "replacement"

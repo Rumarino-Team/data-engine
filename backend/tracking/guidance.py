@@ -4,22 +4,10 @@ from typing import Any, Optional
 
 import numpy as np
 
-from core.annotations import prompt_point_key
 from core.state import BackendState
 from sessions.metadata import current_session_path
+from tracking.results import current_tracking_result
 from utils import load_mask_manifest
-
-
-def tracked_prompt_keys(points: list[dict[str, Any]]) -> list[str]:
-    return [
-        prompt_point_key(
-            obj_id=int(point["obj_id"]),
-            frame_idx=int(point["source_frame_idx"]),
-            x=float(point["source_x"]),
-            y=float(point["source_y"]),
-        )
-        for point in points
-    ]
 
 
 @dataclass(frozen=True)
@@ -144,7 +132,6 @@ def load_latest_tracking_guidance(session: BackendState, *, num_frames: int) -> 
     if len(result_points) != len(result_tracks) or len(result_points) != len(result_visibility):
         return TrackingGuidance(points=[], skipped_reason="Latest CoTracker result has inconsistent tracked point data.", should_warn=True)
 
-    from tracking.results import current_tracking_result
     try:
         result = current_tracking_result(session, result)
     except Exception:

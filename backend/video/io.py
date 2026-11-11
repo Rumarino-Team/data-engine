@@ -21,25 +21,6 @@ def load_video_frames_as_numpy(video_dir_path: Path, frame_file_names: list[str]
 
     return np.stack(frames_rgb, axis=0)
 
-def build_window_dir(
-    frame_paths: list[Path],
-    run_root: Path,
-    window_name: str,
-    progress_callback: Optional[Callable[[int, int, Path], None]] = None,
-) -> Path:
-    window_dir = run_root / window_name
-    window_dir.mkdir(parents=True, exist_ok=True)
-    total = len(frame_paths)
-
-    for local_idx, source_path in enumerate(frame_paths):
-        target_name = f"{local_idx:05d}{source_path.suffix.lower()}"
-        target_path = window_dir / target_name
-        link_or_copy_file(source_path, target_path)
-        if progress_callback is not None:
-            progress_callback(local_idx + 1, total, source_path)
-
-    return window_dir
-
 def link_or_copy_file(source_path: Path, target_path: Path) -> None:
     target_path.parent.mkdir(parents=True, exist_ok=True)
     try:

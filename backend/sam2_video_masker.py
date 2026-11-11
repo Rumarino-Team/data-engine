@@ -17,7 +17,10 @@ def _with_inference_context(method):
 
 
 class SAM2VideoMasker:
-    def __init__(self, progress_callback: Optional[Callable[[str, str, Optional[float], str], None]] = None):
+    def __init__(
+        self, progress_callback: Optional[Callable[[str, str, Optional[float], str], None]] = None,
+        reuse: Optional["SAM2VideoMasker"] = None,
+    ):
         def _report(stage: str, label: str, progress: Optional[float], message: str) -> None:
             if progress_callback is not None:
                 progress_callback(stage, label, progress, message)
@@ -60,9 +63,13 @@ class SAM2VideoMasker:
                 f"tf32: {is_ampere_or_newer}"
             )
 
-        _report("loading_sam2_model", "Loading SAM2 model", None, "Loading SAM2 model weights")
-        with self._autocast_context():
-            self.predictor = SAM2VideoPredictor.from_pretrained("facebook/sam2.1-hiera-large", device=self.device)
+        if reuse is not None:
+            # A new video on weights that are already loaded; the other masker keeps its own video state.
+            self.predictor = reuse.predictor
+        else:
+            _report("loading_sam2_model", "Loading SAM2 model", None, "Loading SAM2 model weights")
+            with self._autocast_context():
+                self.predictor = SAM2VideoPredictor.from_pretrained("facebook/sam2.1-hiera-large", device=self.device)
         _report("model_ready", "SAM2 model ready", 0.35, "SAM2 model loaded")
 
         self.inference_state = None
@@ -75,6 +82,25 @@ class SAM2VideoMasker:
         if self.device.type == "cuda":
             return torch.autocast("cuda", dtype=self.autocast_dtype)
         return nullcontext()
+
+    def offload_weights(self) -> None:
+        """Move the model's weights to CPU RAM so another model can use the GPU; the video state stays loaded."""
+        self.predictor.to("cpu")
+        gc.collect()
+        if self.device.type == "cuda":
+            torch.cuda.empty_cache()
+
+    def reload_weights(self) -> None:
+        self.predictor.to(self.device)
+
+    @property
+    def state_loaded(self) -> bool:
+        return self.inference_state is not None
+
+    def release_state(self) -> None:
+        """Free this video's frames and state (RAM) before another video loads."""
+        self.inference_state = None
+        gc.collect()
 
     @_with_inference_context
     def init_state(
@@ -121,6 +147,7 @@ class SAM2VideoMasker:
                 "Loading frames into SAM2 state",
             )
 
+        self.release_state()
         self.inference_state = self.predictor.init_state(
             video_path=str(resolved_video_dir),
             offload_video_to_cpu=self.offload_video_to_cpu,

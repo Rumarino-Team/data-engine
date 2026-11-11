@@ -1,22 +1,20 @@
 from dataclasses import dataclass, field
-import logging, shutil, uuid
+import logging, uuid
 from pathlib import Path
 from typing import Any, Optional
 import cv2
-import numpy as np
-from core.config import WINDOW_FRAMES_ROOT
 from core.context import AppContext
 from core.errors import OperationError
 from core.jobs import JobHandle, capture_job_inputs, validate_job_inputs
 from core.runtime import cleanup_cuda_memory, is_out_of_memory
 from core.state import BackendState
+from schemas.responses import PropagationResult
 from schemas.video import VideoPropagateRequest
-from sessions.cache import clear_window_cache
 from sessions.checkpoints import saved_state
 from sessions.metadata import current_masks_dir
 from sessions.publication import publish_results
+import numpy as np
 from utils import build_empty_mask_manifest, load_mask_manifest, prepare_video_masks_output, save_single_video_mask_frame, write_mask_manifest
-from video.io import build_window_dir
 from video.masks import manifest_frame_payload, override_pixels
 from video.prompts import create_masker_runtime
 from video.runtime import MaskerRestorationError, MaskerSettings
@@ -54,21 +52,6 @@ def start_propagation(ctx: AppContext, request: VideoPropagateRequest, precondit
 
 
 @dataclass
-class Window:
-    """A part of the requested range that SAM2 is initialized on, so only its frames are held in memory."""
-    index: int
-    count: int
-    start: int
-    end: int
-    expected_frames: int = 0  # frames this window adds to the output
-    processed: int = 0
-
-    @property
-    def number(self) -> int:
-        return self.index + 1
-
-
-@dataclass
 class PropagationRun:
     """Everything one propagation job shares between its steps."""
     session: BackendState
@@ -84,13 +67,9 @@ class PropagationRun:
     frame_width: int
     frame_height: int
     guidance: Optional[TrackingGuidance]
-    windows: list[Window]
-    run_root: Path
     overlay_dir: Path
-    # Filled in while the windows run.
+    # Filled in while the frames are propagated.
     processed_frames: set[int] = field(default_factory=set)
-    boundary_masks: dict[int, np.ndarray] = field(default_factory=dict)
-    boundary_frame_idx: Optional[int] = None
     saved_mask_frame_count: int = 0
     save_failures: int = 0
     saved_mask_paths: dict[int, list[str]] = field(default_factory=dict)
@@ -106,15 +85,13 @@ class PropagationRun:
     def manifest_frames(self) -> dict[str, Any]:
         return self.manifest["frames"]
 
-    def report(self, window: Window, stage: str, label: str, message: str, *, frame_idx: int,
+    def report(self, stage: str, label: str, message: str, *, frame_idx: int,
                current: Optional[int] = None, total: Optional[int] = None, **extra: Any) -> None:
         processed = len(self.processed_frames)
         self.job.enter_stage(
             stage, label,
             current=processed if current is None else current,
             total=self.expected_total_frames if total is None else total,
-            window_index=window.number,
-            window_count=window.count,
             frame_idx=frame_idx,
             progress=(processed / self.expected_total_frames) if self.expected_total_frames else 0.0,
             message=message,
@@ -160,13 +137,12 @@ def plan_propagation(session: BackendState, request: VideoPropagateRequest) -> t
 
 
 def open_run(session: BackendState, request: VideoPropagateRequest, job: JobHandle, inputs: dict[str, Any]) -> PropagationRun:
-    """Plan the job and prepare its outputs: the manifest to fill in, the tracked-point guidance and the windows."""
+    """Plan the job and prepare its outputs: the manifest to fill in and the tracked-point guidance."""
     settings, start_frame_idx, end_frame_idx = plan_propagation(session, request)
     expected_total_frames = end_frame_idx - start_frame_idx + 1
     masks_root = current_masks_dir(session)
     if masks_root is None:
         raise OperationError(400, "Video session cache is not initialized.")
-    clear_window_cache()
     job.enter_stage(
         "preparing_masks", "Preparing mask output",
         progress=0.02,
@@ -199,14 +175,6 @@ def open_run(session: BackendState, request: VideoPropagateRequest, job: JobHand
     if request.use_tracked_points:
         guidance = load_latest_tracking_guidance(session, num_frames=len(session.video_frame_files))
 
-    split_frame_idx = (start_frame_idx + end_frame_idx) // 2
-    ranges = [(start_frame_idx, split_frame_idx)]
-    if split_frame_idx < end_frame_idx:
-        ranges.append((split_frame_idx, end_frame_idx))
-    windows = [Window(index, len(ranges), start, end) for index, (start, end) in enumerate(ranges)]
-
-    run_root = WINDOW_FRAMES_ROOT / f"run_{uuid.uuid4().hex[:12]}"
-    run_root.mkdir(parents=True, exist_ok=True)
     overlay_dir = masks_dir / f"overlays_{uuid.uuid4().hex}"
     if request.export_overlay_frames:
         overlay_dir.mkdir()
@@ -214,184 +182,97 @@ def open_run(session: BackendState, request: VideoPropagateRequest, job: JobHand
         session=session, request=request, job=job, settings=settings,
         start_frame_idx=start_frame_idx, end_frame_idx=end_frame_idx, frame_files=frame_files,
         masks_dir=masks_dir, manifest_path=manifest_path, manifest=manifest,
-        frame_width=frame_width, frame_height=frame_height, guidance=guidance, windows=windows,
-        run_root=run_root, overlay_dir=overlay_dir,
+        frame_width=frame_width, frame_height=frame_height, guidance=guidance, overlay_dir=overlay_dir,
     )
 
 
-def build_window(run: PropagationRun, window: Window) -> Path:
-    """Link the window's frames into their own directory for SAM2 to load."""
-    session = run.session
-    run.report(
-        window, "building_window", "Loading propagation window",
-        f"Preparing window {window.number} of {window.count}: frames {window.start}-{window.end}",
-        frame_idx=window.start, current=0, total=window.end - window.start + 1,
-    )
-    frame_paths = [Path(session.video_dir) / session.video_frame_files[idx] for idx in range(window.start, window.end + 1)]
-
-    def on_progress(current: int, total: int, source_path: Path) -> None:
-        run.report(
-            window, "building_window", "Loading propagation window",
-            f"Linked {current} of {total} frames for window {window.number} of {window.count}",
-            frame_idx=window.start + current - 1, current=current, total=total,
-            append_history=current == 1 or current == total,
-        )
-
-    return build_window_dir(frame_paths, run.run_root, f"window_{window.index}_{window.start}_{window.end}",
-                            progress_callback=on_progress)
-
-
-def seed_window(run: PropagationRun, masker, window: Window) -> None:
-    """Give SAM2 everything it propagates from: the previous window's last masks, prompts, explicit masks and tracked points."""
+def seed_tracked_points(run: PropagationRun, masker) -> None:
+    """Add the latest tracking result's points to the predictor; the accepted prompts are already loaded."""
+    guidance = run.guidance
+    if guidance is None or not guidance.points:
+        return
     session, request = run.session, run.request
-    run.report(window, "seeding_window", "Seeding prompts",
-               f"Seeding prompts for window {window.number} of {window.count}", frame_idx=window.start)
-
-    seeds_boundary = window.index > 0 and bool(run.boundary_masks) and run.boundary_frame_idx is not None
-    if seeds_boundary:
-        run.report(window, "seeding_window", "Seeding boundary masks",
-                   f"Seeding boundary masks for window {window.number} of {window.count}",
-                   frame_idx=run.boundary_frame_idx)
-        local_boundary_idx = int(run.boundary_frame_idx - window.start)
-        for obj_id, obj_mask in run.boundary_masks.items():
-            masker.add_new_mask(frame_idx=local_boundary_idx, obj_id=int(obj_id), mask=np.asarray(obj_mask).astype(bool))
-
-    for event in session.annotations.prompt_events():
-        event_frame_idx = int(event["frame_idx"])
-        if not window.start <= event_frame_idx <= window.end:
-            continue
-        masker.add_new_points_or_box(
-            frame_idx=event_frame_idx - window.start,
-            obj_id=int(event["obj_id"]),
-            points=event["points"] if event["points"] else None,
-            labels=event["labels"] if event["labels"] else None,
-            clear_old_points=True,
-            box=event.get("box"),
-        )
-
-    for mask in session.annotations.mask_overrides:
-        if window.start <= mask.frame_idx <= window.end:
-            masker.add_new_mask(frame_idx=mask.frame_idx - window.start, obj_id=mask.obj_id,
-                                mask=override_pixels(mask, session.active_session_dir))
-
-    if run.guidance is not None and run.guidance.points:
-        excluded = {(mask.frame_idx, mask.obj_id) for mask in session.annotations.mask_overrides}
-        if seeds_boundary:
-            excluded.update((int(run.boundary_frame_idx), int(obj_id)) for obj_id in run.boundary_masks)
-        batches, seeded_count, seeded_frames = run.guidance.build_window_batches(
-            window_start=window.start,
-            window_end=window.end,
-            propagation_start_frame_idx=run.start_frame_idx,
-            frame_width=run.frame_width,
-            frame_height=run.frame_height,
-            keyframe_interval=request.tracked_point_keyframe_interval,
-            max_points_per_object_per_frame=request.max_tracked_points_per_object_per_frame,
-            excluded_frame_objects=excluded,
-        )
-        for local_frame_idx, obj_batches in sorted(batches.items()):
-            for obj_id, points in sorted(obj_batches.items()):
-                if points:
-                    masker.add_new_points_or_box(
-                        frame_idx=int(local_frame_idx), obj_id=int(obj_id), points=points,
-                        labels=[1] * len(points), clear_old_points=False, box=None,
-                    )
-        run.tracked_points_seeded += seeded_count
-        run.tracked_points_seeded_frames.update(seeded_frames)
+    run.report("seeding_tracked_points", "Seeding tracked points", "Seeding tracked points from the latest tracking result",
+               frame_idx=run.start_frame_idx)
+    excluded = {(mask.frame_idx, mask.obj_id) for mask in session.annotations.mask_overrides}
+    batches, seeded_count, seeded_frames = guidance.build_window_batches(
+        window_start=run.start_frame_idx,
+        window_end=run.end_frame_idx,
+        propagation_start_frame_idx=run.start_frame_idx,
+        frame_width=run.frame_width,
+        frame_height=run.frame_height,
+        keyframe_interval=request.tracked_point_keyframe_interval,
+        max_points_per_object_per_frame=request.max_tracked_points_per_object_per_frame,
+        excluded_frame_objects=excluded,
+    )
+    for offset, obj_batches in sorted(batches.items()):
+        for obj_id, points in sorted(obj_batches.items()):
+            if points:
+                masker.add_new_points_or_box(
+                    frame_idx=run.start_frame_idx + int(offset), obj_id=int(obj_id), points=points,
+                    labels=[1] * len(points), clear_old_points=False, box=None,
+                )
+    run.tracked_points_seeded += seeded_count
+    run.tracked_points_seeded_frames.update(seeded_frames)
 
 
-def remember_boundary(run: PropagationRun, frame_idx: int, frame_masks: dict[int, np.ndarray]) -> None:
-    run.boundary_masks = {int(obj_id): np.asarray(mask).astype(bool) for obj_id, mask in frame_masks.items()}
-    run.boundary_frame_idx = frame_idx
-
-
-def collect_frame(run: PropagationRun, window: Window, local_frame_idx: int, frame_masks: dict[int, np.ndarray]) -> None:
+def collect_frame(run: PropagationRun, frame_idx: int, frame_masks: dict[int, np.ndarray]) -> None:
     """Take one propagated frame: report it, add it to the manifest and export its overlay."""
     session, request = run.session, run.request
-    global_frame_idx = int(window.start + local_frame_idx)
-    if global_frame_idx < run.start_frame_idx or global_frame_idx > run.end_frame_idx:
-        return
-    if window.index > 0 and global_frame_idx == window.start and global_frame_idx in run.processed_frames:
-        # The previous window already produced this overlap frame; it only supplies the boundary masks.
-        remember_boundary(run, global_frame_idx, frame_masks)
+    frame_idx = int(frame_idx)
+    if frame_idx < run.start_frame_idx or frame_idx > run.end_frame_idx:
         return
 
     batch_progress = propagation_batch_progress(
-        processed_before_frame=window.processed,
-        window_total_frames=max(1, window.expected_frames),
+        processed_before_frame=len(run.processed_frames),
+        window_total_frames=run.expected_total_frames,
         batch_size=run.settings.batch_size,
     )
-    window.processed += 1
-    run.processed_frames.add(global_frame_idx)
+    run.processed_frames.add(frame_idx)
     processed = len(run.processed_frames)
     run.report(
-        window, "propagating_window", "Propagating masks", f"Processed {processed} of {run.expected_total_frames} frames",
-        frame_idx=global_frame_idx, append_history=processed == 1 or processed == run.expected_total_frames,
+        "propagating_masks", "Propagating masks", f"Processed {processed} of {run.expected_total_frames} frames",
+        frame_idx=frame_idx, append_history=processed == 1 or processed == run.expected_total_frames,
         **batch_progress,
     )
     # Explicit masks remain exact inputs even if inference alters their pixels.
     for mask in session.annotations.mask_overrides:
-        if mask.frame_idx == global_frame_idx:
+        if mask.frame_idx == frame_idx:
             frame_masks[mask.obj_id] = override_pixels(mask, session.active_session_dir)
-    run.manifest_frames[str(global_frame_idx)] = {
+    run.manifest_frames[str(frame_idx)] = {
         **manifest_frame_payload(frame_masks),
         "input_revisions": {str(obj_id): session.annotations.input_revisions.get(int(obj_id), 0)
                             for obj_id in frame_masks},
     }
     if request.include_masks_in_response:
-        run.video_segments[global_frame_idx] = {
+        run.video_segments[frame_idx] = {
             int(obj_id): np.asarray(mask).astype(bool).tolist() for obj_id, mask in frame_masks.items()
         }
     if request.export_overlay_frames:
         try:
-            saved_path = save_single_video_mask_frame(run.frame_files, run.overlay_dir, global_frame_idx, frame_masks)
+            saved_path = save_single_video_mask_frame(run.frame_files, run.overlay_dir, frame_idx, frame_masks)
             if saved_path is not None:
-                run.manifest_frames[str(global_frame_idx)]["overlay_path"] = str(Path(saved_path).relative_to(run.masks_dir))
+                run.manifest_frames[str(frame_idx)]["overlay_path"] = str(Path(saved_path).relative_to(run.masks_dir))
                 run.saved_mask_frame_count += 1
                 if request.include_saved_mask_paths:
-                    run.saved_mask_paths.setdefault(global_frame_idx, []).append(saved_path)
+                    run.saved_mask_paths.setdefault(frame_idx, []).append(saved_path)
         except Exception:
             run.save_failures += 1
-            logger.exception("Failed to save propagated mask frame %s", global_frame_idx)
-    if global_frame_idx == window.end:
-        remember_boundary(run, global_frame_idx, frame_masks)
+            logger.exception("Failed to save propagated mask frame %s", frame_idx)
 
 
-def propagate_window(run: PropagationRun, masker, window: Window) -> None:
+def propagate_range(run: PropagationRun, masker) -> None:
     settings = run.settings
-    output_start = max(run.start_frame_idx, window.start)
-    local_start_frame = output_start - window.start
-    window.expected_frames = window.end - output_start + 1
-    if window.index > 0 and window.start in run.processed_frames:
-        window.expected_frames = max(0, window.expected_frames - 1)
-    window.processed = 0
     masker.propagate_in_video(
-        start_frame_idx=local_start_frame,
-        max_frame_num_to_track=(window.end - window.start + 1) - local_start_frame,
+        start_frame_idx=run.start_frame_idx,
+        max_frame_num_to_track=run.expected_total_frames,
         reverse=False,
         batch_size=settings.batch_size,
         online_mode=settings.online_mode,
         collect_segments=False,
-        frame_callback=lambda local_frame_idx, frame_masks: collect_frame(run, window, local_frame_idx, frame_masks),
+        frame_callback=lambda frame_idx, frame_masks: collect_frame(run, frame_idx, frame_masks),
     )
-    run.report(window, "propagating_window", "Propagating masks",
-               f"Finished window {window.number} of {window.count}", frame_idx=window.end)
-
-
-def run_window(run: PropagationRun, masker, window: Window) -> None:
-    settings = run.settings
-    window_dir = build_window(run, window)
-    run.report(window, "initializing_state", "Initializing SAM2 window state",
-               f"Initializing SAM2 state for window {window.number} of {window.count}", frame_idx=window.start)
-    masker.init_state(
-        str(window_dir),
-        online_mode=settings.online_mode,
-        batch_size=settings.batch_size,
-        offload_video_to_cpu=settings.offload_video_to_cpu,
-        offload_state_to_cpu=settings.offload_state_to_cpu,
-        async_loading_frames=False,
-    )
-    seed_window(run, masker, window)
-    propagate_window(run, masker, window)
+    run.report("propagating_masks", "Propagating masks", "Finished propagating", frame_idx=run.end_frame_idx)
 
 
 def publish_run(ctx: AppContext, run: PropagationRun, inputs: dict[str, Any]) -> BackendState:
@@ -417,7 +298,7 @@ def propagation_result(run: PropagationRun, inputs: dict[str, Any], session: Bac
     guidance = run.guidance
     skipped_reason = guidance.skipped_reason if guidance is not None else None
     should_warn = guidance.should_warn if guidance is not None else False
-    return {
+    result = {
         "session_id": inputs["session_id"],
         "input_revision": inputs["input_revision"],
         "video_segments": run.video_segments if request.include_masks_in_response else {},
@@ -439,6 +320,7 @@ def propagation_result(run: PropagationRun, inputs: dict[str, Any], session: Bac
         "mask_manifest_path": session.mask_manifest_path,
         "saved_state": saved_state(session),
     }
+    return PropagationResult(**result).model_dump()
 
 
 def run_propagation_job(ctx: AppContext, request: VideoPropagateRequest, job: JobHandle, inputs=None) -> dict[str, Any]:
@@ -453,14 +335,12 @@ def run_propagation_job(ctx: AppContext, request: VideoPropagateRequest, job: Jo
     )
     run = open_run(session, request, job, inputs)
 
-    def report_restore_progress(_stage: str, _label: str, progress: Optional[float], message: str) -> None:
-        job.enter_stage("restoring_interactive_state", "Restoring interactive state", progress=progress, message=message)
-
     try:
-        # Leaving this scope reloads the session's own frames and inputs before publication.
-        with create_masker_runtime(session).borrowed(run.settings, progress_callback=report_restore_progress) as masker:
-            for window in run.windows:
-                run_window(run, masker, window)
+        # The session's own video state is reset to the accepted inputs before and after, so nothing
+        # propagated leaks into interactive editing and no frames are loaded again.
+        with create_masker_runtime(session).propagating() as masker:
+            seed_tracked_points(run, masker)
+            propagate_range(run, masker)
     except ValueError as error:
         raise OperationError(400, str(error)) from error
     except MaskerRestorationError as error:
@@ -474,8 +354,6 @@ def run_propagation_job(ctx: AppContext, request: VideoPropagateRequest, job: Jo
         raise OperationError(500, f"Failed to propagate video masks: {error}") from error
     except Exception as error:
         raise OperationError(500, f"Failed to propagate video masks: {error}") from error
-    finally:
-        shutil.rmtree(run.run_root, ignore_errors=True)
 
     published = publish_run(ctx, run, inputs)
     return propagation_result(run, inputs, published)
