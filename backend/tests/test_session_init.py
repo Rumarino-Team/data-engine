@@ -12,7 +12,7 @@ from support import state
 from schemas.video import VideoInitStateRequest
 from sessions.metadata import session_metadata_document
 from support import SessionStateTestCase
-from video import prompts, service
+from video import loading, prompts
 
 
 class SessionReplacementTests(SessionStateTestCase):
@@ -45,7 +45,7 @@ class SessionReplacementTests(SessionStateTestCase):
         return sorted(path.relative_to(directory).as_posix() for path in directory.rglob("*"))
 
     def run_init(self, path=None):
-        return service.run_video_init_job(
+        return loading.run_video_init_job(
             self.ctx, VideoInitStateRequest(video_frames_dir=str(path or self.source)), self.job_handle())
 
     def assert_old_session(self, state_loaded=True):
@@ -61,7 +61,7 @@ class SessionReplacementTests(SessionStateTestCase):
             path = self.root / name
             path.touch()
             with self.subTest(name), self.assertRaises(OperationError) as failure:
-                service.initialize_video_state_from_resolved_input(
+                loading.initialize_video_state_from_resolved_input(
                     path, online_mode=True, batch_size=1, offload_video_to_cpu=True, offload_state_to_cpu=True,
                     async_loading_frames=False, session=SessionState(), job=self.job_handle())
             self.assertEqual(failure.exception.status_code, 400)
@@ -89,7 +89,7 @@ class SessionReplacementTests(SessionStateTestCase):
         self.assert_old_session()
         self.assert_old_state_was_freed_then_rebuilt()
         with (patch.object(prompts.svm, "SAM2VideoMasker", return_value=self.masker()),
-              patch.object(service, "content_fingerprint", side_effect=OSError("disk full"))):
+              patch.object(loading, "content_fingerprint", side_effect=OSError("disk full"))):
             with self.assertRaises(OSError):
                 self.run_init()
         self.assert_old_session()
@@ -121,7 +121,7 @@ class SessionReplacementTests(SessionStateTestCase):
         candidate.init_state.side_effect = RuntimeError("model failed")
         self.old_masker.init_state.side_effect = RuntimeError("rebuild failed")
         with (patch.object(prompts.svm, "SAM2VideoMasker", return_value=candidate),
-              self.assertLogs("video.service", level="ERROR")):
+              self.assertLogs("video.loading", level="ERROR")):
             with self.assertRaises(RuntimeError) as failure:
                 self.run_init()
         self.assertEqual(str(failure.exception), "model failed")
@@ -138,13 +138,13 @@ class SessionReplacementTests(SessionStateTestCase):
             self.assertEqual(info["session_id"], "old")
             self.assertFalse(info["predictor_ready"])
         candidate.init_state.side_effect = preparing
-        real_sweep = service.sweep_unreferenced_artifacts
+        real_sweep = loading.sweep_unreferenced_artifacts
         def late_step(session):
             self.assert_old_session(state_loaded=False)
             self.assertIsNot(session, state)
             real_sweep(session)
         with (patch.object(prompts.svm, "SAM2VideoMasker", return_value=candidate),
-              patch.object(service, "sweep_unreferenced_artifacts", side_effect=late_step)):
+              patch.object(loading, "sweep_unreferenced_artifacts", side_effect=late_step)):
             self.run_init()
         self.assertNotEqual(state.active_session_id, "old")
         self.assertIs(state.video_masker, candidate)
@@ -181,7 +181,7 @@ class SessionReplacementTests(SessionStateTestCase):
         with patch.object(prompts.svm, "SAM2VideoMasker", return_value=self.masker()):
             self.run_init()
         self.assertTrue((self.old_dir / "frames" / "00000.jpg").exists())
-        service.discard_working_session(self.source)
+        loading.discard_working_session(self.source)
         self.assertTrue(self.source.exists())
 
     def hand_edited_checkpoint(self, **changes):

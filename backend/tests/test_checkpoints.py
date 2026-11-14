@@ -13,7 +13,7 @@ from support import state
 from sessions import checkpoints
 from support import commit_session
 from support import SessionStateTestCase
-from video import service
+from video import loading, save
 
 OBJECT = {"id": 1, "label": "Hand", "color": "#ff0000"}
 
@@ -26,7 +26,7 @@ class CheckpointTests(SessionStateTestCase):
         self.working = self.working_session(
             self.root / "working", session_id="first-session", frame_bytes=b"frame",
             annotations=SessionAnnotations(objects={1: OBJECT}), video_masker=self.make_masker())
-        for active in (patch.object(service, "SAVED_ROOT", self.saved_root),
+        for active in (patch.object(save, "SAVED_ROOT", self.saved_root),
                        patch("video.io.SESSION_CACHE_ROOT", self.root / "cache")):
             active.start()
             self.addCleanup(active.stop)
@@ -42,7 +42,7 @@ class CheckpointTests(SessionStateTestCase):
         return json.loads((directory / "session.json").read_text())
 
     def open_checkpoint(self, directory):
-        return service.initialize_video_state_from_resolved_input(
+        return loading.initialize_video_state_from_resolved_input(
             directory, online_mode=True, batch_size=1, offload_video_to_cpu=True,
             offload_state_to_cpu=True, async_loading_frames=False, session=state, job=self.job_handle())
 

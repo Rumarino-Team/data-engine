@@ -51,7 +51,7 @@ class Harness:
         self.temp = Path(tempfile.mkdtemp(prefix="measure_"))
         self.context = AppContext()
         self.patches = [patch("video.io.SESSION_CACHE_ROOT", self.temp / "sessions"),
-                        patch("video.service.SAVED_ROOT", self.temp / "saved")]
+                        patch("video.save.SAVED_ROOT", self.temp / "saved")]
         for active in self.patches:
             active.start()
         self.client = TestClient(create_app(self.context), raise_server_exceptions=False)

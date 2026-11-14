@@ -34,7 +34,7 @@ class AppWiringTests(SessionStateTestCase):
             ("GET", "/video/info", None, {200}),
             ("GET", "/video/mask_data/0", None, {400}),
             ("GET", "/video/frame/0", None, {400}),
-            ("GET", "/video/mask_frame/0", None, {404}),
+            ("GET", "/video/mask_frame/0", None, {400}),
             ("POST", "/tracking/track_prompt_points", {}, {409}),
             ("GET", "/tracking/results/abc", None, {404}),
         ]
