@@ -367,9 +367,20 @@ describe('FramePipelineService', () => {
     await callback?.();
     expect(viewport.render).not.toHaveBeenCalled();
     animation!(0);
-    expect(backend.getVideoFrameUrl).toHaveBeenCalledWith(6);
-    expect(backend.getVideoFrameUrl).not.toHaveBeenCalledWith(5);
+    expect(backend.getVideoFrameUrl).toHaveBeenCalledWith(6, store.sessionId());
+    expect(backend.getVideoFrameUrl).not.toHaveBeenCalledWith(5, store.sessionId());
     expect(requestAnimationFrame).toHaveBeenCalledOnce();
+  });
+
+  it('asks for frames with the active session id, so a new video never shows an old one’s frames', async () => {
+    expect(store.sessionId()).toBeTruthy();
+    await startFrame(0);
+    expect(backend.getVideoFrameUrl).toHaveBeenCalledWith(0, store.sessionId());
+
+    service.clearFrameCaches();
+    store.sessionId.set('another-session');
+    await startFrame(0);
+    expect(backend.getVideoFrameUrl).toHaveBeenLastCalledWith(0, 'another-session');
   });
 
   it('retains useful neighbor work without allowing it to paint before scheduled navigation', async () => {

@@ -218,6 +218,24 @@ class VideoEditTests(SessionStateTestCase):
 
     # --- masks ---------------------------------------------------------------------------------------------
 
+    def test_frames_are_revalidated_so_a_browser_never_shows_another_sessions_frame(self):
+        self.seed_manifest()
+        for path in ("/video/frame/0", "/video/mask_frame/0"):
+            with self.subTest(path=path):
+                response = self.client.get(path)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.headers["cache-control"], "no-cache")
+
+    def test_a_frame_request_names_its_session_and_is_refused_once_another_is_active(self):
+        self.seed_manifest()
+        for path in ("/video/frame/0", "/video/mask_frame/0"):
+            with self.subTest(path=path):
+                self.assertEqual(self.client.get(f"{path}?session={state.active_session_id}").status_code, 200)
+                self.assertEqual(self.client.get(path).status_code, 200)  # naming the session is optional
+                stale = self.client.get(f"{path}?session=a-session-that-was-replaced")
+                self.assertEqual(stale.status_code, 409)
+                self.assertIn("no longer active", stale.json()["detail"])
+
     def test_current_overlay_frame_is_served(self):
         self.seed_manifest()
         response = self.client.get("/video/mask_frame/0")

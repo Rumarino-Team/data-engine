@@ -26,6 +26,18 @@ describe('BackendService', () => {
     expect(service.getApiUrl()).toBe('http://127.0.0.1:8000');
   });
 
+  it('scopes frame URLs to the session so browsers never reuse another video’s frames', () => {
+    const service = new BackendService({ post: vi.fn(), get: vi.fn() } as unknown as HttpClient);
+
+    expect(service.getVideoFrameUrl(3, 'abc')).toBe('http://127.0.0.1:8000/video/frame/3?session=abc');
+    expect(service.getVideoFrameUrl(3, 'a b&c')).toBe(
+      'http://127.0.0.1:8000/video/frame/3?session=a%20b%26c',
+    );
+    expect(service.getVideoFrameUrl(3, 'abc')).not.toBe(service.getVideoFrameUrl(3, 'def'));
+    expect(service.getVideoFrameUrl(3)).toBe('http://127.0.0.1:8000/video/frame/3');
+    expect(service.getVideoFrameUrl(3, null)).toBe('http://127.0.0.1:8000/video/frame/3');
+  });
+
   it('sends required identity and revision headers on every object mutation', () => {
     const http = { post: vi.fn(), put: vi.fn() };
     const service = new BackendService(http as unknown as HttpClient);

@@ -190,8 +190,14 @@ export class BackendService {
     return this.http.get<VideoInfoResponse>(this.endpoint('/video/info'));
   }
 
-  getVideoFrameUrl(frameIdx: number): string {
-    return this.endpoint(`/video/frame/${frameIdx}`);
+  /**
+   * The session id is part of the URL because the path alone is the same for every video: a browser would
+   * show an earlier session's cached frame for this index, and test clips have old file dates, which
+   * browsers treat as safe to reuse for weeks.
+   */
+  getVideoFrameUrl(frameIdx: number, sessionId?: string | null): string {
+    const url = this.endpoint(`/video/frame/${frameIdx}`);
+    return sessionId ? `${url}?session=${encodeURIComponent(sessionId)}` : url;
   }
 
   getVideoMaskFrameUrl(frameIdx: number): string {

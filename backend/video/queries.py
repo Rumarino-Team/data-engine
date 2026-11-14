@@ -1,7 +1,8 @@
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 from core.context import AppContext
 from core.errors import OperationError
+from core.state import SessionState
 from video.masks import effective_mask_data, mask_overlay_path
 from video.responses import annotation_snapshot
 
@@ -24,9 +25,16 @@ def get_mask_data(ctx: AppContext, frame_idx: int) -> dict[str, Any]:
         return effective_mask_data(session, frame_idx)
 
 
-def get_video_frame_path(ctx: AppContext, frame_idx: int) -> Path:
+def _require_requested_session(session: SessionState, session_id: Optional[str]) -> None:
+    """A request that names its session must find that session still active (like an edit's precondition)."""
+    if session_id is not None and session_id != session.active_session_id:
+        raise OperationError(409, "The target session is no longer active. Refresh annotations.")
+
+
+def get_video_frame_path(ctx: AppContext, frame_idx: int, session_id: Optional[str] = None) -> Path:
     with ctx.lock:
         session = ctx.session
+        _require_requested_session(session, session_id)
         session.require_frame(frame_idx)
         file_path = Path(session.video_dir) / session.video_frame_files[frame_idx]
         if not file_path.exists():
@@ -34,8 +42,9 @@ def get_video_frame_path(ctx: AppContext, frame_idx: int) -> Path:
         return file_path
 
 
-def get_video_mask_frame_path(ctx: AppContext, frame_idx: int) -> Path:
+def get_video_mask_frame_path(ctx: AppContext, frame_idx: int, session_id: Optional[str] = None) -> Path:
     with ctx.lock:
         session = ctx.session
+        _require_requested_session(session, session_id)
         session.require_frame(frame_idx)
         return mask_overlay_path(session, frame_idx)

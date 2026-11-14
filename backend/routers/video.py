@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, Header, Path
+from typing import Optional
+
+from fastapi import APIRouter, Depends, Header, Path, Query
 from fastapi.responses import FileResponse
 
 from app.dependencies import get_context
@@ -147,11 +149,21 @@ def get_mask_data_route(frame_idx: int, ctx: AppContext = Depends(get_context)):
     return get_mask_data(ctx, frame_idx)
 
 
+# The URL is the same for every video, and session frames are links to the source files, so Last-Modified can be
+# months old. With no Cache-Control a browser reuses such a response for weeks and shows the previous video's frame.
+# "no-cache" makes it ask the server each time; the frames are small and the server is local.
+REVALIDATE = {"Cache-Control": "no-cache"}
+
+
 @router.get("/video/frame/{frame_idx}")
-def get_video_frame_route(frame_idx: int, ctx: AppContext = Depends(get_context)):
-    return FileResponse(get_video_frame_path(ctx, frame_idx))
+def get_video_frame_route(
+    frame_idx: int, session: Optional[str] = Query(default=None), ctx: AppContext = Depends(get_context),
+):
+    return FileResponse(get_video_frame_path(ctx, frame_idx, session), headers=REVALIDATE)
 
 
 @router.get("/video/mask_frame/{frame_idx}")
-def get_video_mask_frame_route(frame_idx: int, ctx: AppContext = Depends(get_context)):
-    return FileResponse(get_video_mask_frame_path(ctx, frame_idx))
+def get_video_mask_frame_route(
+    frame_idx: int, session: Optional[str] = Query(default=None), ctx: AppContext = Depends(get_context),
+):
+    return FileResponse(get_video_mask_frame_path(ctx, frame_idx, session), headers=REVALIDATE)

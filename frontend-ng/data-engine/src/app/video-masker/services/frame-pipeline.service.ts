@@ -310,7 +310,7 @@ export class FramePipelineService {
         this.store.isFrameLoading.set(false);
       }
     };
-    image.src = this.backend.getVideoFrameUrl(frameIdx);
+    image.src = this.backend.getVideoFrameUrl(frameIdx, this.store.sessionId());
   }
 
   private preloadNeighborFrames(frameIdx: number): void {
