@@ -32,6 +32,18 @@
       >
         {{ getBrowseLabel() }}
       </button>
+      <select
+        class="frame-loading-select"
+        aria-label="Frame loading"
+        [ngModel]="store.frameLoadingMode()"
+        (ngModelChange)="onFrameLoadingChange($event)"
+        [disabled]="store.isInitialized() || store.isInteractionBusy()"
+        [title]="getFrameLoadingHint()"
+      >
+        <option value="lazy">Lazy (low memory)</option>
+        <option value="preload">Preload (fast start)</option>
+        <option value="eager">Eager (SAM2 default)</option>
+      </select>
       <button
         (click)="sessions.initVideo()"
         [disabled]="

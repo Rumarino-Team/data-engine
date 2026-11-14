@@ -94,6 +94,31 @@ class SessionReplacementTests(SessionStateTestCase):
                 self.run_init()
         self.assert_old_session()
 
+    def test_the_requested_frame_loading_reaches_the_masker_and_the_response(self):
+        for requested, expected in ((None, "lazy"), ("preload", "preload"), ("eager", "eager")):
+            with self.subTest(requested=requested):
+                candidate = self.masker()
+                candidate.frame_loading = expected
+                options = {} if requested is None else {"frame_loading": requested}
+                request = VideoInitStateRequest(video_frames_dir=str(self.source), **options)
+                with patch.object(prompts.svm, "SAM2VideoMasker", return_value=candidate):
+                    result = loading.run_video_init_job(self.ctx, request, self.job_handle())
+                self.assertEqual(candidate.init_state.call_args.kwargs["frame_loading"], expected)
+                self.assertEqual(result["frame_loading"], expected)
+
+    def test_an_unknown_frame_loading_mode_is_rejected_by_the_request(self):
+        with self.assertRaises(ValueError):
+            VideoInitStateRequest(video_frames_dir="frames", frame_loading="streaming")
+
+    def test_a_failed_load_rebuilds_the_previous_video_with_its_own_frame_loading(self):
+        self.old_masker.frame_loading = "preload"
+        candidate = self.masker()
+        candidate.init_state.side_effect = RuntimeError("model failed")
+        with patch.object(prompts.svm, "SAM2VideoMasker", return_value=candidate):
+            with self.assertRaises(RuntimeError):
+                self.run_init()
+        self.assertEqual(self.old_masker.init_state.call_args.kwargs["frame_loading"], "preload")
+
     def assert_old_state_was_freed_then_rebuilt(self):
         self.old_masker.release_state.assert_called_once()
         self.old_masker.init_state.assert_called_once()

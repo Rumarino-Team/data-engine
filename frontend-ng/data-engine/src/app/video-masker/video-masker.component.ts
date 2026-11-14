@@ -32,6 +32,8 @@ import { LoadSourceMode } from './state/video-masker-ui.types';
 import {
   browseLabel,
   clampFrameIndex,
+  frameLoadingHint,
+  isFrameLoadingMode,
   loadModeHint,
   loadPathPlaceholder,
 } from './video-masker.util';
@@ -170,12 +172,20 @@ export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
     return loadModeHint(this.store.loadSourceMode());
   }
 
+  getFrameLoadingHint(): string {
+    return frameLoadingHint(this.store.frameLoadingMode());
+  }
+
   // --- template input bindings -----------------------------------------
 
   onLoadSourceModeChange(value: string): void {
     const nextMode: LoadSourceMode =
       value === 'video_file' || value === 'saved_session_dir' ? value : 'frames_dir';
     this.store.loadSourceMode.set(nextMode);
+  }
+
+  onFrameLoadingChange(value: string): void {
+    this.store.frameLoadingMode.set(isFrameLoadingMode(value) ? value : 'lazy');
   }
 
   onVideoDirChange(value: string): void {

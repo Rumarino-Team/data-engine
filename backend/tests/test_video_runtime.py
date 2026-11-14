@@ -15,6 +15,7 @@ class FakeMasker:
     default_batch_size = 7
     offload_video_to_cpu = True
     offload_state_to_cpu = False
+    frame_loading = "lazy"
 
     def __init__(self):
         self.init_state = Mock()
@@ -122,7 +123,7 @@ class VideoMaskerRuntimeTests(unittest.TestCase):
         original.init_state.assert_called_once_with(
             "frames", online_mode=True, batch_size=3,
             offload_video_to_cpu=False, offload_state_to_cpu=True,
-            async_loading_frames=False, progress_callback=None,
+            async_loading_frames=False, frame_loading="lazy", progress_callback=None,
         )
         runtime.replay_inputs.assert_called_once_with(runtime.session)
         other.video_masker.init_state.assert_not_called()
@@ -131,7 +132,7 @@ class VideoMaskerRuntimeTests(unittest.TestCase):
         runtime, restored = self.make_runtime()
         session = runtime.session
         session.video_masker = None
-        settings = MaskerSettings(True, 2, False, True)
+        settings = MaskerSettings(True, 2, False, True, frame_loading="preload")
         progress = Mock()
 
         runtime.initialize(settings, async_loading_frames=True, progress_callback=progress)
@@ -140,7 +141,7 @@ class VideoMaskerRuntimeTests(unittest.TestCase):
         runtime.create_masker.assert_called_once_with(progress_callback=progress)
         restored.init_state.assert_called_once_with(
             "frames", online_mode=True, batch_size=2, offload_video_to_cpu=False,
-            offload_state_to_cpu=True, async_loading_frames=True, progress_callback=progress,
+            offload_state_to_cpu=True, async_loading_frames=True, frame_loading="preload", progress_callback=progress,
         )
         runtime.replay_inputs.assert_called_once_with(session)
         runtime.initialize(settings)

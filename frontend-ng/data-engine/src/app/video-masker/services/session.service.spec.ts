@@ -20,7 +20,7 @@ describe('session workflows', () => {
 
     await editor.sessions.initVideo();
 
-    expect(backendMock.initVideoState).toHaveBeenCalledWith('C:/frames');
+    expect(backendMock.initVideoState).toHaveBeenCalledWith('C:/frames', { frame_loading: 'lazy' });
     expect(backendMock.getJob).toHaveBeenCalledWith('job-1');
     expect(editor.store.isInitialized()).toBe(true);
     expect(editor.store.numFrames()).toBe(12);
@@ -151,6 +151,18 @@ describe('session workflows', () => {
 
       expect(editor.store.isInitialized()).toBe(true);
       expect(editor.store.toasts()[0].title).toBe('Tracking result unavailable');
+    });
+  });
+
+  it('sends the chosen frame loading mode with the video to load', async () => {
+    mockInitJob(backendMock);
+    editor.store.videoDir.set('C:/frames');
+    editor.store.frameLoadingMode.set('preload');
+
+    await editor.sessions.initVideo();
+
+    expect(backendMock.initVideoState).toHaveBeenCalledWith('C:/frames', {
+      frame_loading: 'preload',
     });
   });
 

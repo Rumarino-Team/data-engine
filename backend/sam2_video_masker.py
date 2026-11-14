@@ -1,10 +1,48 @@
-import torch
 import gc
+import logging
 from contextlib import nullcontext
 from functools import wraps
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional, get_args
+import torch
 from core.config import SAM2_MODEL_ID, SAM2_MODEL_REVISION
+from sam2_frame_store import frame_store_loading
+from schemas.video import DEFAULT_FRAME_LOADING, FrameLoading
+from video.masks import mask_logits_to_2d_bool
+
+logger = logging.getLogger(__name__)
+
+
+def configure_device() -> tuple[torch.device, Optional[torch.dtype]]:
+    """The device to run on and the autocast dtype for it (None on CPU).
+
+    Ampere (RTX 30 series) and newer get TF32 and bf16 where supported. This sets the process-wide TF32
+    flags, so it describes the machine rather than one masker.
+    """
+    if not torch.cuda.is_available():
+        logger.info("Inference Device: cpu")
+        return torch.device("cpu"), None
+
+    device_props = torch.cuda.get_device_properties(0)
+    compute_capability = (int(device_props.major), int(device_props.minor))
+    is_ampere_or_newer = compute_capability[0] >= 8
+    supports_bf16 = bool(getattr(torch.cuda, "is_bf16_supported", lambda: False)())
+    autocast_dtype = torch.bfloat16 if is_ampere_or_newer and supports_bf16 else torch.float16
+
+    torch.backends.cuda.matmul.allow_tf32 = is_ampere_or_newer
+    torch.backends.cudnn.allow_tf32 = is_ampere_or_newer
+
+    if is_ampere_or_newer:
+        gpu_family = "RTX 30-series+ / Ampere+"
+    elif compute_capability[0] == 7:
+        gpu_family = "RTX 20-series / Turing"
+    else:
+        gpu_family = "pre-RTX 20-series architecture"
+    logger.info(
+        "Inference Device: cuda | GPU: %s (cc %d.%d) | family: %s | per-operation autocast: %s | tf32: %s",
+        device_props.name, compute_capability[0], compute_capability[1], gpu_family, autocast_dtype, is_ampere_or_newer,
+    )
+    return torch.device("cuda"), autocast_dtype
 
 
 def load_predictor(device):
@@ -39,43 +77,7 @@ class SAM2VideoMasker:
             if progress_callback is not None:
                 progress_callback(stage, label, progress, message)
 
-        if torch.cuda.is_available():
-            self.device = torch.device("cuda")
-        else:
-            self.device = torch.device("cpu")
-
-        print(f"Utilizing device: {self.device}")
-
-        self.autocast_dtype = None
-        if self.device.type == "cuda":
-            device_props = torch.cuda.get_device_properties(0)
-            gpu_name = device_props.name
-            compute_capability = (int(device_props.major), int(device_props.minor))
-
-            # Ampere (RTX 30 series) and newer support TF32 and practical bf16 inference.
-            is_ampere_or_newer = compute_capability[0] >= 8
-            supports_bf16 = bool(getattr(torch.cuda, "is_bf16_supported", lambda: False)())
-            use_bf16 = is_ampere_or_newer and supports_bf16
-
-            self.autocast_dtype = torch.bfloat16 if use_bf16 else torch.float16
-
-            torch.backends.cuda.matmul.allow_tf32 = is_ampere_or_newer
-            torch.backends.cudnn.allow_tf32 = is_ampere_or_newer
-
-            if is_ampere_or_newer:
-                gpu_family = "RTX 30-series+ / Ampere+"
-            elif compute_capability[0] == 7:
-                gpu_family = "RTX 20-series / Turing"
-            else:
-                gpu_family = "pre-RTX 20-series architecture"
-
-            print(
-                "CUDA precision config | "
-                f"GPU: {gpu_name} (cc {compute_capability[0]}.{compute_capability[1]}) | "
-                f"family: {gpu_family} | "
-                f"per-operation autocast: {self.autocast_dtype} | "
-                f"tf32: {is_ampere_or_newer}"
-            )
+        self.device, self.autocast_dtype = configure_device()
 
         if reuse is not None:
             # A new video on weights that are already loaded; the other masker keeps its own video state.
@@ -91,7 +93,13 @@ class SAM2VideoMasker:
         self.default_batch_size = 32
         self.offload_video_to_cpu = True
         self.offload_state_to_cpu = False
-    
+        self.frame_loading: FrameLoading = DEFAULT_FRAME_LOADING
+
+    def _require_state(self) -> dict[str, Any]:
+        if self.inference_state is None:
+            raise RuntimeError("No video state is loaded; initialize or restore it first.")
+        return self.inference_state
+
     def _autocast_context(self):
         if self.device.type == "cuda":
             return torch.autocast("cuda", dtype=self.autocast_dtype)
@@ -125,8 +133,17 @@ class SAM2VideoMasker:
         offload_video_to_cpu=None,
         offload_state_to_cpu=None,
         async_loading_frames=False,
+        frame_loading: FrameLoading = DEFAULT_FRAME_LOADING,
         progress_callback: Optional[Callable[[str, str, Optional[float], str], None]] = None,
     ):
+        """Load a clip's frames and build the SAM2 state.
+
+        `frame_loading` picks how frames are held (see `sam2_frame_store`): "lazy" and "preload" use our stores,
+        "eager" is SAM2's own loader. `offload_video_to_cpu` and `async_loading_frames` only affect "eager", because
+        the stores always keep frames on the CPU and hand them to the model one at a time.
+        """
+        if frame_loading not in get_args(FrameLoading):
+            raise ValueError(f"frame_loading must be one of {', '.join(get_args(FrameLoading))}.")
         self.online_mode = bool(online_mode)
 
         if batch_size is not None:
@@ -162,12 +179,14 @@ class SAM2VideoMasker:
             )
 
         self.release_state()
-        self.inference_state = self.predictor.init_state(
-            video_path=str(resolved_video_dir),
-            offload_video_to_cpu=self.offload_video_to_cpu,
-            offload_state_to_cpu=self.offload_state_to_cpu,
-            async_loading_frames=async_loading_frames,
-        )
+        self.frame_loading = frame_loading
+        with nullcontext() if frame_loading == "eager" else frame_store_loading(frame_loading):
+            self.inference_state = self.predictor.init_state(
+                video_path=str(resolved_video_dir),
+                offload_video_to_cpu=self.offload_video_to_cpu,
+                offload_state_to_cpu=self.offload_state_to_cpu,
+                async_loading_frames=async_loading_frames,
+            )
         self.predictor.reset_state(self.inference_state)
         if progress_callback is not None:
             progress_callback(
@@ -179,12 +198,12 @@ class SAM2VideoMasker:
 
     @_with_inference_context
     def reset_state(self):
-        self.predictor.reset_state(self.inference_state)
+        self.predictor.reset_state(self._require_state())
 
     @_with_inference_context
     def add_new_points_or_box(self, frame_idx, obj_id, points=None, labels=None, clear_old_points=True, box=None):
         out_frame_idx, out_obj_ids, out_mask_logits = self.predictor.add_new_points_or_box(
-            inference_state=self.inference_state,
+            inference_state=self._require_state(),
             frame_idx=frame_idx,
             obj_id=obj_id,
             points=points,
@@ -199,7 +218,7 @@ class SAM2VideoMasker:
     def add_new_mask(self, frame_idx, obj_id, mask):
         """Add new mask to a frame."""
         frame_idx, out_obj_ids, out_mask_logits = self.predictor.add_new_mask(
-            inference_state=self.inference_state,
+            inference_state=self._require_state(),
             frame_idx=frame_idx,
             obj_id=obj_id,
             mask=mask,
@@ -208,8 +227,10 @@ class SAM2VideoMasker:
         return frame_idx, out_obj_ids, out_mask_logits
 
     def _required_non_cond_history(self):
-        num_maskmem = max(1, int(getattr(self.predictor, "num_maskmem", 1)))
-        stride = max(1, int(getattr(self.predictor, "memory_temporal_stride_for_eval", 1)))
+        # These are read without defaults on purpose: if a pinned SAM2 update renames one, propagation must
+        # fail here rather than silently shrink the memory window and degrade the masks.
+        num_maskmem = max(1, int(self.predictor.num_maskmem))
+        stride = max(1, int(self.predictor.memory_temporal_stride_for_eval))
 
         if num_maskmem <= 1:
             memory_window = 0
@@ -217,22 +238,20 @@ class SAM2VideoMasker:
             memory_window = max(num_maskmem - 1, (num_maskmem - 2) * stride)
 
         pointer_window = 0
-        if bool(getattr(self.predictor, "use_obj_ptrs_in_encoder", False)):
-            pointer_window = max(0, int(getattr(self.predictor, "max_obj_ptrs_in_encoder", 0)) - 1)
+        if self.predictor.use_obj_ptrs_in_encoder:
+            pointer_window = max(0, int(self.predictor.max_obj_ptrs_in_encoder) - 1)
 
         return max(memory_window, pointer_window)
 
     def _purge_non_conditioning_outputs(self, anchor_frame_idx, reverse=False):
-        if self.inference_state is None:
-            return
-
+        state = self._require_state()
         keep_window = self._required_non_cond_history() + 2
         lower_bound = anchor_frame_idx - keep_window
         upper_bound = anchor_frame_idx + keep_window
 
         def _purge_non_cond_dict(per_obj_dict):
             for obj_output_dict in per_obj_dict.values():
-                non_cond_outputs = obj_output_dict.get("non_cond_frame_outputs", {})
+                non_cond_outputs = obj_output_dict["non_cond_frame_outputs"]
                 if reverse:
                     stale_keys = [
                         frame_idx
@@ -248,13 +267,18 @@ class SAM2VideoMasker:
                 for frame_idx in stale_keys:
                     non_cond_outputs.pop(frame_idx, None)
 
-        _purge_non_cond_dict(self.inference_state.get("output_dict_per_obj", {}))
-        _purge_non_cond_dict(self.inference_state.get("temp_output_dict_per_obj", {}))
+        _purge_non_cond_dict(state["output_dict_per_obj"])
+        _purge_non_cond_dict(state["temp_output_dict_per_obj"])
 
         gc.collect()
 
         if self.device.type == "cuda":
             torch.cuda.empty_cache()
+
+    @staticmethod
+    def _frame_masks(obj_ids, mask_logits) -> dict[int, Any]:
+        """One frame's predictor output as {object id: 2D bool mask}."""
+        return {obj_id: mask_logits_to_2d_bool(mask_logits[index]) for index, obj_id in enumerate(obj_ids)}
 
     def _resolve_start_frame_idx(self, start_frame_idx):
         if start_frame_idx is not None:
@@ -301,10 +325,7 @@ class SAM2VideoMasker:
         collect_segments=True,
         frame_callback=None,
     ):
-        if self.inference_state is None:
-            return {}
-
-        self.predictor.propagate_in_video_preflight(self.inference_state)
+        self.predictor.propagate_in_video_preflight(self._require_state())
 
         effective_batch_size = self.default_batch_size if batch_size is None else int(batch_size)
         if effective_batch_size <= 0:
@@ -338,43 +359,18 @@ class SAM2VideoMasker:
             last_processed_frame_idx = None
             processed_before_batch = total_frames_to_process - total_remaining
 
-            propagate_kwargs = {
-                "start_frame_idx": current_start,
-                "max_frame_num_to_track": predictor_max_frames,
-                "reverse": reverse,
-            }
-
-            def _iter_with_progress_fallback():
-                try:
-                    yield from self.predictor.propagate_in_video(
-                        self.inference_state,
-                        progress_total=total_frames_to_process,
-                        progress_initial=processed_before_batch,
-                        **propagate_kwargs,
-                    )
-                    return
-                except TypeError as error:
-                    # Backward compatibility with SAM2 predictor builds that do
-                    # not support progress_* kwargs.
-                    error_message = str(error)
-                    if "progress_total" not in error_message and "progress_initial" not in error_message:
-                        raise
-
-                yield from self.predictor.propagate_in_video(
-                    self.inference_state,
-                    **propagate_kwargs,
-                )
-
-            for out_frame_idx, out_obj_ids, out_mask_logits in _iter_with_progress_fallback():
+            for out_frame_idx, out_obj_ids, out_mask_logits in self.predictor.propagate_in_video(
+                self._require_state(),
+                start_frame_idx=current_start,
+                max_frame_num_to_track=predictor_max_frames,
+                reverse=reverse,
+            ):
                 if collect_segments:
                     if out_frame_idx not in video_segments:
                         processed_in_batch += 1
                 else:
                     processed_in_batch += 1
-                frame_masks = {
-                    out_obj_id: (out_mask_logits[i] > 0.0).squeeze(0).cpu().numpy()
-                    for i, out_obj_id in enumerate(out_obj_ids)
-                }
+                frame_masks = self._frame_masks(out_obj_ids, out_mask_logits)
                 if collect_segments:
                     video_segments[out_frame_idx] = frame_masks
                 if frame_callback is not None:
@@ -434,15 +430,12 @@ class SAM2VideoMasker:
 
         video_segments = {} if collect_segments else None
         for out_frame_idx, out_obj_ids, out_mask_logits in self.predictor.propagate_in_video(
-            self.inference_state,
+            self._require_state(),
             start_frame_idx,
             max_frame_num_to_track,
             reverse,
         ):
-            frame_masks = {
-                out_obj_id: (out_mask_logits[i] > 0.0).squeeze(0).cpu().numpy()
-                for i, out_obj_id in enumerate(out_obj_ids)
-            }
+            frame_masks = self._frame_masks(out_obj_ids, out_mask_logits)
             if collect_segments:
                 video_segments[out_frame_idx] = frame_masks
             if frame_callback is not None:
@@ -453,14 +446,13 @@ class SAM2VideoMasker:
     @_with_inference_context
     def clear_all_prompts_in_frame(self, frame_idx, obj_id):
         self.predictor.clear_all_prompts_in_frame(
-            inference_state=self.inference_state,
+            inference_state=self._require_state(),
             frame_idx=frame_idx, obj_id=obj_id
         )
-        return
 
     @_with_inference_context
     def remove_object(self, obj_id):
         self.predictor.remove_object(
-            inference_state=self.inference_state,
+            inference_state=self._require_state(),
             obj_id=obj_id
         )

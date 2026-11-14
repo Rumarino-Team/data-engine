@@ -1,3 +1,10 @@
+/**
+ * How the backend holds a clip's frames: `lazy` decodes them as they are used (memory stays flat),
+ * `preload` decodes them all at load as 8-bit pixels (about a quarter of eager's memory, fast start),
+ * `eager` is SAM2's own loader (every frame as float32 up front).
+ */
+export type FrameLoadingMode = 'lazy' | 'preload' | 'eager';
+
 export interface VideoInitStateRequest {
   video_frames_dir: string;
   online_mode?: boolean;
@@ -5,6 +12,7 @@ export interface VideoInitStateRequest {
   offload_video_to_cpu?: boolean;
   offload_state_to_cpu?: boolean;
   async_loading_frames?: boolean;
+  frame_loading?: FrameLoadingMode;
 }
 
 export interface VideoAddPointsOrBoxRequest {
@@ -79,6 +87,7 @@ export interface VideoInitStateResponse {
   batch_size: number;
   offload_video_to_cpu: boolean;
   offload_state_to_cpu: boolean;
+  frame_loading: FrameLoadingMode;
   source_type?: 'frames_dir' | 'video_file' | 'saved_session';
   restored_session?: RestoredSessionPayload;
 }

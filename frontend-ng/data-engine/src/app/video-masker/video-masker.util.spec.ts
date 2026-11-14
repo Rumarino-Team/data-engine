@@ -6,11 +6,23 @@ import {
   clampFrameIndex,
   evictWithLimit,
   normalizeMask2d,
+  frameLoadingHint,
+  isFrameLoadingMode,
 } from './video-masker.util';
 
 import { VideoMaskObjectData } from '../services/backend-api.types';
 
 describe('video-masker.util', () => {
+  it('recognises exactly the frame loading modes the backend accepts', () => {
+    for (const mode of ['lazy', 'preload', 'eager']) expect(isFrameLoadingMode(mode)).toBe(true);
+    for (const other of ['', 'Lazy', 'streaming']) expect(isFrameLoadingMode(other)).toBe(false);
+  });
+
+  it('describes each frame loading mode differently', () => {
+    const hints = new Set((['lazy', 'preload', 'eager'] as const).map(frameLoadingHint));
+    expect(hints.size).toBe(3);
+  });
+
   it('evicts oldest entries when over max size', () => {
     const cache = new Map<number, string>([
       [1, 'a'],

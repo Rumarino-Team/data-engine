@@ -7,6 +7,7 @@ import logging
 from typing import Callable, Iterator, Protocol
 
 from core.state import SessionState
+from schemas.video import DEFAULT_FRAME_LOADING, FrameLoading
 
 
 ProgressCallback = Callable[[str, str, float | None, str], None]
@@ -17,6 +18,7 @@ class VideoMasker(Protocol):
     default_batch_size: int
     offload_video_to_cpu: bool
     offload_state_to_cpu: bool
+    frame_loading: FrameLoading
     state_loaded: bool
 
     def reset_state(self) -> None: ...
@@ -30,7 +32,7 @@ class VideoMasker(Protocol):
     def init_state(
         self, video_dir: str, *, online_mode: bool, batch_size: int | None,
         offload_video_to_cpu: bool | None, offload_state_to_cpu: bool | None,
-        async_loading_frames: bool, progress_callback: ProgressCallback | None,
+        async_loading_frames: bool, frame_loading: FrameLoading, progress_callback: ProgressCallback | None,
     ) -> None: ...
 
 
@@ -44,6 +46,7 @@ class MaskerSettings:
     batch_size: int | None
     offload_video_to_cpu: bool | None
     offload_state_to_cpu: bool | None
+    frame_loading: FrameLoading = DEFAULT_FRAME_LOADING
 
 
 class MaskerRestorationError(RuntimeError):
@@ -79,6 +82,7 @@ class VideoMaskerRuntime:
             offload_video_to_cpu=settings.offload_video_to_cpu,
             offload_state_to_cpu=settings.offload_state_to_cpu,
             async_loading_frames=async_loading_frames,
+            frame_loading=settings.frame_loading,
             progress_callback=progress_callback,
         )
         self.replay_inputs(self.session)

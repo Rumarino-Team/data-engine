@@ -1,4 +1,9 @@
-import { LiveMask, PackedBitMask, VideoMaskObjectData } from '../services/backend.service';
+import {
+  FrameLoadingMode,
+  LiveMask,
+  PackedBitMask,
+  VideoMaskObjectData,
+} from '../services/backend.service';
 import { LoadSourceMode } from './state/video-masker-ui.types';
 
 // --- frame cache / index helpers (from FrameRendererService) ---
@@ -77,6 +82,22 @@ export function loadModeHint(mode: LoadSourceMode): string {
     return 'Choose a video file; backend will extract frames and create a new session.';
   }
   return 'Choose a directory that already contains extracted video frames.';
+}
+
+export const FRAME_LOADING_MODES: readonly FrameLoadingMode[] = ['lazy', 'preload', 'eager'];
+
+export function isFrameLoadingMode(value: string): value is FrameLoadingMode {
+  return (FRAME_LOADING_MODES as readonly string[]).includes(value);
+}
+
+export function frameLoadingHint(mode: FrameLoadingMode): string {
+  if (mode === 'preload') {
+    return 'Preload: decodes every frame when the video loads and keeps it as 8-bit pixels. About a quarter of the memory of Eager and a much faster start; propagation is about 5% slower than Eager.';
+  }
+  if (mode === 'eager') {
+    return 'Eager: the original SAM2 loader. Decodes every frame at full precision when the video loads: the fastest propagation, but the most memory and the slowest start.';
+  }
+  return 'Lazy: decodes frames as they are used and keeps only a few. Memory stays flat however long the video is, and it starts instantly; the first click on a new frame is about 20 ms slower.';
 }
 
 // --- misc shared helpers ---

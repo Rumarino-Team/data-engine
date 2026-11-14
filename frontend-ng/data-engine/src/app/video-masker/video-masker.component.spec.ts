@@ -23,6 +23,32 @@ describe('VideoMaskerComponent UI', () => {
     expect(addPoint).toHaveBeenCalledTimes(1);
   });
 
+  it('offers the three frame loading modes and falls back to lazy on anything else', () => {
+    expect(component.store.frameLoadingMode()).toBe('lazy');
+
+    component.onFrameLoadingChange('preload');
+    expect(component.store.frameLoadingMode()).toBe('preload');
+    component.onFrameLoadingChange('eager');
+    expect(component.store.frameLoadingMode()).toBe('eager');
+    component.onFrameLoadingChange('streaming');
+    expect(component.store.frameLoadingMode()).toBe('lazy');
+  });
+
+  it('renders the frame loading select, locked once a session is loaded', async () => {
+    const select = (): HTMLSelectElement =>
+      fixture.nativeElement.querySelector('.frame-loading-select');
+    fixture.detectChanges();
+    const optionValues = Array.from(select().options).map((option) => option.value);
+    expect(optionValues).toEqual(['lazy', 'preload', 'eager']);
+    expect(select().disabled).toBe(false);
+    expect(select().title).toBe(component.getFrameLoadingHint());
+
+    component.store.isInitialized.set(true);
+    fixture.detectChanges();
+    await fixture.whenStable(); // ngModel applies `disabled` after a microtask
+    expect(select().disabled).toBe(true);
+  });
+
   it('hides the API URL scheme while the input is not focused', () => {
     component.store.apiUrlInput.set('http://127.0.0.1:8000');
 

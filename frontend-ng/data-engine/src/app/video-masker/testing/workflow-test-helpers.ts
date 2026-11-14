@@ -195,6 +195,7 @@ export function initResult(
     batch_size: 32,
     offload_video_to_cpu: true,
     offload_state_to_cpu: true,
+    frame_loading: 'lazy',
     ...overrides,
   };
 }

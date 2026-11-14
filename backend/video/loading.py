@@ -10,7 +10,7 @@ from core.jobs import JobHandle, utc_now_iso
 from core.runtime import cleanup_cuda_memory
 from core.state import SessionState
 from schemas.responses import InitResult
-from schemas.video import InteractiveState, VideoInitStateRequest
+from schemas.video import DEFAULT_FRAME_LOADING, FrameLoading, InteractiveState, VideoInitStateRequest
 from sessions.artifacts import sweep_unreferenced_artifacts
 from sessions.checkpoints import content_fingerprint
 from sessions.metadata import interactive_state_projection, load_session_metadata, persisted_session_fields
@@ -180,6 +180,7 @@ def initialize_video_state_from_resolved_input(
     session: SessionState,
     job: JobHandle,
     reuse: Optional[VideoMasker] = None,
+    frame_loading: FrameLoading = DEFAULT_FRAME_LOADING,
 ):
     # Preparation may target a detached session; helpers must use that same session.
     saved_session_layout = resolve_saved_session_layout(resolved_input_path)
@@ -195,7 +196,8 @@ def initialize_video_state_from_resolved_input(
     _initialize_predictor(
         session, job,
         MaskerSettings(online_mode=online_mode, batch_size=batch_size,
-                       offload_video_to_cpu=offload_video_to_cpu, offload_state_to_cpu=offload_state_to_cpu),
+                       offload_video_to_cpu=offload_video_to_cpu, offload_state_to_cpu=offload_state_to_cpu,
+                       frame_loading=frame_loading),
         async_loading_frames=async_loading_frames, reuse=reuse,
     )
 
@@ -221,6 +223,7 @@ def initialize_video_state_from_resolved_input(
         "batch_size": session.video_masker.default_batch_size,
         "offload_video_to_cpu": session.video_masker.offload_video_to_cpu,
         "offload_state_to_cpu": session.video_masker.offload_state_to_cpu,
+        "frame_loading": session.video_masker.frame_loading,
         "source_type": source_type,
     }
     if restored_session_payload is not None:
@@ -263,6 +266,7 @@ def run_video_init_job(ctx: AppContext, request: VideoInitStateRequest, job: Job
             session=candidate,
             job=job,
             reuse=reuse,
+            frame_loading=request.frame_loading,
         )
         with ctx.lock:
             if ctx.session.active_session_id != previous_session_id:
@@ -293,6 +297,7 @@ def restore_previous_state(session: SessionState) -> None:
     settings = MaskerSettings(
         online_mode=masker.online_mode, batch_size=masker.default_batch_size,
         offload_video_to_cpu=masker.offload_video_to_cpu, offload_state_to_cpu=masker.offload_state_to_cpu,
+        frame_loading=masker.frame_loading,
     )
     try:
         create_masker_runtime(session).restore(settings)

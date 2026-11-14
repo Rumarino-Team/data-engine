@@ -122,7 +122,9 @@ export class SessionService {
 
     this.store.videoDir.set(enteredPath);
     const { result: res } = await this.jobs.run<VideoInitStateResponse>('Loading video', () =>
-      firstValueFrom(this.backend.initVideoState(enteredPath)),
+      firstValueFrom(
+        this.backend.initVideoState(enteredPath, { frame_loading: this.store.frameLoadingMode() }),
+      ),
     );
     if (this.destroyRef.destroyed) return false;
     if (!res) {

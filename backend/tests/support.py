@@ -64,7 +64,8 @@ class SessionStateFixtures:
         return Path(directory.name)
 
     def make_masker(self, **overrides: Any) -> Mock:
-        settings = dict(online_mode=True, default_batch_size=1, offload_video_to_cpu=True, offload_state_to_cpu=True)
+        settings = dict(online_mode=True, default_batch_size=1, offload_video_to_cpu=True, offload_state_to_cpu=True,
+                        frame_loading="lazy")
         return Mock(**{**settings, **overrides})
 
     def working_session(self, path: Optional[Path] = None, *, session_id: str = "session",

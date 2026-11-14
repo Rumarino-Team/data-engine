@@ -8,7 +8,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict
 
-from schemas.video import InteractiveState, MaskOverride, VideoObject, VideoPrompt
+from schemas.video import FrameLoading, InteractiveState, MaskOverride, VideoObject, VideoPrompt
 
 
 class Response(BaseModel):
@@ -218,6 +218,7 @@ class InitResult(Response):
     batch_size: int
     offload_video_to_cpu: bool
     offload_state_to_cpu: bool
+    frame_loading: FrameLoading
     source_type: Literal["frames_dir", "video_file", "saved_session"]
     restored_session: Optional[RestoredSession] = None
 

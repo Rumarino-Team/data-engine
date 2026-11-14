@@ -10,6 +10,11 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sam2_video_masker import SAM2VideoMasker
 
+try:
+    import sam2.sam2_video_predictor as predictor_module
+except ImportError:
+    predictor_module = None
+
 
 class PrecisionPredictor:
     """Cache reduced-precision features, then multiply by FP32 weights later."""
@@ -19,6 +24,11 @@ class PrecisionPredictor:
         self.weight = torch.ones((4, 4), device=device)
         self.calls = []
         self.fail = False
+        # The memory settings the real predictor exposes (values from the pinned model).
+        self.num_maskmem = 7
+        self.memory_temporal_stride_for_eval = 1
+        self.use_obj_ptrs_in_encoder = True
+        self.max_obj_ptrs_in_encoder = 16
 
     def compute(self, name, features=None):
         self.calls.append((name, torch.is_autocast_enabled(self.device),
@@ -28,7 +38,9 @@ class PrecisionPredictor:
         return (self.weight if features is None else features) @ self.weight
 
     def init_state(self, **kwargs):
-        return {"num_frames": 3, "features": self.compute("init")}
+        self.loader_during_init = predictor_module.load_video_frames if predictor_module else None
+        return {"num_frames": 3, "features": self.compute("init"),
+                "output_dict_per_obj": {}, "temp_output_dict_per_obj": {}}
 
     def reset_state(self, state):
         self.compute("reset", state["features"])
@@ -70,6 +82,50 @@ class MaskerPrecisionTests(unittest.TestCase):
         self.assertFalse(torch.is_autocast_enabled(device))
         self.assertFalse(torch.is_inference_mode_enabled())
         return masker
+
+    def test_every_entry_point_refuses_to_run_without_loaded_state(self):
+        predictor = PrecisionPredictor("cpu")
+        with patch("sam2_video_masker.load_predictor", return_value=predictor):
+            masker = SAM2VideoMasker()
+        calls = [masker.reset_state, lambda: masker.add_new_points_or_box(0, 1), lambda: masker.add_new_mask(0, 1, [[True]]),
+                 lambda: masker.clear_all_prompts_in_frame(0, 1), lambda: masker.remove_object(1),
+                 lambda: masker.propagate_in_video(start_frame_idx=0, online_mode=True),
+                 lambda: masker.propagate_in_video(start_frame_idx=0, online_mode=False)]
+        for index, call in enumerate(calls):
+            with self.subTest(call=index), self.assertRaisesRegex(RuntimeError, "No video state is loaded"):
+                call()
+        self.assertEqual(predictor.calls, [])
+
+    @unittest.skipIf(predictor_module is None, "requires SAM2")
+    def test_frame_loading_picks_the_loader_only_while_the_state_initializes(self):
+        original = predictor_module.load_video_frames
+        for mode, uses_our_store in (("eager", False), ("lazy", True), ("preload", True)):
+            with self.subTest(mode=mode):
+                predictor = PrecisionPredictor("cpu")
+                with patch("sam2_video_masker.load_predictor", return_value=predictor):
+                    masker = SAM2VideoMasker()
+                with tempfile.TemporaryDirectory() as directory:
+                    masker.init_state(directory, frame_loading=mode)
+                self.assertEqual(predictor.loader_during_init is not original, uses_our_store)
+                self.assertIs(predictor_module.load_video_frames, original)
+                self.assertEqual(masker.frame_loading, mode)
+
+    def test_frame_loading_defaults_to_lazy_and_rejects_unknown_modes(self):
+        predictor = PrecisionPredictor("cpu")
+        with patch("sam2_video_masker.load_predictor", return_value=predictor):
+            masker = SAM2VideoMasker()
+        self.assertEqual(masker.frame_loading, "lazy")
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValueError, "frame_loading must be one of"):
+                masker.init_state(directory, frame_loading="streaming")
+        self.assertFalse(masker.state_loaded)
+        self.assertEqual(predictor.calls, [])
+
+    def test_a_predictor_without_the_memory_settings_fails_instead_of_shrinking_the_window(self):
+        masker = fresh_thread(lambda: self.make_masker("cpu"))
+        del masker.predictor.num_maskmem
+        with self.assertRaises(AttributeError):
+            masker.propagate_in_video(start_frame_idx=0, max_frame_num_to_track=1, online_mode=True, batch_size=1)
 
     def test_cpu_uses_full_precision_without_enabling_autocast(self):
         masker = fresh_thread(lambda: self.make_masker("cpu"))

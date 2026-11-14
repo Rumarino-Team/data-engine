@@ -93,6 +93,7 @@ ONLINE_MODE = _env_bool("DATA_ENGINE_ONLINE_MODE", True)
 ONLINE_BATCH_SIZE = int(os.getenv("DATA_ENGINE_BATCH_SIZE", "32"))
 OFFLOAD_VIDEO_TO_CPU = _env_bool("DATA_ENGINE_OFFLOAD_VIDEO_TO_CPU", True)
 OFFLOAD_STATE_TO_CPU = _env_bool("DATA_ENGINE_OFFLOAD_STATE_TO_CPU", False)
+FRAME_LOADING = os.getenv("DATA_ENGINE_FRAME_LOADING", "lazy")
 JOB_POLL_INTERVAL_SECONDS = float(os.getenv("DATA_ENGINE_JOB_POLL_INTERVAL", "0.5"))
 JOB_TIMEOUT_SECONDS = float(os.getenv("DATA_ENGINE_JOB_TIMEOUT", "1800"))
 
@@ -333,6 +334,7 @@ def init_video_state(video_dir):
         "batch_size": ONLINE_BATCH_SIZE,
         "offload_video_to_cpu": OFFLOAD_VIDEO_TO_CPU,
         "offload_state_to_cpu": OFFLOAD_STATE_TO_CPU,
+        "frame_loading": FRAME_LOADING,
     }
     response = requests.post(url, json=payload)
     if response.status_code == 200:

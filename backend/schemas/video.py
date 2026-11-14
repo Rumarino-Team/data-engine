@@ -1,5 +1,11 @@
-from typing import Optional
+from typing import Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+# How SAM2 gets a clip's frames: decoded when needed (flat memory), all at init as uint8 (a quarter of eager's
+# memory, fast init), or SAM2's own loader (every frame as float32 up front).
+FrameLoading = Literal["lazy", "preload", "eager"]
+DEFAULT_FRAME_LOADING: FrameLoading = "lazy"
+
 
 class VideoInitStateRequest(BaseModel):
     video_frames_dir: str
@@ -8,6 +14,7 @@ class VideoInitStateRequest(BaseModel):
     offload_video_to_cpu: Optional[bool] = None
     offload_state_to_cpu: Optional[bool] = None
     async_loading_frames: bool = False
+    frame_loading: FrameLoading = DEFAULT_FRAME_LOADING
 
 class VideoPrompt(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
@@ -61,6 +68,7 @@ class VideoPropagateRequest(BaseModel):
     # Also write frame_XXXXX_masks.png copies of each frame with masks drawn on (served by /video/mask_frame).
     export_overlay_frames: bool = False
     include_saved_mask_paths: bool = False
+
 
 class VideoAddMaskRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")

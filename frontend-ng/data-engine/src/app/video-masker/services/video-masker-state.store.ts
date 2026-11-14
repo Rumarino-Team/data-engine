@@ -2,6 +2,7 @@ import { Injectable, computed, signal, inject } from '@angular/core';
 import {
   ApiHealthStatus,
   BackendJob,
+  FrameLoadingMode,
   TrackPromptPointMetadata,
   VideoAnnotations,
   AnnotationSnapshot,
@@ -34,6 +35,7 @@ export interface TrackedPointSeries extends TrackPromptPointMetadata {
 export class VideoMaskerStateStore {
   videoDir = signal<string>('');
   loadSourceMode = signal<LoadSourceMode>('frames_dir');
+  frameLoadingMode = signal<FrameLoadingMode>('lazy');
   apiUrlInput = signal<string>('');
   isInitialized = signal<boolean>(false);
   numFrames = signal<number>(0);

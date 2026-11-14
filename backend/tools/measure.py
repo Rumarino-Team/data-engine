@@ -107,6 +107,7 @@ def run_hops(frames):
         default_batch_size = 32
         offload_video_to_cpu = True
         offload_state_to_cpu = False
+        frame_loading = "lazy"
         state_loaded = True
         device = type("Device", (), {"type": "cpu"})()
 
@@ -114,7 +115,7 @@ def run_hops(frames):
             pass
 
         def init_state(self, video_dir, *, online_mode, batch_size, offload_video_to_cpu, offload_state_to_cpu,
-                       async_loading_frames=False, progress_callback=None):
+                       async_loading_frames=False, frame_loading="lazy", progress_callback=None):
             self.state_loaded = True
 
         def release_state(self):
