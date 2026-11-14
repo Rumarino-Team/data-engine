@@ -15,6 +15,11 @@ export interface VideoInitStateRequest {
   frame_loading?: FrameLoadingMode;
 }
 
+export interface VideoCloseResponse {
+  message: string;
+  closed_session_id: string;
+}
+
 export interface VideoAddPointsOrBoxRequest {
   frame_idx: number;
   obj_id: number;

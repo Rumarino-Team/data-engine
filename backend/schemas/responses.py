@@ -130,6 +130,11 @@ class SaveResponse(Response):
     saved_state: SavedState
 
 
+class CloseResult(Response):
+    message: str
+    closed_session_id: str
+
+
 # ---- jobs -------------------------------------------------------------------------------------------------------------
 
 JobStatus = Literal["queued", "running", "completed", "failed"]

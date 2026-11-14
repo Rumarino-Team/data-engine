@@ -10,7 +10,7 @@ from core.jobs import JobHandle, utc_now_iso
 from core.runtime import cleanup_cuda_memory
 from core.state import SessionState
 from schemas.responses import InitResult
-from schemas.video import DEFAULT_FRAME_LOADING, FrameLoading, InteractiveState, VideoInitStateRequest
+from schemas.video import AnnotationPrecondition, DEFAULT_FRAME_LOADING, FrameLoading, InteractiveState, VideoInitStateRequest
 from sessions.artifacts import sweep_unreferenced_artifacts
 from sessions.checkpoints import content_fingerprint
 from sessions.metadata import interactive_state_projection, load_session_metadata, persisted_session_fields
@@ -283,6 +283,25 @@ def run_video_init_job(ctx: AppContext, request: VideoInitStateRequest, job: Job
     # The replaced working copy is unreachable once the candidate is published.
     discard_working_session(previous_dir)
     return result
+
+
+def close_video_session(ctx: AppContext, precondition: AnnotationPrecondition) -> dict[str, str]:
+    """Free what the active session holds and leave the backend as it is before any video is loaded.
+
+    Like any edit this must target the session and revision the client last saw, and it is refused while a job
+    runs. The loaded video, its annotations and its working copy go. The SAM2 weights are not part of a session:
+    they stay loaded (without any video state) and the next video takes them over, exactly as a replacement
+    session does, so loading again is not slower.
+    """
+    with ctx.edit(precondition) as session:
+        masker = session.video_masker
+        closed_id, closed_dir = session.active_session_id, session.active_session_dir
+        if masker is not None:
+            masker.release_state()
+        ctx.sessions.replace(SessionState(video_masker=masker))
+    discard_working_session(closed_dir)
+    cleanup_cuda_memory()
+    return {"message": "Session closed", "closed_session_id": closed_id}
 
 
 def restore_previous_state(session: SessionState) -> None:

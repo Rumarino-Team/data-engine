@@ -230,6 +230,7 @@ export function createBackendMocks() {
     setApiUrl: vi.fn((value: string) => value),
     resetApiUrl: vi.fn(() => 'http://127.0.0.1:8000'),
     saveVideoSession: vi.fn(),
+    closeVideoSession: vi.fn(() => of({ message: 'Session closed', closed_session_id: 'session-1' })),
     createObject:
       vi.fn<(precondition: AnnotationPrecondition) => Observable<ObjectCreationResponse>>(),
     clearAllPromptsInFrame: vi.fn<(frame: number, id: number) => Observable<AnnotationUpdate>>(),

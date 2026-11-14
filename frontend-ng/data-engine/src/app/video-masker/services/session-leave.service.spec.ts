@@ -1,7 +1,9 @@
-import { of, throwError } from 'rxjs';
+import { TestBed } from '@angular/core/testing';
+import { Subject, of, throwError } from 'rxjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SavedState } from '../../services/backend.service';
 import { createWorkflowFixture } from '../testing/workflow-test-helpers';
+import { ToastService } from './toast.service';
 
 const saved = (overrides: Partial<SavedState> = {}): SavedState => ({
   checkpoint_id: 'cp-1',
@@ -90,6 +92,74 @@ describe('SessionLeaveService', () => {
     expect(editor.store.sessionId()).toBeNull();
     expect(editor.store.savedState()).toBeNull();
     expect(clear).toHaveBeenCalled();
+  });
+
+  it('asks the backend to free the session it is closing, naming session and revision', async () => {
+    editor.store.savedState.set(saved({ dirty: false }));
+    const revision = editor.store.annotationRevision();
+    await expect(leave.closeSession()).resolves.toBe(true);
+    expect(backendMock.closeVideoSession).toHaveBeenCalledTimes(1);
+    expect(backendMock.closeVideoSession).toHaveBeenCalledWith({
+      session_id: 'session-1',
+      expected_revision: revision,
+    });
+  });
+
+  it('does not touch the backend when the user cancels or the session is not open', async () => {
+    const pending = leave.closeSession();
+    confirm.answer(null);
+    await expect(pending).resolves.toBe(false);
+    editor.store.isInitialized.set(false);
+    await expect(leave.closeSession()).resolves.toBe(false);
+    expect(backendMock.closeVideoSession).not.toHaveBeenCalled();
+  });
+
+  it('keeps the tab as it is until the backend has closed the session', async () => {
+    editor.store.savedState.set(saved({ dirty: false }));
+    const closing = new Subject<{ message: string; closed_session_id: string }>();
+    backendMock.closeVideoSession.mockReturnValue(closing);
+    const pending = leave.closeSession();
+    await Promise.resolve();
+    expect(editor.store.isInitialized()).toBe(true);
+    expect(editor.store.isLoading()).toBe(true);
+    closing.next({ message: 'Session closed', closed_session_id: 'session-1' });
+    closing.complete();
+    await expect(pending).resolves.toBe(true);
+    expect(editor.store.isInitialized()).toBe(false);
+    expect(editor.store.isLoading()).toBe(false);
+  });
+
+  it('keeps the session open and reloads annotations when the backend refuses with a conflict', async () => {
+    editor.store.savedState.set(saved({ dirty: false }));
+    backendMock.closeVideoSession.mockReturnValue(
+      throwError(() => ({ status: 409, error: { detail: 'Another operation is already running.' } })),
+    );
+    await expect(leave.closeSession()).resolves.toBe(false);
+    expect(editor.store.isInitialized()).toBe(true);
+    expect(editor.store.sessionId()).toBe('session-1');
+    expect(editor.store.isLoading()).toBe(false);
+    expect(editor.store.annotationRecoveryRequested()).toBe(true);
+    expect(TestBed.inject(ToastService).toasts()[0]).toEqual(
+      expect.objectContaining({ severity: 'error', title: 'Close failed' }),
+    );
+  });
+
+  it('keeps the session open on other backend errors without asking to reload annotations', async () => {
+    editor.store.savedState.set(saved({ dirty: false }));
+    backendMock.closeVideoSession.mockReturnValue(throwError(() => ({ status: 500 })));
+    await expect(leave.closeSession()).resolves.toBe(false);
+    expect(editor.store.isInitialized()).toBe(true);
+    expect(editor.store.annotationRecoveryRequested()).toBe(false);
+  });
+
+  it('still closes the tab when the backend cannot be reached, and says so', async () => {
+    editor.store.savedState.set(saved({ dirty: false }));
+    backendMock.closeVideoSession.mockReturnValue(throwError(() => ({ status: 0 })));
+    await expect(leave.closeSession()).resolves.toBe(true);
+    expect(editor.store.isInitialized()).toBe(false);
+    expect(TestBed.inject(ToastService).toasts()[0]).toEqual(
+      expect.objectContaining({ severity: 'warning', title: 'Backend unreachable' }),
+    );
   });
 
   it('closes a clean session immediately', async () => {

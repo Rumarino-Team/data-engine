@@ -21,6 +21,7 @@ import type {
   TrackPromptPointsResult,
   VideoAddPointsOrBoxRequest,
   VideoAddPointsResponse,
+  VideoCloseResponse,
   VideoInitStateRequest,
   VideoInfoResponse,
   VideoMaskDataResponse,
@@ -92,6 +93,15 @@ export class BackendService {
       ...options,
     };
     return this.http.post<JobStartResponse>(this.endpoint('/video/init_state'), payload);
+  }
+
+  /** Frees the backend's copy of the session; only the model weights stay loaded for the next video. */
+  closeVideoSession(precondition: AnnotationPrecondition): Observable<VideoCloseResponse> {
+    return this.http.post<VideoCloseResponse>(
+      this.endpoint('/video/close_session'),
+      {},
+      { headers: this.annotationHeaders(precondition) },
+    );
   }
 
   resetVideoState(precondition: AnnotationPrecondition): Observable<AnnotationUpdate> {
