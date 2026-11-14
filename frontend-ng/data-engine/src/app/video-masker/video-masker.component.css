@@ -18,6 +18,7 @@
 .load-controls {
   display: flex;
   flex: 1 1 560px;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   min-width: 0;
