@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, Header, Path
+from fastapi.responses import FileResponse
 
 from app.dependencies import get_context
 from core.context import AppContext
@@ -24,21 +25,18 @@ from schemas.video import (
     VideoSaveRequest,
 )
 from video.propagation import start_propagation
-from video.service import (
+from video.edits import (
     add_new_mask,
     add_new_points_or_box,
     clear_all_prompts_in_frame,
-    get_mask_data,
-    get_video_frame,
-    get_video_info,
-    get_video_mask_frame,
+    create_object,
     remove_object,
     reset_video_state,
-    save_video_session,
-    start_video_init,
-    create_object,
     update_object,
 )
+from video.loading import start_video_init
+from video.queries import get_mask_data, get_video_frame_path, get_video_info, get_video_mask_frame_path
+from video.save import save_video_session
 
 
 # Blocking services (including lock waits) run as one unit in FastAPI's worker
@@ -151,9 +149,9 @@ def get_mask_data_route(frame_idx: int, ctx: AppContext = Depends(get_context)):
 
 @router.get("/video/frame/{frame_idx}")
 def get_video_frame_route(frame_idx: int, ctx: AppContext = Depends(get_context)):
-    return get_video_frame(ctx, frame_idx)
+    return FileResponse(get_video_frame_path(ctx, frame_idx))
 
 
 @router.get("/video/mask_frame/{frame_idx}")
 def get_video_mask_frame_route(frame_idx: int, ctx: AppContext = Depends(get_context)):
-    return get_video_mask_frame(ctx, frame_idx)
+    return FileResponse(get_video_mask_frame_path(ctx, frame_idx))

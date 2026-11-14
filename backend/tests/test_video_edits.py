@@ -16,7 +16,7 @@ from support import state
 from schemas.video import VideoPrompt
 from sessions.cache import release_active_session
 from sessions.metadata import interactive_state_projection, session_metadata_document
-from video import service
+from video import edits, loading, save
 from video.mask_encoding import encode_live_mask_payload
 from video.prompts import create_masker_runtime
 from video.runtime import MaskerSettings
@@ -59,7 +59,7 @@ class VideoEditTests(SessionStateTestCase):
         return document
 
     def save_checkpoint(self, name="checkpoint"):
-        with patch.object(service, "SAVED_ROOT", self.root / "saved"):
+        with patch.object(save, "SAVED_ROOT", self.root / "saved"):
             response = self.client.post("/video/save", json={"name": name, "save_as": True})
         self.assertEqual(response.status_code, 200)
         return Path(response.json()["saved_path"])
@@ -69,7 +69,7 @@ class VideoEditTests(SessionStateTestCase):
         checkpoint = checkpoint or self.save_checkpoint()
         state.annotations = SessionAnnotations()
         with patch("video.io.SESSION_CACHE_ROOT", self.root / "cache"):
-            return service.initialize_video_state_from_resolved_input(
+            return loading.initialize_video_state_from_resolved_input(
                 checkpoint, online_mode=True, batch_size=1,
                 offload_video_to_cpu=True, offload_state_to_cpu=True,
                 async_loading_frames=False, session=state,
@@ -102,7 +102,7 @@ class VideoEditTests(SessionStateTestCase):
         return patch.object(owner, name, run)
 
     def add_override(self, foreground=False):
-        with patch.object(service.cv2, "imread", return_value=np.zeros((3, 3, 3))):
+        with patch.object(edits.cv2, "imread", return_value=np.zeros((3, 3, 3))):
             return self.client.post("/video/add_new_mask", json={
                 "frame_idx": 0, "obj_id": 1, "mask": np.full((3, 3), foreground).tolist()})
 
@@ -115,14 +115,14 @@ class VideoEditTests(SessionStateTestCase):
 
     def post_point(self, mask, prompt=PROMPT):
         self.masker.add_new_points_or_box.return_value = (0, [1], [mask])
-        with patch.object(service, "mask_logits_to_2d_bool", side_effect=lambda value: np.asarray(value, dtype=bool)):
+        with patch.object(edits, "mask_logits_to_2d_bool", side_effect=lambda value: np.asarray(value, dtype=bool)):
             return self.client.post("/video/add_new_points_or_box", json=prompt)
 
     # --- accepting prompts -------------------------------------------------------------------------------
 
     def test_accepted_prompt_is_in_the_saved_document_and_snapshot_is_detached(self):
         before = state.annotations.snapshot()
-        with patch.object(service, "mask_logits_to_2d_bool", side_effect=lambda mask: mask > 0):
+        with patch.object(edits, "mask_logits_to_2d_bool", side_effect=lambda mask: mask > 0):
             response = self.client.post("/video/add_new_points_or_box", json=PROMPT)
         self.assertEqual(response.status_code, 200)
         snapshot = self.client.get("/video/info").json()
@@ -137,7 +137,7 @@ class VideoEditTests(SessionStateTestCase):
         self.assertEqual(state.annotations.prompts[0].points, [[1, 2]])
 
     def test_appended_clicks_stay_one_prompt_and_replay_equivalently(self):
-        with patch.object(service, "mask_logits_to_2d_bool", side_effect=lambda mask: mask > 0):
+        with patch.object(edits, "mask_logits_to_2d_bool", side_effect=lambda mask: mask > 0):
             for point in ([1, 2], [2, 2], [3, 1]):
                 response = self.client.post("/video/add_new_points_or_box", json={
                     **PROMPT, "points": [point], "labels": [1], "clear_old_points": False})
@@ -204,7 +204,7 @@ class VideoEditTests(SessionStateTestCase):
             ("post", "/video/reset_state", {}),
         ]
         snapshot = self.client.get("/video/info").json()["annotations"]
-        with patch.object(service, "mask_logits_to_2d_bool", side_effect=lambda mask: mask > 0):
+        with patch.object(edits, "mask_logits_to_2d_bool", side_effect=lambda mask: mask > 0):
             for method, path, kwargs in steps:
                 with self.subTest(path=path, kwargs=kwargs):
                     if method == "override":
@@ -246,7 +246,7 @@ class VideoEditTests(SessionStateTestCase):
     def test_prompt_replaces_override_and_clear_does_not_resurrect_propagation(self):
         self.seed_manifest()
         self.add_override(True)
-        with patch.object(service, "mask_logits_to_2d_bool", side_effect=lambda mask: mask > 0):
+        with patch.object(edits, "mask_logits_to_2d_bool", side_effect=lambda mask: mask > 0):
             response = self.client.post("/video/add_new_points_or_box", json=PROMPT)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(state.annotations.mask_overrides, [])
@@ -260,6 +260,21 @@ class VideoEditTests(SessionStateTestCase):
         self.reopen()
         self.assertEqual(self.client.get("/video/mask_data/0").json()["objects"], {})
 
+    def test_a_frame_outside_the_video_is_404_on_every_frame_route(self):
+        outside = {**PROMPT, "frame_idx": 99}
+        for method, path, body in [
+            ("post", "/video/add_new_points_or_box", outside),
+            ("post", "/video/add_new_mask", {"frame_idx": 99, "obj_id": 1, "mask": [[True]]}),
+            ("post", "/video/clear_all_prompts_in_frame?frame_idx=99&obj_id=1", None),
+            ("get", "/video/mask_data/99", None),
+            ("get", "/video/frame/99", None),
+            ("get", "/video/mask_frame/99", None),
+        ]:
+            with self.subTest(path=path):
+                response = getattr(self.client, method)(path, **({"json": body} if body else {}))
+                self.assertEqual(response.status_code, 404)
+        self.masker.add_new_points_or_box.assert_not_called()
+
     def test_mask_preconditions_and_validation_reject_without_runtime_mutation(self):
         request = {"frame_idx": 0, "obj_id": 1, "mask": [[True]]}
         for headers, payload, expected in [
@@ -271,7 +286,7 @@ class VideoEditTests(SessionStateTestCase):
             ({}, request, 400),
         ]:
             with self.subTest(payload=payload, headers=headers), \
-                    patch.object(service.cv2, "imread", return_value=np.zeros((3, 3, 3))):
+                    patch.object(edits.cv2, "imread", return_value=np.zeros((3, 3, 3))):
                 self.assertEqual(self.client.post("/video/add_new_mask", json=payload, headers=headers).status_code, expected)
         self.masker.add_new_mask.assert_not_called()
         self.masker.clear_all_prompts_in_frame.assert_not_called()
@@ -316,14 +331,14 @@ class VideoEditTests(SessionStateTestCase):
         failures = [
             ("inference fails", RuntimeError, [], [RuntimeError("partial inference"), accepted_result]),
             ("mask encoding fails", ValueError,
-             [patch.object(service, "encode_live_mask_payload", side_effect=ValueError("bad mask"))], None),
+             [patch.object(edits, "encode_live_mask_payload", side_effect=ValueError("bad mask"))], None),
         ]
         for name, error, patches, inference in failures:
             with self.subTest(name), ExitStack() as stack:
                 self.masker.reset_mock(side_effect=True)
                 for active in patches:
                     stack.enter_context(active)
-                stack.enter_context(patch.object(service, "mask_logits_to_2d_bool", side_effect=lambda mask: mask > 0))
+                stack.enter_context(patch.object(edits, "mask_logits_to_2d_bool", side_effect=lambda mask: mask > 0))
                 if inference:
                     self.masker.add_new_points_or_box.side_effect = inference
                 with self.assertRaises(error):
@@ -363,7 +378,7 @@ class VideoEditTests(SessionStateTestCase):
         self.add_override(True)
         before = self.metadata()
         accepted_files = self.override_files()
-        with patch.object(service, "effective_mask_data", side_effect=OSError("disk full")):
+        with patch.object(edits, "effective_mask_data", side_effect=OSError("disk full")):
             with self.assertRaises(OSError):
                 self.add_override(False)
         self.assertEqual(state.annotations.snapshot(), before["annotations"])
@@ -413,7 +428,7 @@ class VideoEditTests(SessionStateTestCase):
         (source / "00000.jpg").touch()
         state.annotations = SessionAnnotations()
         with patch("video.io.SESSION_CACHE_ROOT", self.root / "cache"):
-            result = service.initialize_video_state_from_resolved_input(
+            result = loading.initialize_video_state_from_resolved_input(
                 source, online_mode=True, batch_size=1,
                 offload_video_to_cpu=True, offload_state_to_cpu=True,
                 async_loading_frames=False, session=state,
@@ -459,7 +474,7 @@ class VideoEditTests(SessionStateTestCase):
 
     def test_save_persists_editor_preferences_and_rejects_client_supplied_inputs(self):
         state.annotations.set_prompt(VideoPrompt(**PROMPT))
-        with patch.object(service, "SAVED_ROOT", self.root / "saved"):
+        with patch.object(save, "SAVED_ROOT", self.root / "saved"):
             # Editor state carries preferences only; client copies of accepted inputs are rejected outright.
             rejected = self.client.post("/video/save", json={"name": "review", "interactive_state": {
                 "points": [{"frame_idx": 0, "obj_id": 1, "x": 99, "y": 99, "label": 1}]}})

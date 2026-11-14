@@ -15,7 +15,7 @@ from app.factory import create_app
 from support import state
 from routers import video as video_routes
 from support import SessionStateFixtures
-from video import service
+from video import edits
 
 
 class RequestConcurrencyTests(SessionStateFixtures, unittest.IsolatedAsyncioTestCase):
@@ -55,12 +55,12 @@ class RequestConcurrencyTests(SessionStateFixtures, unittest.IsolatedAsyncioTest
 
     def hold_edit_open(self):
         """Block inside an edit that is still holding the foreground lock."""
-        real_update = service.annotation_update
+        real_update = edits.annotation_update
 
         def hold(*args):
             self.block_worker()
             return real_update(*args)
-        return patch.object(service, "annotation_update", side_effect=hold)
+        return patch.object(edits, "annotation_update", side_effect=hold)
 
     def start_request(self, method, path, **kwargs):
         task = asyncio.create_task(self.client.request(method, path, **kwargs))
@@ -86,7 +86,7 @@ class RequestConcurrencyTests(SessionStateFixtures, unittest.IsolatedAsyncioTest
             self.block_worker()
             return 0, [1], [np.ones((2, 2), dtype=bool)]
         state.video_masker.add_new_points_or_box.side_effect = infer
-        with patch.object(service, "mask_logits_to_2d_bool", side_effect=lambda mask: mask):
+        with patch.object(edits, "mask_logits_to_2d_bool", side_effect=lambda mask: mask):
             edit = self.start_request("POST", "/video/add_new_points_or_box", headers={
                 "X-Session-ID": "session", "X-Annotation-Revision": "1",
             }, json={"frame_idx": 0, "obj_id": 1, "points": [[1, 1]], "labels": [1]})

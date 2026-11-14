@@ -9,19 +9,24 @@ if TYPE_CHECKING:
     from core.state import SessionState
     from schemas.video import InteractiveMaskRLE, MaskOverride
 import numpy as np
+from core.errors import OperationError
 from video.mask_encoding import encode_mask_payload, encode_live_mask_payload
 
 logger = logging.getLogger(__name__)
 
+def as_2d_bool(mask: Any) -> np.ndarray | None:
+    """The mask as a 2D bool array, or None when it is not one (after dropping singleton axes)."""
+    mask_array = np.asarray(mask).astype(bool)
+    if mask_array.ndim != 2:
+        mask_array = np.squeeze(mask_array)
+    return mask_array if mask_array.ndim == 2 else None
+
 def manifest_frame_payload(frame_masks: dict[int, np.ndarray]) -> dict[str, Any]:
     objects: dict[str, Any] = {}
     for obj_id, mask in frame_masks.items():
-        mask_array = np.asarray(mask).astype(bool)
-        if mask_array.ndim != 2:
-            mask_array = np.squeeze(mask_array)
-        if mask_array.ndim != 2:
-            continue
-        objects[str(int(obj_id))] = encode_mask_payload(mask_array)
+        mask_array = as_2d_bool(mask)
+        if mask_array is not None:
+            objects[str(int(obj_id))] = encode_mask_payload(mask_array)
     return {"objects": objects}
 
 def mask_logits_to_2d_bool(mask_logits: Any) -> np.ndarray:
@@ -176,3 +181,23 @@ def effective_mask_data(session: SessionState, frame_idx: int) -> dict[str, Any]
             sources[str(mask.obj_id)] = "override"
     return {"session_id": session.active_session_id, "annotation_revision": session.annotations.revision,
             "frame_idx": frame_idx, "objects": objects, "sources": sources}
+
+
+def mask_overlay_path(session: SessionState, frame_idx: int) -> Path:
+    """The propagation overlay image for a frame, only while it still shows the frame's effective masks."""
+    from sessions.metadata import current_masks_dir
+    from sessions.paths import path_is_relative_to
+    from video.manifest_cache import load_cached_mask_manifest
+    masks_dir = current_masks_dir(session)
+    manifest_path = Path(session.mask_manifest_path) if session.mask_manifest_path else None
+    if masks_dir is None or not manifest_path or not manifest_path.exists():
+        raise OperationError(404, "Mask frame not available")
+    frame = load_cached_mask_manifest(manifest_path).get("frames", {}).get(str(frame_idx), {})
+    effective = effective_mask_data(session, frame_idx)
+    if (not frame.get("overlay_path") or effective["objects"] != frame.get("objects") or
+            any(source != "manifest" for source in effective["sources"].values())):
+        raise OperationError(404, "Mask overlay is obsolete")
+    file_path = (masks_dir / frame["overlay_path"]).resolve()
+    if not path_is_relative_to(file_path, masks_dir.resolve()) or not file_path.is_file():
+        raise OperationError(404, "Mask frame not available")
+    return file_path

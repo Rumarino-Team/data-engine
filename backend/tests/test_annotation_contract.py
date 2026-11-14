@@ -15,7 +15,7 @@ from schemas.video import AnnotationPrecondition, VideoPrompt
 from sessions.metadata import session_metadata_document
 from annotation_delta import apply_delta, same_annotations
 from support import SessionStateTestCase
-from video import service
+from video import edits
 
 VALID_UPDATE = {"label": "buoy", "color": "#ff0000"}
 
@@ -236,7 +236,7 @@ class PreconditionTests(SessionStateTestCase):
         release = threading.Event()
         admission_attempted = threading.Event()
 
-        real_update = service.annotation_update
+        real_update = edits.annotation_update
 
         def hold_the_edit(*args):
             entered.set()
@@ -249,8 +249,8 @@ class PreconditionTests(SessionStateTestCase):
             self.activate_job("queued")
             return self.ctx.jobs.snapshot()
         with ThreadPoolExecutor(max_workers=2) as pool:
-            with patch.object(service, "annotation_update", side_effect=hold_the_edit):
-                edit = pool.submit(service.create_object, self.ctx,
+            with patch.object(edits, "annotation_update", side_effect=hold_the_edit):
+                edit = pool.submit(edits.create_object, self.ctx,
                                    AnnotationPrecondition(session_id="current", expected_revision=1))
                 self.assertTrue(entered.wait(timeout=5))
                 admission = pool.submit(admit)
