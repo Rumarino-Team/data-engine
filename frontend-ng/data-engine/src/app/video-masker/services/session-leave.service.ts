@@ -48,32 +48,80 @@ export class SessionLeaveService {
     const sessionId = this.store.sessionId();
     const revision = this.store.annotationRevision();
     if (sessionId && revision !== null) {
-      this.store.isLoading.set(true);
-      try {
-        await firstValueFrom(
-          this.backend.closeVideoSession({ session_id: sessionId, expected_revision: revision }),
+      const closed = await this.closeOnBackend(sessionId, revision);
+      if (closed.outcome === 'refused') {
+        // 409: the session changed elsewhere or a job is running. Reload what the backend holds.
+        if (closed.conflict) this.store.annotationRecoveryRequested.set(true);
+        return false;
+      }
+      if (closed.outcome === 'unreachable') {
+        this.toast.show(
+          'warning',
+          'Backend unreachable',
+          'The session was closed here only; the backend still holds it until it is replaced.',
         );
-      } catch (error: unknown) {
-        console.error(error);
-        const status = (error as { status?: number })?.status;
-        if (status === 0) {
-          this.toast.show(
-            'warning',
-            'Backend unreachable',
-            'The session was closed here only; the backend still holds it until it is replaced.',
-          );
-        } else {
-          // 409: the session changed elsewhere or a job is running. Reload what the backend holds.
-          if (status === 409) this.store.annotationRecoveryRequested.set(true);
-          this.toast.show('error', 'Close failed', getErrorMessage(error, 'Unable to close the session.'));
-          return false;
-        }
-      } finally {
-        this.store.isLoading.set(false);
       }
     }
     this.store.resetSession();
     this.framePipeline.clearFrameCaches();
     return true;
+  }
+
+  /**
+   * Closes a session the backend still holds that this tab is not showing (see `openBackendSession`).
+   * Unsaved changes in it exist nowhere else, so discarding them takes an explicit answer.
+   */
+  async closeOpenBackendSession(): Promise<boolean> {
+    const open = this.store.openBackendSession();
+    if (!open || this.store.isInitialized() || this.store.isInteractionBusy()) return false;
+    if (open.dirty) {
+      const choice = await this.confirm.ask({
+        title: 'Unsaved changes',
+        message:
+          'The session still open on the backend has changes that were never saved. Close it and lose them?',
+        actions: [{ value: 'discard', label: 'Close and discard', tone: 'danger' }],
+      });
+      if (choice !== 'discard') return false;
+      if (this.store.isInitialized() || this.store.isInteractionBusy()) return false;
+    }
+    const closed = await this.closeOnBackend(open.sessionId, open.revision);
+    if (closed.outcome === 'closed') {
+      this.store.openBackendSession.set(null);
+      return true;
+    }
+    if (closed.outcome === 'unreachable') {
+      this.toast.show(
+        'warning',
+        'Backend unreachable',
+        'The session could not be closed because the backend did not answer.',
+      );
+    } else {
+      // It changed meanwhile (another tab edited or replaced it): show what is there now.
+      void this.sessions.checkForOpenSession();
+    }
+    return false;
+  }
+
+  private async closeOnBackend(
+    sessionId: string,
+    revision: number,
+  ): Promise<
+    { outcome: 'closed' } | { outcome: 'unreachable' } | { outcome: 'refused'; conflict: boolean }
+  > {
+    this.store.isLoading.set(true);
+    try {
+      await firstValueFrom(
+        this.backend.closeVideoSession({ session_id: sessionId, expected_revision: revision }),
+      );
+      return { outcome: 'closed' };
+    } catch (error: unknown) {
+      console.error(error);
+      const status = (error as { status?: number })?.status;
+      if (status === 0) return { outcome: 'unreachable' };
+      this.toast.show('error', 'Close failed', getErrorMessage(error, 'Unable to close the session.'));
+      return { outcome: 'refused', conflict: status === 409 };
+    } finally {
+      this.store.isLoading.set(false);
+    }
   }
 }

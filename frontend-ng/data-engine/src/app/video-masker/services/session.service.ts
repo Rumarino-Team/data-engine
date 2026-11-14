@@ -25,6 +25,7 @@ export class SessionService {
   private readonly toast = inject(ToastService);
   private readonly jobs = inject(EditorJobService);
   private readonly tracking = inject(TrackingService);
+  private probingForOpenSession = false;
   private get isBusy(): boolean {
     return this.store.isInteractionBusy();
   }
@@ -45,6 +46,10 @@ export class SessionService {
       if (status === 'online' && recoveryPending && initialized && !busy) {
         recoveryPending = false;
         untracked(() => void this.refreshAnnotations());
+      }
+      // A tab that shows nothing may be next to a backend that still holds a session (reload, crash, new tab).
+      if (status === 'online' && !initialized && !busy) {
+        untracked(() => void this.checkForOpenSession());
       }
     });
   }
@@ -130,9 +135,65 @@ export class SessionService {
     if (!res) {
       // A failed replacement preserves the old session. Recover uncertain/lost responses.
       if (this.store.isInitialized()) this.store.annotationRecoveryRequested.set(true);
+      // Not showing anything: the backend may be refusing because it still holds a session. Say which.
+      else void this.checkForOpenSession();
       return false;
     }
 
+    const adopted = await this.adoptBackendSession(res.restored_session, 'Loading video');
+    if (adopted) this.store.openBackendSession.set(null);
+    return adopted;
+  }
+
+  /**
+   * Looks for a session the backend still holds while this tab shows none: after a reload, a crash or in a
+   * new tab. It only reports it (see `openBackendSession`); nothing is loaded or discarded here.
+   */
+  async checkForOpenSession(): Promise<void> {
+    if (this.probingForOpenSession || this.isBusy || this.store.isInitialized()) return;
+    this.probingForOpenSession = true;
+    try {
+      const info = await firstValueFrom(
+        this.backend.getVideoInfo().pipe(takeUntilDestroyed(this.destroyRef)),
+      );
+      // Something else started meanwhile (a load, a resume): that answer is the newer one.
+      if (this.destroyRef.destroyed || this.isBusy || this.store.isInitialized()) return;
+      const revision = info.annotations?.revision;
+      this.store.openBackendSession.set(
+        info.session_id && info.num_frames > 0 && revision !== undefined
+          ? {
+              sessionId: info.session_id,
+              revision,
+              numFrames: info.num_frames,
+              dirty: info.saved_state?.dirty === true,
+              resumable: info.predictor_ready !== false,
+            }
+          : null,
+      );
+    } catch {
+      // An unreachable backend is already shown by the connection status.
+    } finally {
+      this.probingForOpenSession = false;
+    }
+  }
+
+  /** Shows the session the backend still holds, as it is now, without loading the video again. */
+  async resumeOpenSession(): Promise<boolean> {
+    const open = this.store.openBackendSession();
+    if (!open || !open.resumable || this.isBusy || this.store.isInitialized()) return false;
+    const adopted = await this.adoptBackendSession(undefined, 'Resuming session', open.sessionId);
+    if (adopted) this.store.openBackendSession.set(null);
+    // It changed or went away meanwhile: show what is there now instead of a stale offer.
+    else if (!this.store.isInitialized()) void this.checkForOpenSession();
+    return adopted;
+  }
+
+  /** Takes the session the backend holds as this tab's own: its annotations, frames and viewport reset. */
+  private async adoptBackendSession(
+    restored: RestoredSessionPayload | null | undefined,
+    title: string,
+    expectedSessionId?: string,
+  ): Promise<boolean> {
     this.store.isInitialized.set(false);
     this.store.isLoading.set(true);
     try {
@@ -140,7 +201,11 @@ export class SessionService {
         this.backend.getVideoInfo().pipe(takeUntilDestroyed(this.destroyRef)),
       );
       if (this.destroyRef.destroyed) return false;
-      if (!info.session_id || !info.annotations) {
+      if (
+        !info.session_id ||
+        !info.annotations ||
+        (expectedSessionId !== undefined && info.session_id !== expectedSessionId)
+      ) {
         throw new Error('The initialized session is no longer current. Load the video again.');
       }
       this.store.targetFrameIdx.set(0);
@@ -154,11 +219,13 @@ export class SessionService {
       this.store.applyAnnotationSnapshot(info, true);
       this.store.saveName.set(info.saved_state?.display_name ?? '');
       this.store.numFrames.set(info.num_frames);
-      this.restoreInteractiveSessionState(res.restored_session);
+      this.restoreInteractiveSessionState(restored);
       if (!this.store.objects().some((object) => object.id === this.store.selectedObjectId())) {
         this.store.selectedObjectId.set(this.store.objects()[0]?.id ?? null);
       }
-      const resultId = res.restored_session?.tracking_result?.result_id;
+      // A saved session names its result; a session the backend already holds names it in the snapshot. The
+      // backend projects the stored tracks onto the current prompts, so nothing is tracked again here.
+      const resultId = restored?.tracking_result?.result_id ?? info.tracking_validity?.result_id;
       if (resultId) await this.tracking.loadTrackingResult(resultId, 'Restored tracking');
       if (this.destroyRef.destroyed) return false;
       this.store.isInitialized.set(true);
@@ -166,7 +233,7 @@ export class SessionService {
       if (!this.destroyRef.destroyed) {
         this.toast.show(
           'error',
-          'Loading video',
+          title,
           getErrorMessage(error, 'Unable to load accepted annotations.'),
         );
       }

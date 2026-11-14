@@ -29,6 +29,17 @@
   min-width: 170px;
 }
 
+.open-session-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 8px 12px;
+  background: #fff7e0;
+  border-bottom: 1px solid #e6d28a;
+  color: #4d3b00;
+}
+
 .frame-loading-select {
   flex: 0 0 auto;
   padding: 5px;

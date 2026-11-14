@@ -49,6 +49,65 @@ describe('VideoMaskerComponent UI', () => {
     expect(select().disabled).toBe(true);
   });
 
+  describe('the notice about a session the backend still holds', () => {
+    const banner = (): HTMLElement | null => fixture.nativeElement.querySelector('.open-session-banner');
+    const buttons = (): string[] =>
+      Array.from(banner()?.querySelectorAll('button') ?? []).map((b) => b.textContent!.trim());
+    const offer = (overrides: Partial<{ dirty: boolean; resumable: boolean }> = {}) =>
+      component.store.openBackendSession.set({
+        sessionId: 'held-1',
+        revision: 4,
+        numFrames: 924,
+        dirty: false,
+        resumable: true,
+        ...overrides,
+      });
+
+    it('is absent until the backend reports a session', () => {
+      fixture.detectChanges();
+      expect(banner()).toBeNull();
+    });
+
+    it('says what is open and offers to resume it or close it', () => {
+      offer({ dirty: true });
+      fixture.detectChanges();
+      expect(banner()?.textContent).toContain('924 frames, with unsaved changes');
+      expect(buttons()).toEqual(['Resume', 'Close it']);
+    });
+
+    it('does not mention unsaved changes when there are none', () => {
+      offer();
+      fixture.detectChanges();
+      expect(banner()?.textContent).toContain('924 frames).');
+      expect(banner()?.textContent).not.toContain('unsaved');
+    });
+
+    it('offers only closing when the session cannot be resumed', () => {
+      offer({ resumable: false });
+      fixture.detectChanges();
+      expect(buttons()).toEqual(['Close it']);
+    });
+
+    it('goes away while a session is shown', () => {
+      offer();
+      component.store.isInitialized.set(true);
+      fixture.detectChanges();
+      expect(banner()).toBeNull();
+    });
+
+    it('wires its buttons to resuming and closing', () => {
+      const resume = vi.spyOn(component.sessions, 'resumeOpenSession').mockResolvedValue(true);
+      const close = vi.spyOn(component.leave, 'closeOpenBackendSession').mockResolvedValue(true);
+      offer();
+      fixture.detectChanges();
+      const [resumeButton, closeButton] = Array.from(banner()!.querySelectorAll('button'));
+      resumeButton.click();
+      closeButton.click();
+      expect(resume).toHaveBeenCalledTimes(1);
+      expect(close).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('hides the API URL scheme while the input is not focused', () => {
     component.store.apiUrlInput.set('http://127.0.0.1:8000');
 

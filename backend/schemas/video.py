@@ -15,6 +15,9 @@ class VideoInitStateRequest(BaseModel):
     offload_state_to_cpu: Optional[bool] = None
     async_loading_frames: bool = False
     frame_loading: FrameLoading = DEFAULT_FRAME_LOADING
+    # Loading a video replaces the open session; one with changes that were never saved is refused unless the
+    # caller says it may be thrown away.
+    discard_unsaved: bool = False
 
 class VideoPrompt(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)

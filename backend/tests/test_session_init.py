@@ -1,6 +1,7 @@
 import json
 import shutil
 import sys
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -10,6 +11,7 @@ from core.errors import OperationError
 from core.state import SessionState
 from support import state
 from schemas.video import VideoInitStateRequest
+from sessions.checkpoints import content_fingerprint, saved_state
 from sessions.metadata import session_metadata_document
 from support import SessionStateTestCase
 from video import loading, prompts
@@ -105,6 +107,44 @@ class SessionReplacementTests(SessionStateTestCase):
                     result = loading.run_video_init_job(self.ctx, request, self.job_handle())
                 self.assertEqual(candidate.init_state.call_args.kwargs["frame_loading"], expected)
                 self.assertEqual(result["frame_loading"], expected)
+
+    # --- loading a video over a session with unsaved changes -----------------------------------------------
+
+    def load_through_the_route(self, **options):
+        with patch.object(loading, "run_video_init_job", return_value={"message": "loaded"}) as run:
+            response = self.client.post(
+                "/video/init_state", json={"video_frames_dir": str(self.source), **options})
+            deadline = time.time() + 5
+            while self.ctx.jobs.is_active() and time.time() < deadline:
+                time.sleep(0.01)
+        return response, run
+
+    def test_a_session_with_unsaved_changes_is_not_replaced_by_loading_a_video(self):
+        response, run = self.load_through_the_route()
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("unsaved changes", response.json()["detail"])
+        run.assert_not_called()
+        self.assertFalse(self.ctx.jobs.is_active())
+        self.assert_old_session()
+
+    def test_unsaved_changes_can_be_thrown_away_when_the_caller_says_so(self):
+        response, run = self.load_through_the_route(discard_unsaved=True)
+        self.assertEqual(response.status_code, 200)
+        run.assert_called_once()
+
+    def test_a_session_without_unsaved_changes_is_replaced_normally(self):
+        state.saved_fingerprint = content_fingerprint(state)
+        self.assertFalse(saved_state(state)["dirty"])
+        response, run = self.load_through_the_route()
+        self.assertEqual(response.status_code, 200)
+        run.assert_called_once()
+
+    def test_loading_with_nothing_open_needs_no_confirmation(self):
+        state.active_session_dir = None  # nothing loaded: a session that was never opened is not "unsaved"
+        self.assertIsNone(state.saved_fingerprint)
+        response, run = self.load_through_the_route()
+        self.assertEqual(response.status_code, 200)
+        run.assert_called_once()
 
     def test_an_unknown_frame_loading_mode_is_rejected_by_the_request(self):
         with self.assertRaises(ValueError):

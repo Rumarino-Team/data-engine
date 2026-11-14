@@ -77,7 +77,7 @@ class Harness:
 
 def init_body(frames_dir, **overrides):
     return {"video_frames_dir": str(frames_dir), "online_mode": True, "batch_size": 32,
-            "offload_video_to_cpu": True, "offload_state_to_cpu": False, **overrides}
+            "offload_video_to_cpu": True, "offload_state_to_cpu": False, "discard_unsaved": True, **overrides}
 
 
 def center_point(frames_dir):

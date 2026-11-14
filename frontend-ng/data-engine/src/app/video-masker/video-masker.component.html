@@ -129,6 +129,28 @@
     />
   </div>
 
+  <div
+    class="open-session-banner"
+    role="status"
+    *ngIf="!store.isInitialized() && store.openBackendSession() as open"
+  >
+    <span>
+      A session is still open on the backend ({{ open.numFrames }} frames{{
+        open.dirty ? ', with unsaved changes' : ''
+      }}).
+    </span>
+    <button
+      *ngIf="open.resumable"
+      (click)="sessions.resumeOpenSession()"
+      [disabled]="store.isInteractionBusy()"
+    >
+      Resume
+    </button>
+    <button (click)="leave.closeOpenBackendSession()" [disabled]="store.isInteractionBusy()">
+      Close it
+    </button>
+  </div>
+
   <div class="main-area">
     <div class="canvas-container">
       <div class="canvas-toolbar" role="toolbar" aria-label="Canvas view">

@@ -12,7 +12,7 @@ from core.state import SessionState
 from schemas.responses import InitResult
 from schemas.video import AnnotationPrecondition, DEFAULT_FRAME_LOADING, FrameLoading, InteractiveState, VideoInitStateRequest
 from sessions.artifacts import sweep_unreferenced_artifacts
-from sessions.checkpoints import content_fingerprint
+from sessions.checkpoints import content_fingerprint, saved_state
 from sessions.metadata import interactive_state_projection, load_session_metadata, persisted_session_fields
 from sessions.paths import resolve_input_path, resolve_saved_session_layout, validate_video_input_path
 from tracking.results import restored_tracking_result_payload
@@ -232,13 +232,19 @@ def initialize_video_state_from_resolved_input(
 
 
 def start_video_init(ctx: AppContext, request: VideoInitStateRequest):
-    return ctx.jobs.start(
-        operation="video_init",
-        stage="resolving_input",
-        stage_label="Resolving input",
-        message="Video initialization queued",
-        worker=lambda job: run_video_init_job(ctx, request, job),
-    )
+    # One lock hold, so the session cannot gain unsaved changes between this check and the job being admitted.
+    with ctx.lock:
+        session = ctx.session
+        if not request.discard_unsaved and session.active_session_dir is not None and saved_state(session)["dirty"]:
+            raise OperationError(
+                409, "The open session has unsaved changes. Resume it and save it, or close it, before loading a video.")
+        return ctx.jobs.start(
+            operation="video_init",
+            stage="resolving_input",
+            stage_label="Resolving input",
+            message="Video initialization queued",
+            worker=lambda job: run_video_init_job(ctx, request, job),
+        )
 
 def run_video_init_job(ctx: AppContext, request: VideoInitStateRequest, job: JobHandle) -> dict[str, Any]:
     job.enter_stage(

@@ -14,6 +14,17 @@ import { LoadSourceMode, TrackingOverlayStyle } from '../state/video-masker-ui.t
 
 import { ToastService } from './toast.service';
 
+/** A session the backend still holds that this tab is not showing (after a reload, a crash or a new tab). */
+export interface OpenBackendSession {
+  sessionId: string;
+  revision: number;
+  numFrames: number;
+  /** Changes that were never saved: only the backend has them. */
+  dirty: boolean;
+  /** False when its predictor is gone; it can then only be closed. */
+  resumable: boolean;
+}
+
 export interface MaskObject {
   id: number;
   label: string;
@@ -38,6 +49,7 @@ export class VideoMaskerStateStore {
   frameLoadingMode = signal<FrameLoadingMode>('lazy');
   apiUrlInput = signal<string>('');
   isInitialized = signal<boolean>(false);
+  openBackendSession = signal<OpenBackendSession | null>(null);
   numFrames = signal<number>(0);
   targetFrameIdx = signal<number>(0);
   displayedFrameIdx = signal<number>(-1);

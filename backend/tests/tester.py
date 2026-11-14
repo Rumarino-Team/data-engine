@@ -335,6 +335,8 @@ def init_video_state(video_dir):
         "offload_video_to_cpu": OFFLOAD_VIDEO_TO_CPU,
         "offload_state_to_cpu": OFFLOAD_STATE_TO_CPU,
         "frame_loading": FRAME_LOADING,
+        # The suites load one video after another without saving; each load replaces the last.
+        "discard_unsaved": True,
     }
     response = requests.post(url, json=payload)
     if response.status_code == 200:
