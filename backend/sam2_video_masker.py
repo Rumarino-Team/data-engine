@@ -56,6 +56,34 @@ def configure_device() -> tuple[torch.device, Optional[torch.dtype]]:
     return torch.device("cuda"), autocast_dtype
 
 
+def _synchronized_after(method):
+    """Wait for the GPU->CPU copies `method` started before its caller reads them.
+
+    With the video state offloaded to the CPU, SAM2 copies each result (the mask and the memory features) with
+    `.to(cpu, non_blocking=True)` and its caller then reads the CPU tensor at once. Nothing waits for the copy, so
+    the read can see an unfinished buffer: all zeros, or a recycled one that still holds another object's mask.
+    That showed as a second object's first click returning an empty mask, or the first object's mask from another
+    frame, and it changed from run to run. Waiting on the stream here makes the copies land first."""
+    @wraps(method)
+    def run(*args, **kwargs):
+        result = method(*args, **kwargs)
+        state = kwargs["inference_state"] if "inference_state" in kwargs else args[0]
+        if state["device"].type == "cuda" and state["storage_device"].type == "cpu":
+            torch.cuda.current_stream(state["device"]).synchronize()
+        return result
+    return run
+
+
+def make_offloaded_copies_safe(predictor):
+    """Wrap the two predictor methods that copy results to the CPU (see `_synchronized_after`).
+
+    The predictor's own code is untouched. The attributes are read without defaults on purpose: if a pinned SAM2
+    update renames one, loading must fail here rather than quietly lose the protection."""
+    for name in ("_run_single_frame_inference", "_run_memory_encoder"):
+        setattr(predictor, name, _synchronized_after(getattr(predictor, name)))
+    return predictor
+
+
 def load_predictor(device):
     """SAM2's video predictor from the pinned Hugging Face revision.
 
@@ -67,7 +95,8 @@ def load_predictor(device):
 
     config_name, checkpoint_name = HF_MODEL_ID_TO_FILENAMES[SAM2_MODEL_ID]
     checkpoint = hf_hub_download(repo_id=SAM2_MODEL_ID, filename=checkpoint_name, revision=SAM2_MODEL_REVISION)
-    return build_sam2_video_predictor(config_file=config_name, ckpt_path=checkpoint, device=device)
+    predictor = build_sam2_video_predictor(config_file=config_name, ckpt_path=checkpoint, device=device)
+    return make_offloaded_copies_safe(predictor)
 
 
 def _with_inference_context(method):
