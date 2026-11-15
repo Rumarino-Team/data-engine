@@ -117,6 +117,44 @@ describe('CanvasViewportService', () => {
     expect(viewport.clientToImage(20, 30)).toBeNull();
   });
 
+  it('hides the video image for masks + points, and the points too for masks only', () => {
+    const frame = stage.find<Konva.Image>('Image').find((node) => node.name() !== 'mask')!;
+    const mask = stage.findOne<Konva.Image>('.mask')!;
+    const point = stage.findOne<Konva.Circle>('Circle')!;
+    const shown = () => [frame, mask, point].map((node) => node.isVisible());
+
+    expect(viewport.viewMode()).toBe('full');
+    expect(shown()).toEqual([true, true, true]);
+
+    viewport.toggleViewMode('masks-points');
+    expect(viewport.viewMode()).toBe('masks-points');
+    expect(shown()).toEqual([false, true, true]);
+
+    viewport.toggleViewMode('masks');
+    expect(viewport.viewMode()).toBe('masks');
+    expect(shown()).toEqual([false, true, false]);
+
+    // Choosing the mode that is already shown goes back to the full view.
+    viewport.toggleViewMode('masks');
+    expect(viewport.viewMode()).toBe('full');
+    expect(shown()).toEqual([true, true, true]);
+  });
+
+  it('keeps the chosen view mode when frames change and when the canvas is attached again', () => {
+    viewport.toggleViewMode('masks-points');
+    render();
+    const frame = () => stage.find<Konva.Image>('Image').find((node) => node.name() !== 'mask')!;
+    expect(frame().isVisible()).toBe(false);
+    expect(stage.findOne<Konva.Circle>('Circle')!.isVisible()).toBe(true);
+
+    viewport.attach(host, onPoint);
+    stage = Konva.stages[Konva.stages.length - 1];
+    render();
+    expect(viewport.viewMode()).toBe('masks-points');
+    expect(frame().isVisible()).toBe(false);
+    expect(stage.findOne<Konva.Circle>('Circle')!.isVisible()).toBe(true);
+  });
+
   it('zooms around the pointer while keeping markers a constant screen size', () => {
     viewport.zoomBy(2, { x: 112, y: 62 });
     expect(viewport.zoom()).toBe(2);

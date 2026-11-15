@@ -6,7 +6,7 @@ import { Image as CanvasImage } from 'konva/lib/shapes/Image';
 import { Circle } from 'konva/lib/shapes/Circle';
 import { Line } from 'konva/lib/shapes/Line';
 import { MaskObject, Point, TrackedPointSeries } from './video-masker-state.store';
-import { TrackingOverlayStyle } from '../state/video-masker-ui.types';
+import { CanvasViewMode, TrackingOverlayStyle } from '../state/video-masker-ui.types';
 import { createMaskTexture, MaskOverlay } from './mask-texture';
 
 interface Position {
@@ -22,7 +22,7 @@ export class CanvasViewportService {
   readonly panMode = signal(false);
   readonly spacePressed = signal(false);
   readonly panning = signal(false);
-  readonly masksOnly = signal(false);
+  readonly viewMode = signal<CanvasViewMode>('full');
   private stage: Stage | null = null;
   private scene: Group | null = null;
   private frame: CanvasImage | null = null;
@@ -54,9 +54,9 @@ export class CanvasViewportService {
     });
     const layer = new Layer({ listening: false });
     this.scene = new Group();
-    this.frame = new CanvasImage({ image: undefined, visible: !this.masksOnly() });
+    this.frame = new CanvasImage({ image: undefined, visible: this.viewMode() === 'full' });
     this.masks = new Group({ name: 'masks' });
-    this.annotations = new Group({ visible: !this.masksOnly() });
+    this.annotations = new Group({ visible: this.viewMode() !== 'masks' });
     this.scene.add(this.frame, this.masks, this.annotations);
     layer.add(this.scene);
     this.stage.add(layer);
@@ -183,10 +183,11 @@ export class CanvasViewportService {
     this.reset();
   }
 
-  toggleMasksOnly(): void {
-    this.masksOnly.update((enabled) => !enabled);
-    this.frame?.visible(!this.masksOnly());
-    this.annotations?.visible(!this.masksOnly());
+  /** Switch to `mode`, or back to the full view when it is already the one shown. */
+  toggleViewMode(mode: Exclude<CanvasViewMode, 'full'>): void {
+    this.viewMode.update((current) => (current === mode ? 'full' : mode));
+    this.frame?.visible(this.viewMode() === 'full');
+    this.annotations?.visible(this.viewMode() !== 'masks');
     this.stage?.batchDraw();
   }
 

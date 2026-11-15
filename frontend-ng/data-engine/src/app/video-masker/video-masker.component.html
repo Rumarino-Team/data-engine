@@ -189,9 +189,18 @@
         </button>
         <button
           type="button"
-          (click)="viewport.toggleMasksOnly()"
+          (click)="viewport.toggleViewMode('masks-points')"
           [disabled]="!viewport.ready()"
-          [attr.aria-pressed]="viewport.masksOnly()"
+          [attr.aria-pressed]="viewport.viewMode() === 'masks-points'"
+          title="Hide the video image to view only masks and points"
+        >
+          Masks + points
+        </button>
+        <button
+          type="button"
+          (click)="viewport.toggleViewMode('masks')"
+          [disabled]="!viewport.ready()"
+          [attr.aria-pressed]="viewport.viewMode() === 'masks'"
           title="Hide the video image and annotations to view only masks"
         >
           Masks only
