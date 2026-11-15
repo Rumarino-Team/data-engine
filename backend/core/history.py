@@ -9,7 +9,8 @@ from dataclasses import dataclass, field
 from typing import Any, Iterator, Optional
 
 from core.annotations import SessionAnnotations
-from core.config import TRACKING_METADATA_KEYS, UNDO_LIMIT
+from core.config import UNDO_LIMIT
+from core.session_layout import TRACKING_METADATA_KEYS
 
 
 def tracking_metadata(metadata: dict[str, Any]) -> dict[str, Any]:

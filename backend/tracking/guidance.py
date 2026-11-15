@@ -4,7 +4,7 @@ from typing import Any, Optional
 
 import numpy as np
 
-from core.config import TRACKING_RESULT_PATH
+from core.session_layout import TRACKING_RESULT_PATH
 from core.state import SessionState
 from sessions.metadata import current_session_path
 from tracking.results import current_tracking_result

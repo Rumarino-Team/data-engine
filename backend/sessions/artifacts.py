@@ -12,7 +12,10 @@ import logging
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
-from core.config import TRACKING_DIR, TRACKING_RESULT_PATH
+from core.session_layout import (
+    INTERACTIVE_DIR, MANIFEST_PREFIX, MASKS_DIR, OVERLAY_DIR_PREFIX, OVERRIDES_DIR, TRACKING_DIR,
+    TRACKING_RESULT_PATH,
+)
 from core.state import SessionState
 from sessions.paths import manifest_relative_path
 from utils import load_mask_manifest
@@ -22,7 +25,7 @@ logger = logging.getLogger(__name__)
 @lru_cache(maxsize=1)
 def _read_manifest_overlays(manifest_path: str, mtime_ns: int, size: int) -> frozenset[str]:
     frames = load_mask_manifest(Path(manifest_path)).get("frames", {})
-    return frozenset(f"masks/{manifest_relative_path(frame['overlay_path'])}"
+    return frozenset(f"{MASKS_DIR}/{manifest_relative_path(frame['overlay_path'])}"
                      for frame in frames.values() if frame.get("overlay_path"))
 
 def _manifest_overlays(manifest_path: str) -> frozenset[str]:
@@ -32,8 +35,8 @@ def _manifest_overlays(manifest_path: str) -> frozenset[str]:
 
 def referenced_artifacts(session: SessionState) -> Optional[set[str]]:
     """Session-relative paths the session's accepted state names; None when that cannot be determined."""
-    refs = {f"masks/overrides/{mask.artifact}" for mask in session.annotations.mask_overrides}
-    refs.update(f"masks/interactive/{name}" for name in session.interactive_mask_files.values() if isinstance(name, str))
+    refs = {f"{MASKS_DIR}/{OVERRIDES_DIR}/{mask.artifact}" for mask in session.annotations.mask_overrides}
+    refs.update(f"{MASKS_DIR}/{INTERACTIVE_DIR}/{name}" for name in session.interactive_mask_files.values() if isinstance(name, str))
     tracking_path = session.session_metadata.get(TRACKING_RESULT_PATH)
     if tracking_path:
         refs.add(f"{TRACKING_DIR}/{Path(tracking_path).name}")
@@ -44,7 +47,7 @@ def referenced_artifacts(session: SessionState) -> Optional[set[str]]:
         except (OSError, ValueError):
             # Without a readable manifest its overlays are unknown, so keep every result file.
             return None
-        refs.add(f"masks/{manifest.name}")
+        refs.add(f"{MASKS_DIR}/{manifest.name}")
         refs.update(overlays)
     return refs
 
@@ -57,8 +60,8 @@ def retained_artifacts(session: SessionState) -> Optional[set[str]]:
     if refs is None:
         return None
     for state in session.history.states():
-        refs.update(f"masks/overrides/{mask.artifact}" for mask in state.annotations.mask_overrides)
-        refs.update(f"masks/interactive/{name}" for name in state.live_masks.values() if isinstance(name, str))
+        refs.update(f"{MASKS_DIR}/{OVERRIDES_DIR}/{mask.artifact}" for mask in state.annotations.mask_overrides)
+        refs.update(f"{MASKS_DIR}/{INTERACTIVE_DIR}/{name}" for name in state.live_masks.values() if isinstance(name, str))
         tracking_path = state.tracking.get(TRACKING_RESULT_PATH)
         if tracking_path:
             refs.add(f"{TRACKING_DIR}/{Path(tracking_path).name}")
@@ -72,7 +75,7 @@ def _unlink(path: Path) -> None:
         logger.warning("Unable to remove obsolete artifact %s", path, exc_info=True)
 
 def _remove_empty_overlay_dir(directory: Path) -> None:
-    if directory.name.startswith("overlays_"):
+    if directory.name.startswith(OVERLAY_DIR_PREFIX):
         try:
             directory.rmdir()  # Only succeeds once empty; a directory still holding kept overlays stays.
         except OSError:
@@ -107,14 +110,14 @@ def sweep_unreferenced_artifacts(session: SessionState) -> None:
         if refs is None:
             return
         root = Path(session.active_session_dir)
-        owned = [(root / "masks" / "overrides", "*.json"), (root / "masks" / "interactive", "*.json"),
-                 (root / TRACKING_DIR, "*.json"), (root / "masks", "manifest-*.json")]
+        owned = [(root / MASKS_DIR / OVERRIDES_DIR, "*.json"), (root / MASKS_DIR / INTERACTIVE_DIR, "*.json"),
+                 (root / TRACKING_DIR, "*.json"), (root / MASKS_DIR, f"{MANIFEST_PREFIX}*.json")]
         for directory, pattern in owned:
             if directory.is_dir():
                 for path in directory.glob(pattern):
                     if path.is_file() and path.relative_to(root).as_posix() not in refs:
                         _unlink(path)
-        for overlay_dir in (root / "masks").glob("overlays_*"):
+        for overlay_dir in (root / MASKS_DIR).glob(f"{OVERLAY_DIR_PREFIX}*"):
             if overlay_dir.is_dir():
                 for path in overlay_dir.rglob("*"):
                     if path.is_file() and path.relative_to(root).as_posix() not in refs:

@@ -6,6 +6,7 @@ from pathlib import Path
 import logging, re
 import numpy as np
 from core.errors import OperationError
+from core.session_layout import INTERACTIVE_DIR, MASKS_DIR, OVERRIDES_DIR
 from core.state import SessionState
 from schemas.video import InteractiveMaskRLE, MaskOverride
 from sessions.metadata import current_masks_dir
@@ -48,7 +49,7 @@ def encode_override(frame_idx: int, obj_id: int, mask: np.ndarray) -> Interactiv
 def _overrides_dir(session_path: Path | None) -> Path:
     if session_path is None:
         raise ValueError("No active session for mask overrides.")
-    return session_path / "masks" / "overrides"
+    return session_path / MASKS_DIR / OVERRIDES_DIR
 
 
 def store_mask_override(session_path: Path | None, frame_idx: int, obj_id: int, mask: np.ndarray) -> MaskOverride:
@@ -104,7 +105,7 @@ def retain_interactive_masks(session: SessionState, frame_idx: int, obj_ids: lis
     # Publish an immutable artifact first, then accept its reference with annotations.
     # If metadata acceptance fails, the previous reference still names untouched pixels.
     artifact_name = f"{uuid4().hex}.json"
-    write_mask_manifest(masks_dir / "interactive" / artifact_name, payload)
+    write_mask_manifest(masks_dir / INTERACTIVE_DIR / artifact_name, payload)
     session.interactive_mask_files[str(frame_idx)] = artifact_name
 
 
@@ -121,7 +122,7 @@ def retain_empty_mask(session: SessionState, frame_idx: int, obj_id: int, shape:
     payload[str(obj_id)] = {"input_revision": session.annotations.input_revisions.get(obj_id, 0),
                             "mask": encode_live_mask_payload(np.zeros(shape, dtype=bool))}
     artifact_name = f"{uuid4().hex}.json"
-    write_mask_manifest(masks_dir / "interactive" / artifact_name, payload)
+    write_mask_manifest(masks_dir / INTERACTIVE_DIR / artifact_name, payload)
     session.interactive_mask_files[str(frame_idx)] = artifact_name
 
 
@@ -154,7 +155,7 @@ def load_interactive_masks(session: SessionState, frame_idx: int) -> dict[str, A
     masks_dir = current_masks_dir(session)
     if masks_dir is None:
         raise ValueError("No active session for interactive masks.")
-    return _read_interactive_mask_file(masks_dir / "interactive" / artifact_name)
+    return _read_interactive_mask_file(masks_dir / INTERACTIVE_DIR / artifact_name)
 
 
 def _manifest_frames(session: SessionState) -> dict[str, Any]:
@@ -219,7 +220,7 @@ def outdated_mask_ranges(session: SessionState) -> dict[str, list[list[int]]]:
     if masks_dir is not None:
         for frame_key, name in session.interactive_mask_files.items():
             try:
-                live = _interactive_stamps(masks_dir / "interactive" / name)
+                live = _interactive_stamps(masks_dir / INTERACTIVE_DIR / name)
             except (OSError, ValueError, KeyError, TypeError):
                 continue  # an unreadable artifact is reported where its masks are read
             for obj_key, stamp in live.items():

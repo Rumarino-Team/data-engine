@@ -7,6 +7,7 @@ from core.context import AppContext
 from core.errors import OperationError
 from core.jobs import JobHandle, capture_job_inputs, validate_job_inputs
 from core.runtime import cleanup_cuda_memory, is_out_of_memory
+from core.session_layout import MANIFEST_PREFIX, OVERLAY_DIR_PREFIX
 from core.state import SessionState
 from schemas.responses import JobOperation, PropagationResult
 from schemas.video import VideoPropagateRequest
@@ -152,7 +153,7 @@ def open_run(session: SessionState, request: VideoPropagateRequest, job: JobHand
     )
 
     frame_files, masks_dir = prepare_video_masks_output(session.video_dir, masks_root, clear_existing=False)
-    manifest_path = masks_dir / f"manifest-{uuid.uuid4().hex}.json"
+    manifest_path = masks_dir / f"{MANIFEST_PREFIX}{uuid.uuid4().hex}.json"
     first_frame = cv2.imread(str(Path(session.video_dir) / session.video_frame_files[start_frame_idx]))
     if first_frame is None:
         raise OperationError(500, "Unable to read first frame for manifest metadata.")
@@ -175,7 +176,7 @@ def open_run(session: SessionState, request: VideoPropagateRequest, job: JobHand
     if request.use_tracked_points:
         guidance = load_latest_tracking_guidance(session, num_frames=len(session.video_frame_files))
 
-    overlay_dir = masks_dir / f"overlays_{uuid.uuid4().hex}"
+    overlay_dir = masks_dir / f"{OVERLAY_DIR_PREFIX}{uuid.uuid4().hex}"
     if request.export_overlay_frames:
         overlay_dir.mkdir()
     return PropagationRun(

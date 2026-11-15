@@ -4,6 +4,7 @@ from typing import Callable, Optional
 import cv2
 import numpy as np
 from core.config import IMAGE_EXTENSIONS, JPEG_EXTENSIONS, JPEG_QUALITY, SESSION_CACHE_ROOT
+from core.session_layout import FRAMES_DIR, MASKS_DIR
 from core.state import SessionState
 from sessions.checkpoints import clone_session_directory
 
@@ -36,8 +37,8 @@ def create_active_session(source_path: Path, *, session: SessionState) -> Path:
     SESSION_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
     session_id = uuid.uuid4().hex
     session_dir = SESSION_CACHE_ROOT / session_id
-    (session_dir / "frames").mkdir(parents=True, exist_ok=False)
-    (session_dir / "masks").mkdir(parents=True, exist_ok=True)
+    (session_dir / FRAMES_DIR).mkdir(parents=True, exist_ok=False)
+    (session_dir / MASKS_DIR).mkdir(parents=True, exist_ok=True)
     session.active_session_dir = session_dir
     session.active_session_id = session_id
     return session_dir

@@ -2,8 +2,8 @@
 import os, re, shutil, uuid
 from pathlib import Path
 from typing import Any
-from core.config import TRACKING_RESULT_ID
 from core.errors import OperationError
+from core.session_layout import FRAMES_DIR, MASKS_DIR, OVERLAY_DIR_PREFIX, SESSION_FILE, TRACKING_RESULT_ID
 from core.state import SessionState
 
 MAX_DISPLAY_NAME_LENGTH = 120
@@ -51,7 +51,7 @@ def clone_session_directory(source: Path, target: Path) -> None:
     """Copy a session directory without session.json, which each copy writes for itself."""
     shutil.copytree(
         source, target, symlinks=True, copy_function=_link_or_copy,
-        ignore=shutil.ignore_patterns("session.json", ".session-*"),
+        ignore=shutil.ignore_patterns(SESSION_FILE, ".session-*"),
     )
 
 def link_files(source_root: Path, target_root: Path, relatives: set[str]) -> list[Path]:
@@ -65,7 +65,7 @@ def link_files(source_root: Path, target_root: Path, relatives: set[str]) -> lis
             if target.exists():
                 continue
             if not source.is_file():
-                if relative.startswith("masks/overlays_"):
+                if relative.startswith(f"{MASKS_DIR}/{OVERLAY_DIR_PREFIX}"):
                     continue
                 raise OperationError(500, f"Session artifact is missing: {relative}")
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -99,7 +99,7 @@ def write_checkpoint(working: Path, target: Path, document: dict[str, Any], refe
     complete checkpoint (frames plus referenced files) is staged and moved into place."""
     from sessions.artifacts import remove_artifacts
     from sessions.metadata import write_metadata_file
-    if known is not None and (target / "session.json").is_file():
+    if known is not None and (target / SESSION_FILE).is_file():
         added = link_files(working, target, references - known)
         try:
             write_metadata_file(target, document)
@@ -113,8 +113,8 @@ def write_checkpoint(working: Path, target: Path, document: dict[str, Any], refe
         raise OperationError(409, "The checkpoint directory already exists or is damaged. Use Save As.")
     staging = target.parent / f".staging-{uuid.uuid4().hex}"
     try:
-        (staging / "masks").mkdir(parents=True)
-        _write_frames(working / "frames", staging / "frames")
+        (staging / MASKS_DIR).mkdir(parents=True)
+        _write_frames(working / FRAMES_DIR, staging / FRAMES_DIR)
         link_files(working, staging, references)
         write_metadata_file(staging, document)
         os.replace(staging, target)

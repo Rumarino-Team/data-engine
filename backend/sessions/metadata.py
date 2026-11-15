@@ -1,9 +1,9 @@
 import json, logging, os, tempfile
 from pathlib import Path
 from typing import Any, Optional
-from core.config import TRACKING_METADATA_KEYS
 from core.errors import OperationError
 from core.jobs import utc_now_iso
+from core.session_layout import MASKS_DIR, SESSION_FILE, TRACKING_METADATA_KEYS
 from core.state import SessionState
 from utils import load_mask_manifest
 
@@ -14,7 +14,7 @@ def current_session_path(session: SessionState) -> Optional[Path]:
 
 def current_masks_dir(session: SessionState) -> Optional[Path]:
     session_path = current_session_path(session)
-    return session_path / "masks" if session_path is not None else None
+    return session_path / MASKS_DIR if session_path is not None else None
 
 # Session fields owned outside annotations; they live in memory and are restored from a checkpoint's session.json.
 PERSISTED_METADATA_KEYS = (
@@ -75,13 +75,13 @@ def write_metadata_file(directory: Path, metadata: dict[str, Any]) -> None:
             json.dump(metadata, handle, ensure_ascii=True, separators=(",", ":"))
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary_path, directory / "session.json")
+        os.replace(temporary_path, directory / SESSION_FILE)
     finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
 
 def load_session_metadata(session_root: Path) -> dict[str, Any]:
-    session_json_path = session_root / "session.json"
+    session_json_path = session_root / SESSION_FILE
     try:
         metadata = load_mask_manifest(session_json_path)
     except FileNotFoundError as error:

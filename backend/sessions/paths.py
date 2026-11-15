@@ -4,6 +4,7 @@ from typing import Optional
 from urllib.parse import unquote, urlparse
 from core.config import IMAGE_EXTENSIONS, PROJECT_ROOT, VIDEO_EXTENSIONS
 from core.errors import OperationError
+from core.session_layout import FRAMES_DIR, MASKS_DIR, SESSION_FILE
 
 def path_is_relative_to(path: Path, parent: Path) -> bool:
     try:
@@ -90,11 +91,11 @@ def validate_video_input_path(resolved_input_path: Path) -> None:
 def resolve_saved_session_layout(resolved_input_path: Path) -> Optional[tuple[Path, Path, Path]]:
     if not resolved_input_path.is_dir():
         return None
-    session_json = resolved_input_path / "session.json"
+    session_json = resolved_input_path / SESSION_FILE
     if not session_json.exists():
         return None
-    frames_dir = resolved_input_path / "frames"
-    masks_dir = resolved_input_path / "masks"
+    frames_dir = resolved_input_path / FRAMES_DIR
+    masks_dir = resolved_input_path / MASKS_DIR
     if not frames_dir.is_dir():
         raise OperationError(400, f"Saved session directory is missing required frames/ folder: {frames_dir}")
     if not masks_dir.is_dir():

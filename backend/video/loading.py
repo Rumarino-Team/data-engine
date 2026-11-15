@@ -8,6 +8,7 @@ from core.context import AppContext
 from core.errors import OperationError
 from core.jobs import JobHandle, utc_now_iso
 from core.runtime import cleanup_cuda_memory
+from core.session_layout import FRAMES_DIR, MASKS_DIR
 from core.state import SessionState
 from schemas.responses import InitResult, JobOperation
 from schemas.video import AnnotationPrecondition, DEFAULT_FRAME_LOADING, FrameLoading, InteractiveState, VideoInitStateRequest
@@ -34,7 +35,7 @@ def open_saved_session(checkpoint_dir: Path, session: SessionState, job: JobHand
         raise OperationError(400, "Saved session is missing its checkpoint identity or display name.")
     # The checkpoint stays untouched; all edits and results belong to the working copy.
     session_dir = open_checkpoint_as_working_copy(checkpoint_dir, session=session)
-    frames_dir, masks_dir = session_dir / "frames", session_dir / "masks"
+    frames_dir, masks_dir = session_dir / FRAMES_DIR, session_dir / MASKS_DIR
     session.adopt_checkpoint(checkpoint_id, checkpoint_dir, display_name)
     manifest_name = session_metadata.get("mask_manifest_file")
     manifest_path = masks_dir / Path(manifest_name).name if manifest_name else None
@@ -84,7 +85,7 @@ def open_saved_session(checkpoint_dir: Path, session: SessionState, job: JobHand
 def import_frames(resolved_input_path: Path, session: SessionState, job: JobHandle) -> None:
     """Extract a video file, or link a folder of frames, into a new working copy of `session`."""
     session_dir = create_active_session(resolved_input_path, session=session)
-    frames_dir = session_dir / "frames"
+    frames_dir = session_dir / FRAMES_DIR
     if resolved_input_path.is_file():
         frame_files = _extract_video_frames(resolved_input_path, frames_dir, job)
         session.video_source_path = str(resolved_input_path)

@@ -3,6 +3,7 @@ from core.config import SAVED_ROOT
 from core.context import AppContext
 from core.errors import OperationError
 from core.jobs import utc_now_iso
+from core.session_layout import FRAMES_DIR
 from schemas.video import AnnotationPrecondition, VideoSaveRequest
 from sessions.artifacts import referenced_artifacts
 from sessions.checkpoints import content_fingerprint, new_checkpoint_location, normalize_display_name, saved_state, write_checkpoint
@@ -32,7 +33,7 @@ def save_video_session(ctx: AppContext, request: VideoSaveRequest, precondition:
         overrides: dict[str, Any] = {
             "checkpoint_id": checkpoint_id, "display_name": display_name, "saved_at": saved_at,
             "saved_revision": session.annotations.revision,
-            "resolved_video_frames_dir": str(target / "frames"),
+            "resolved_video_frames_dir": str(target / FRAMES_DIR),
         }
         if request.interactive_state is not None:
             overrides["interactive_state"] = request.interactive_state.model_dump()
