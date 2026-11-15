@@ -1,4 +1,5 @@
-"""What the application does when it starts and stops: housekeeping that needs the session storage."""
+"""Session storage and resource cleanup helpers used during application startup and shutdown."""
+
 import shutil
 
 from core.config import CACHE_ROOT, SAVED_ROOT, SESSION_CACHE_ROOT

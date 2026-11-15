@@ -96,7 +96,7 @@ class ArchitectureTests(unittest.TestCase):
 
     def test_the_check_sees_the_real_modules(self):
         # A guard against the test passing because it found nothing to check.
-        for expected in ("core.context", "sessions.publication", "video.propagation", "tracking.runtime", "app.lifecycle"):
+        for expected in ("core.context", "sessions.publication", "video.propagation", "tracking.runtime", "app.cleanup"):
             self.assertIn(expected, self.modules)
         self.assertIn("core.annotations", self.edges["tracking.results"])
         self.assertGreater(sum(len(targets) for targets in self.edges.values()), 100)

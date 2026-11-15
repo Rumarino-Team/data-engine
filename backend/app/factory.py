@@ -2,9 +2,9 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exception_handlers import http_exception_handler as _default_http_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.cleanup import cleanup_backend_cache_on_shutdown, sweep_stale_sessions_on_startup
 from core.context import AppContext
 from core.errors import OperationError
-from app.lifecycle import cleanup_backend_cache_on_shutdown, sweep_stale_sessions_on_startup
 from routers import jobs, root, tracking, video
 
 
