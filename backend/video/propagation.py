@@ -8,7 +8,7 @@ from core.errors import OperationError
 from core.jobs import JobHandle, capture_job_inputs, validate_job_inputs
 from core.runtime import cleanup_cuda_memory, is_out_of_memory
 from core.state import SessionState
-from schemas.responses import PropagationResult
+from schemas.responses import JobOperation, PropagationResult
 from schemas.video import VideoPropagateRequest
 from sessions.checkpoints import saved_state
 from sessions.metadata import current_masks_dir
@@ -45,7 +45,7 @@ def propagation_batch_progress(
 
 def start_propagation(ctx: AppContext, request: VideoPropagateRequest, precondition):
     return ctx.start_job(
-        precondition, operation="mask_propagation", stage="validating_prompts", stage_label="Validating prompts",
+        precondition, operation=JobOperation.MASK_PROPAGATION, stage="validating_prompts", stage_label="Validating prompts",
         message="Mask propagation queued", parameters=request.model_dump(),
         run=lambda job, inputs: run_propagation_job(ctx, request, job, inputs),
     )
@@ -252,7 +252,7 @@ def collect_frame(run: PropagationRun, frame_idx: int, frame_masks: dict[int, np
         try:
             saved_path = save_single_video_mask_frame(run.frame_files, run.overlay_dir, frame_idx, frame_masks)
             if saved_path is not None:
-                run.manifest_frames[str(frame_idx)]["overlay_path"] = str(Path(saved_path).relative_to(run.masks_dir))
+                run.manifest_frames[str(frame_idx)]["overlay_path"] = Path(saved_path).relative_to(run.masks_dir).as_posix()
                 run.saved_mask_frame_count += 1
                 if request.include_saved_mask_paths:
                     run.saved_mask_paths.setdefault(frame_idx, []).append(saved_path)
@@ -284,7 +284,7 @@ def publish_run(ctx: AppContext, run: PropagationRun, inputs: dict[str, Any]) ->
         total=run.expected_total_frames,
         message="Saving mask manifest",
     )
-    with publish_results(ctx, inputs, "mask_propagation") as session:
+    with publish_results(ctx, inputs, JobOperation.MASK_PROPAGATION) as session:
         write_mask_manifest(run.manifest_path, run.manifest)
         session.interactive_mask_files = {key: value for key, value in session.interactive_mask_files.items()
                                           if int(key) not in run.processed_frames}
@@ -326,8 +326,8 @@ def propagation_result(run: PropagationRun, inputs: dict[str, Any], session: Ses
 
 def run_propagation_job(ctx: AppContext, request: VideoPropagateRequest, job: JobHandle, inputs=None) -> dict[str, Any]:
     session = ctx.session
-    inputs = inputs or capture_job_inputs(session, "mask_propagation")
-    validate_job_inputs(session, inputs, "mask_propagation")
+    inputs = inputs or capture_job_inputs(session, JobOperation.MASK_PROPAGATION)
+    validate_job_inputs(session, inputs, JobOperation.MASK_PROPAGATION)
     job.enter_stage(
         "validating_prompts", "Validating prompts",
         status="running",

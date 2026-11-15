@@ -12,15 +12,17 @@ import logging
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
+from core.config import TRACKING_DIR, TRACKING_RESULT_PATH
 from core.state import SessionState
+from sessions.paths import manifest_relative_path
+from utils import load_mask_manifest
 
 logger = logging.getLogger(__name__)
 
 @lru_cache(maxsize=1)
 def _read_manifest_overlays(manifest_path: str, mtime_ns: int, size: int) -> frozenset[str]:
-    from utils import load_mask_manifest
     frames = load_mask_manifest(Path(manifest_path)).get("frames", {})
-    return frozenset(f"masks/{Path(frame['overlay_path']).as_posix()}"
+    return frozenset(f"masks/{manifest_relative_path(frame['overlay_path'])}"
                      for frame in frames.values() if frame.get("overlay_path"))
 
 def _manifest_overlays(manifest_path: str) -> frozenset[str]:
@@ -32,9 +34,9 @@ def referenced_artifacts(session: SessionState) -> Optional[set[str]]:
     """Session-relative paths the session's accepted state names; None when that cannot be determined."""
     refs = {f"masks/overrides/{mask.artifact}" for mask in session.annotations.mask_overrides}
     refs.update(f"masks/interactive/{name}" for name in session.interactive_mask_files.values() if isinstance(name, str))
-    tracking_path = session.session_metadata.get("latest_tracking_result_path")
+    tracking_path = session.session_metadata.get(TRACKING_RESULT_PATH)
     if tracking_path:
-        refs.add(f"tracking/{Path(tracking_path).name}")
+        refs.add(f"{TRACKING_DIR}/{Path(tracking_path).name}")
     if session.mask_manifest_path:
         manifest = Path(session.mask_manifest_path)
         try:
@@ -57,9 +59,9 @@ def retained_artifacts(session: SessionState) -> Optional[set[str]]:
     for state in session.history.states():
         refs.update(f"masks/overrides/{mask.artifact}" for mask in state.annotations.mask_overrides)
         refs.update(f"masks/interactive/{name}" for name in state.live_masks.values() if isinstance(name, str))
-        tracking_path = state.tracking.get("latest_tracking_result_path")
+        tracking_path = state.tracking.get(TRACKING_RESULT_PATH)
         if tracking_path:
-            refs.add(f"tracking/{Path(tracking_path).name}")
+            refs.add(f"{TRACKING_DIR}/{Path(tracking_path).name}")
     return refs
 
 
@@ -106,7 +108,7 @@ def sweep_unreferenced_artifacts(session: SessionState) -> None:
             return
         root = Path(session.active_session_dir)
         owned = [(root / "masks" / "overrides", "*.json"), (root / "masks" / "interactive", "*.json"),
-                 (root / "tracking", "*.json"), (root / "masks", "manifest-*.json")]
+                 (root / TRACKING_DIR, "*.json"), (root / "masks", "manifest-*.json")]
         for directory, pattern in owned:
             if directory.is_dir():
                 for path in directory.glob(pattern):

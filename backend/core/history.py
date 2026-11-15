@@ -9,15 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterator, Optional
 
 from core.annotations import SessionAnnotations
-from core.config import UNDO_LIMIT
-
-# The session-metadata entries that name the latest tracking result.
-TRACKING_METADATA_KEYS = (
-    "latest_tracking_result_id",
-    "latest_tracking_result_path",
-    "latest_tracking_result_updated_at",
-    "latest_tracking_result_summary",
-)
+from core.config import TRACKING_METADATA_KEYS, UNDO_LIMIT
 
 
 def tracking_metadata(metadata: dict[str, Any]) -> dict[str, Any]:

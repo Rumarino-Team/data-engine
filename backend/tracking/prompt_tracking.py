@@ -10,7 +10,7 @@ from core.jobs import JobHandle, capture_job_inputs, validate_job_inputs
 from core.runtime import cleanup_cuda_memory, is_out_of_memory
 from sessions.checkpoints import saved_state
 from sessions.publication import publish_results
-from schemas.responses import TrackingJobResult
+from schemas.responses import JobOperation, TrackingJobResult
 from schemas.tracking import TrackingPromptPointsRequest
 from tracking.results import save_prompt_tracking_result
 from tracking.runtime import VideoTracker, VideoTrackerRuntime
@@ -85,7 +85,7 @@ def track_prompt_queries(
 
 def start_prompt_tracking(ctx: AppContext, request: TrackingPromptPointsRequest, precondition):
     return ctx.start_job(
-        precondition, operation="prompt_tracking", stage="collecting_prompts", stage_label="Collecting prompts",
+        precondition, operation=JobOperation.PROMPT_TRACKING, stage="collecting_prompts", stage_label="Collecting prompts",
         message="Prompt tracking queued", parameters=request.model_dump(),
         run=lambda job, inputs: run_prompt_tracking_job(ctx, request, job, inputs),
     )
@@ -177,8 +177,8 @@ def run_prompt_tracking_job(
     masker_runtime: VideoMaskerRuntime | None = None, tracker_runtime: VideoTrackerRuntime | None = None,
 ) -> dict[str, Any]:
     session = ctx.session
-    inputs = inputs or capture_job_inputs(session, "prompt_tracking")
-    validate_job_inputs(session, inputs, "prompt_tracking")
+    inputs = inputs or capture_job_inputs(session, JobOperation.PROMPT_TRACKING)
+    validate_job_inputs(session, inputs, JobOperation.PROMPT_TRACKING)
     job.enter_stage(
         "collecting_prompts", "Collecting prompts",
         status="running",
@@ -210,14 +210,14 @@ def run_prompt_tracking_job(
                 total=total_queries,
                 message="Moving SAM2 back to the GPU after prompt tracking",
             )
-            validate_job_inputs(session, inputs, "prompt_tracking")
+            validate_job_inputs(session, inputs, JobOperation.PROMPT_TRACKING)
     except MaskerRestorationError as error:
         raise OperationError(
             503, f"Prompt-point tracking finished but failed to restore interactive masking state: {error}"
         ) from error
 
     num_points, num_frames = int(output.tracks.shape[0]), int(output.tracks.shape[1])
-    with publish_results(ctx, inputs, "prompt_tracking") as session:
+    with publish_results(ctx, inputs, JobOperation.PROMPT_TRACKING) as session:
         tracking_result = save_prompt_tracking_result(
             session,
             model_name=output.tracker.model_name,

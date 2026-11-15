@@ -3,7 +3,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Header, Path, Query
 from fastapi.responses import FileResponse
 
-from app.dependencies import get_context
+from routers.dependencies import get_context
 from core.context import AppContext
 from schemas.responses import (
     AnnotationUpdate,

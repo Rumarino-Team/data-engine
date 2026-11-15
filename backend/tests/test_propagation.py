@@ -87,7 +87,10 @@ class PartialPropagationTests(unittest.TestCase):
                                              {"1": state.annotations.input_revisions.get(1, 0)})
                             overlay = masks / f"frame_{i:05d}_masks.png"
                             if export_overlay_frames:
-                                self.assertIsNotNone(cv2.imread(str(masks / updated["frames"][str(i)]["overlay_path"])))
+                                overlay_path = updated["frames"][str(i)]["overlay_path"]
+                                # Manifests are portable between systems, so a path is written with "/" only.
+                                self.assertNotIn("\\", overlay_path)
+                                self.assertIsNotNone(cv2.imread(str(masks / overlay_path)))
                                 self.assertEqual(overlay.read_bytes(), f"old-{i}".encode())
                             else:
                                 self.assertEqual(overlay.read_bytes(), f"old-{i}".encode())

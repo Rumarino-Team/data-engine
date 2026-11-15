@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 import torch
 
 from core.errors import OperationError
+from schemas.responses import JobOperation
 
 if TYPE_CHECKING:
     from core.state import SessionState
@@ -220,7 +221,7 @@ def capture_job_inputs(session: "SessionState", operation: str) -> dict[str, Any
         "session_id": session.active_session_id,
         "input_revision": session.annotations.revision,
         "dependencies": (sorted(session.annotations.positive_prompt_keys())
-                         if operation == "prompt_tracking" else dict(session.annotations.input_revisions)),
+                         if operation == JobOperation.PROMPT_TRACKING else dict(session.annotations.input_revisions)),
     }
 
 

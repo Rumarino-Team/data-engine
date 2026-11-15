@@ -8,7 +8,14 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.errors import OperationError
-from sessions.paths import resolve_input_path
+from sessions.paths import manifest_relative_path, resolve_input_path
+
+
+class ManifestRelativePathTests(unittest.TestCase):
+    def test_both_separators_give_forward_slashes(self):
+        for written in ("overlays_a/f0.png", "overlays_a\\f0.png", "f0.png"):
+            with self.subTest(written):
+                self.assertEqual(manifest_relative_path(written), written.replace("\\", "/"))
 
 
 class ResolveInputPathTests(unittest.TestCase):

@@ -3,11 +3,23 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BACKEND_ROOT = PROJECT_ROOT / "backend"
+# Frames a folder may hold. SAM2 only reads JPEG, so the other formats are converted to JPEG when a video is loaded.
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
+JPEG_EXTENSIONS = {".jpg", ".jpeg"}
+JPEG_QUALITY = 95
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
 CACHE_ROOT = BACKEND_ROOT / "cache"
 SESSION_CACHE_ROOT = CACHE_ROOT / "sessions"
 SAVED_ROOT = BACKEND_ROOT / "saved"
+# Where a session keeps its latest tracking result: these session-metadata entries name it, and the result file
+# lives in a folder of the session directory. They are written to session.json, so renaming one needs a migration.
+TRACKING_RESULT_ID = "latest_tracking_result_id"
+TRACKING_RESULT_PATH = "latest_tracking_result_path"
+TRACKING_RESULT_UPDATED_AT = "latest_tracking_result_updated_at"
+TRACKING_RESULT_SUMMARY = "latest_tracking_result_summary"
+TRACKING_METADATA_KEYS = (TRACKING_RESULT_ID, TRACKING_RESULT_PATH, TRACKING_RESULT_UPDATED_AT,
+                          TRACKING_RESULT_SUMMARY)
+TRACKING_DIR = "tracking"
 # Model sources are pinned to the commits the results were produced with. CoTracker is code fetched from GitHub
 # and run, so it must never follow a moving branch; SAM2 weights come from Hugging Face at a fixed revision.
 # Changing either is a deliberate update: check tracks and masks against the old ones first.

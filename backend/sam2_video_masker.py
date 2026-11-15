@@ -4,13 +4,24 @@ from contextlib import nullcontext
 from functools import wraps
 from pathlib import Path
 from typing import Any, Callable, Optional, get_args
+import numpy as np
 import torch
 from core.config import SAM2_MODEL_ID, SAM2_MODEL_REVISION
 from sam2_frame_store import frame_store_loading
 from schemas.video import DEFAULT_FRAME_LOADING, FrameLoading
-from video.masks import mask_logits_to_2d_bool
 
 logger = logging.getLogger(__name__)
+
+
+def mask_logits_to_2d_bool(mask_logits: Any) -> np.ndarray:
+    """One object's SAM2 output logits as a 2D bool mask (a pixel is in the mask where its logit is positive)."""
+    mask_array = (mask_logits > 0.0).detach().cpu().numpy()
+    mask_array = np.squeeze(mask_array).astype(bool)
+    if mask_array.ndim == 3 and mask_array.shape[0] == 1:
+        mask_array = np.squeeze(mask_array, axis=0)
+    if mask_array.ndim != 2:
+        raise ValueError(f"Expected 2D mask after squeeze, got shape {mask_array.shape}")
+    return mask_array
 
 
 def configure_device() -> tuple[torch.device, Optional[torch.dtype]]:

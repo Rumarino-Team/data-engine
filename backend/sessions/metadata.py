@@ -1,6 +1,7 @@
 import json, logging, os, tempfile
 from pathlib import Path
 from typing import Any, Optional
+from core.config import TRACKING_METADATA_KEYS
 from core.errors import OperationError
 from core.jobs import utc_now_iso
 from core.state import SessionState
@@ -21,10 +22,7 @@ PERSISTED_METADATA_KEYS = (
     "created_at",
     "saved_at",
     "source_input_path",
-    "latest_tracking_result_id",
-    "latest_tracking_result_path",
-    "latest_tracking_result_updated_at",
-    "latest_tracking_result_summary",
+    *TRACKING_METADATA_KEYS,
 )
 
 def persisted_session_fields(metadata: dict[str, Any]) -> dict[str, Any]:

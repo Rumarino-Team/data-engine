@@ -1,5 +1,5 @@
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Optional
 from urllib.parse import unquote, urlparse
 from core.config import IMAGE_EXTENSIONS, PROJECT_ROOT, VIDEO_EXTENSIONS
@@ -11,6 +11,13 @@ def path_is_relative_to(path: Path, parent: Path) -> bool:
         return True
     except ValueError:
         return False
+
+def manifest_relative_path(value: str) -> str:
+    """A relative file path stored in a manifest, with forward slashes.
+
+    Manifests written on Windows hold backslashes, which POSIX reads as part of a file name, so a session saved
+    there would not find its overlays on Linux. Both separators are accepted; new manifests only write "/"."""
+    return PureWindowsPath(value).as_posix()
 
 def normalize_input_path(path_value: str) -> str:
     normalized = str(path_value).strip().strip('"').strip("'")

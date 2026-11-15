@@ -1,15 +1,17 @@
 from __future__ import annotations
-from typing import Any, TYPE_CHECKING
+from typing import Any
 from uuid import uuid4
 from functools import lru_cache
 from pathlib import Path
 import logging, re
-
-if TYPE_CHECKING:
-    from core.state import SessionState
-    from schemas.video import InteractiveMaskRLE, MaskOverride
 import numpy as np
 from core.errors import OperationError
+from core.state import SessionState
+from schemas.video import InteractiveMaskRLE, MaskOverride
+from sessions.metadata import current_masks_dir
+from sessions.paths import manifest_relative_path, path_is_relative_to
+from utils import load_mask_manifest, write_mask_manifest
+from video.manifest_cache import load_cached_mask_manifest
 from video.mask_encoding import encode_mask_payload, encode_live_mask_payload
 
 logger = logging.getLogger(__name__)
@@ -29,21 +31,11 @@ def manifest_frame_payload(frame_masks: dict[int, np.ndarray]) -> dict[str, Any]
             objects[str(int(obj_id))] = encode_mask_payload(mask_array)
     return {"objects": objects}
 
-def mask_logits_to_2d_bool(mask_logits: Any) -> np.ndarray:
-    mask_array = (mask_logits > 0.0).detach().cpu().numpy()
-    mask_array = np.squeeze(mask_array).astype(bool)
-    if mask_array.ndim == 3 and mask_array.shape[0] == 1:
-        mask_array = np.squeeze(mask_array, axis=0)
-    if mask_array.ndim != 2:
-        raise ValueError(f"Expected 2D mask after squeeze, got shape {mask_array.shape}")
-    return mask_array
-
-def decode_override(mask: "InteractiveMaskRLE") -> np.ndarray:
+def decode_override(mask: InteractiveMaskRLE) -> np.ndarray:
     return np.repeat(np.arange(len(mask.counts)) % 2, mask.counts).astype(bool).reshape(mask.height, mask.width)
 
 
-def encode_override(frame_idx: int, obj_id: int, mask: np.ndarray) -> "InteractiveMaskRLE":
-    from schemas.video import InteractiveMaskRLE
+def encode_override(frame_idx: int, obj_id: int, mask: np.ndarray) -> InteractiveMaskRLE:
     flat = np.asarray(mask, dtype=bool).reshape(-1)
     boundaries = np.flatnonzero(flat[1:] != flat[:-1]) + 1
     counts = np.diff(np.concatenate(([0], boundaries, [flat.size]))).tolist()
@@ -59,25 +51,21 @@ def _overrides_dir(session_path: Path | None) -> Path:
     return session_path / "masks" / "overrides"
 
 
-def store_mask_override(session_path: Path | None, frame_idx: int, obj_id: int, mask: np.ndarray) -> "MaskOverride":
+def store_mask_override(session_path: Path | None, frame_idx: int, obj_id: int, mask: np.ndarray) -> MaskOverride:
     """Publish pixels as a new immutable artifact; the caller accepts its reference."""
-    from schemas.video import MaskOverride
-    from utils import write_mask_manifest
     artifact = f"{uuid4().hex}.json"
     write_mask_manifest(_overrides_dir(session_path) / artifact, encode_override(frame_idx, obj_id, mask).model_dump())
     return MaskOverride(frame_idx=frame_idx, obj_id=obj_id, artifact=artifact)
 
 
 @lru_cache(maxsize=256)
-def _read_override(path: Path) -> tuple["InteractiveMaskRLE", dict[str, Any]]:
+def _read_override(path: Path) -> tuple[InteractiveMaskRLE, dict[str, Any]]:
     # Artifacts are immutable, so the decoded RLE and its wire payload can be shared.
-    from schemas.video import InteractiveMaskRLE
-    from utils import load_mask_manifest
     rle = InteractiveMaskRLE.model_validate(load_mask_manifest(path))
     return rle, encode_live_mask_payload(decode_override(rle))
 
 
-def _load_override(ref: "MaskOverride", session_path: Path | None) -> tuple["InteractiveMaskRLE", dict[str, Any]]:
+def _load_override(ref: MaskOverride, session_path: Path | None) -> tuple[InteractiveMaskRLE, dict[str, Any]]:
     path = _overrides_dir(session_path) / ref.artifact
     try:
         # The cache trusts immutability, not existence; a reclaimed file must not stay readable.
@@ -91,17 +79,15 @@ def _load_override(ref: "MaskOverride", session_path: Path | None) -> tuple["Int
     return rle, payload
 
 
-def override_pixels(ref: "MaskOverride", session_path: Path | None) -> np.ndarray:
+def override_pixels(ref: MaskOverride, session_path: Path | None) -> np.ndarray:
     return decode_override(_load_override(ref, session_path)[0])
 
 
-def override_payload(ref: "MaskOverride", session_path: Path | None) -> dict[str, Any]:
+def override_payload(ref: MaskOverride, session_path: Path | None) -> dict[str, Any]:
     return _load_override(ref, session_path)[1]
 
 
 def retain_interactive_masks(session: SessionState, frame_idx: int, obj_ids: list[int], encoded_masks: list[dict]) -> None:
-    from sessions.metadata import current_masks_dir
-    from utils import write_mask_manifest
     masks_dir = current_masks_dir(session)
     if masks_dir is None:
         raise ValueError("No active session for interactive masks.")
@@ -128,8 +114,6 @@ def retain_empty_mask(session: SessionState, frame_idx: int, obj_id: int, shape:
     It is an empty result stamped with the object's current input revision, so it is newer than any propagated
     mask under it and the cleared mask cannot come back. The frame's other live results are kept.
     """
-    from sessions.metadata import current_masks_dir
-    from utils import write_mask_manifest
     masks_dir = current_masks_dir(session)
     if masks_dir is None:
         raise ValueError("No active session for interactive masks.")
@@ -158,12 +142,10 @@ def validate_interactive_mask_references(references: Any) -> dict[str, str]:
 @lru_cache(maxsize=1)
 def _read_interactive_mask_file(path: Path) -> dict[str, Any]:
     # UUID artifacts are immutable. Keep their cache separate from the propagation manifest.
-    from utils import load_mask_manifest
     return load_mask_manifest(path)
 
 
 def load_interactive_masks(session: SessionState, frame_idx: int) -> dict[str, Any]:
-    from sessions.metadata import current_masks_dir
     artifact_name = session.interactive_mask_files.get(str(frame_idx))
     if artifact_name is None:
         return {}
@@ -176,7 +158,6 @@ def load_interactive_masks(session: SessionState, frame_idx: int) -> dict[str, A
 
 
 def _manifest_frames(session: SessionState) -> dict[str, Any]:
-    from video.manifest_cache import load_cached_mask_manifest
     manifest_path = Path(session.mask_manifest_path) if session.mask_manifest_path else None
     if manifest_path and manifest_path.exists():
         return load_cached_mask_manifest(manifest_path).get("frames", {})
@@ -217,7 +198,6 @@ def effective_mask_data(session: SessionState, frame_idx: int) -> dict[str, Any]
 @lru_cache(maxsize=512)
 def _interactive_stamps(path: Path) -> dict[str, int]:
     """The input revision of each object's result in one interactive artifact (artifacts never change)."""
-    from utils import load_mask_manifest
     return {obj_id: int(entry["input_revision"]) for obj_id, entry in load_mask_manifest(path).items()}
 
 
@@ -228,7 +208,6 @@ def outdated_mask_ranges(session: SessionState) -> dict[str, list[list[int]]]:
     This is information only: those masks are still shown and still exported. It lets the editor mark the
     stretches the user may want to propagate again, without calling the masks wrong.
     """
-    from sessions.metadata import current_masks_dir
     objects = session.annotations.objects
     stamps: dict[int, dict[int, int]] = {}  # object -> frame -> input revision of the mask effective_mask_data shows
     for frame_key, frame in _manifest_frames(session).items():
@@ -266,9 +245,6 @@ def outdated_mask_ranges(session: SessionState) -> dict[str, list[list[int]]]:
 
 def mask_overlay_path(session: SessionState, frame_idx: int) -> Path:
     """The propagation overlay image for a frame, only while it still shows the frame's effective masks."""
-    from sessions.metadata import current_masks_dir
-    from sessions.paths import path_is_relative_to
-    from video.manifest_cache import load_cached_mask_manifest
     masks_dir = current_masks_dir(session)
     manifest_path = Path(session.mask_manifest_path) if session.mask_manifest_path else None
     if masks_dir is None or not manifest_path or not manifest_path.exists():
@@ -278,7 +254,7 @@ def mask_overlay_path(session: SessionState, frame_idx: int) -> Path:
     if (not frame.get("overlay_path") or effective["objects"] != frame.get("objects") or
             any(source != "manifest" for source in effective["sources"].values())):
         raise OperationError(404, "Mask overlay is obsolete")
-    file_path = (masks_dir / frame["overlay_path"]).resolve()
+    file_path = (masks_dir / manifest_relative_path(frame["overlay_path"])).resolve()
     if not path_is_relative_to(file_path, masks_dir.resolve()) or not file_path.is_file():
         raise OperationError(404, "Mask frame not available")
     return file_path

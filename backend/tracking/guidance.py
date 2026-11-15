@@ -4,6 +4,7 @@ from typing import Any, Optional
 
 import numpy as np
 
+from core.config import TRACKING_RESULT_PATH
 from core.state import SessionState
 from sessions.metadata import current_session_path
 from tracking.results import current_tracking_result
@@ -91,7 +92,7 @@ class TrackingGuidance:
 
 
 def _latest_tracking_result_path(session: SessionState, session_path: Path) -> Optional[Path]:
-    relative_path = session.session_metadata.get("latest_tracking_result_path")
+    relative_path = session.session_metadata.get(TRACKING_RESULT_PATH)
     if not relative_path:
         return None
     result_path = (session_path / str(relative_path)).resolve()

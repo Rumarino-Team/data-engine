@@ -4,6 +4,7 @@ Models forbid undeclared fields, so a service that adds or renames a field fails
 quietly changing what the frontend receives. `frontend-ng/.../backend-api.types.ts` declares the subset
 the frontend reads; `tests/test_api_contract.py` checks that every field it names exists here.
 """
+from enum import StrEnum
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict
@@ -155,7 +156,15 @@ class CloseResult(Response):
 # ---- jobs -------------------------------------------------------------------------------------------------------------
 
 JobStatus = Literal["queued", "running", "completed", "failed"]
-JobOperation = Literal["video_init", "mask_propagation", "prompt_tracking"]
+
+
+class JobOperation(StrEnum):
+    """The background jobs. A member equals its string, so it is what the API sends and what the frontend reads."""
+    VIDEO_INIT = "video_init"
+    MASK_PROPAGATION = "mask_propagation"
+    PROMPT_TRACKING = "prompt_tracking"
+
+
 TrackingMode = Literal["streaming", "in_memory"]
 
 

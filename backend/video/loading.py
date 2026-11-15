@@ -9,14 +9,14 @@ from core.errors import OperationError
 from core.jobs import JobHandle, utc_now_iso
 from core.runtime import cleanup_cuda_memory
 from core.state import SessionState
-from schemas.responses import InitResult
+from schemas.responses import InitResult, JobOperation
 from schemas.video import AnnotationPrecondition, DEFAULT_FRAME_LOADING, FrameLoading, InteractiveState, VideoInitStateRequest
 from sessions.artifacts import sweep_unreferenced_artifacts
 from sessions.checkpoints import content_fingerprint, saved_state
 from sessions.metadata import interactive_state_projection, load_session_metadata, persisted_session_fields
 from sessions.paths import resolve_input_path, resolve_saved_session_layout, validate_video_input_path
 from tracking.results import restored_tracking_result_payload
-from video.io import copy_frames_directory_to_session, create_active_session, discard_working_session, extract_video_to_session_frames, open_checkpoint_as_working_copy
+from video.io import copy_frames_directory_to_session, create_active_session, discard_working_session, extract_video_to_session_frames, needs_jpeg_conversion, open_checkpoint_as_working_copy
 from video.masks import override_pixels, validate_interactive_mask_references
 from video.prompts import create_masker_runtime
 from video.runtime import MaskerSettings, VideoMasker
@@ -123,31 +123,38 @@ def _extract_video_frames(video_path: Path, frames_dir: Path, job: JobHandle) ->
 
 
 def _link_frame_directory(source_dir: Path, frames_dir: Path, job: JobHandle) -> list[str]:
-    candidate_count = len([
+    candidates = [
         path
         for path in source_dir.iterdir()
         if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
-    ])
+    ]
+    candidate_count = len(candidates)
+    converted_count = sum(needs_jpeg_conversion(path) for path in candidates)
 
     def on_link_progress(current: int, total: int, source_path: Path) -> None:
         job.enter_stage(
-            "linking_frames", "Linking frame cache",
+            "linking_frames", "Preparing frame cache",
             progress=0.35 + (0.3 * (current / total)) if total else 0.65,
             current=current,
             total=total,
             frame_idx=max(0, current - 1),
-            message=f"Linked {current} of {total} frames",
+            message=f"Prepared {current} of {total} frames",
             append_history=current == 1 or current == total,
         )
 
     job.enter_stage(
-        "linking_frames", "Linking frame cache",
+        "linking_frames", "Preparing frame cache",
         progress=0.35,
         current=0,
         total=candidate_count,
-        message="Preparing session-local frame cache",
+        message=("Preparing session-local frame cache" if not converted_count else
+                 f"Preparing session-local frame cache ({converted_count} of {candidate_count} are PNG/BMP "
+                 "and will be converted to JPEG)"),
     )
-    return copy_frames_directory_to_session(source_dir, frames_dir, progress_callback=on_link_progress)
+    try:
+        return copy_frames_directory_to_session(source_dir, frames_dir, progress_callback=on_link_progress)
+    except ValueError as error:
+        raise OperationError(400, str(error)) from error
 
 
 def _initialize_predictor(
@@ -239,7 +246,7 @@ def start_video_init(ctx: AppContext, request: VideoInitStateRequest):
             raise OperationError(
                 409, "The open session has unsaved changes. Resume it and save it, or close it, before loading a video.")
         return ctx.jobs.start(
-            operation="video_init",
+            operation=JobOperation.VIDEO_INIT,
             stage="resolving_input",
             stage_label="Resolving input",
             message="Video initialization queued",

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 
 from core.errors import OperationError
-from app.dependencies import get_context
+from routers.dependencies import get_context
 from core.context import AppContext
 from schemas.responses import ClearResultResponse, CurrentJobResponse, JobResponse
 

@@ -2,6 +2,7 @@
 import os, re, shutil, uuid
 from pathlib import Path
 from typing import Any
+from core.config import TRACKING_RESULT_ID
 from core.errors import OperationError
 from core.state import SessionState
 
@@ -10,7 +11,7 @@ MAX_DISPLAY_NAME_LENGTH = 120
 def content_fingerprint(session: SessionState) -> tuple:
     """Identity of everything a checkpoint persists apart from editor preferences."""
     manifest = Path(session.mask_manifest_path).name if session.mask_manifest_path else None
-    return (session.annotations.revision, manifest, session.session_metadata.get("latest_tracking_result_id"))
+    return (session.annotations.revision, manifest, session.session_metadata.get(TRACKING_RESULT_ID))
 
 def saved_state(session: SessionState) -> dict[str, Any]:
     dirty = session.saved_fingerprint is None or session.saved_fingerprint != content_fingerprint(session)
@@ -41,7 +42,8 @@ def new_checkpoint_location(display_name: str, root: Path) -> tuple[str, Path]:
 def _link_or_copy(source: str, target: str) -> None:
     # Artifacts are written once and replaced atomically, so sharing storage cannot leak edits across copies.
     try:
-        os.link(source, target)
+        # Resolved first: on Linux a plain link() of a symlink links the symlink itself, not the file it names.
+        os.link(os.path.realpath(source), target)
     except OSError:
         shutil.copy2(source, target)
 
@@ -75,6 +77,19 @@ def link_files(source_root: Path, target_root: Path, relatives: set[str]) -> lis
         raise
     return added
 
+def _write_frames(source: Path, target: Path) -> None:
+    """Give a checkpoint its own files for every frame, so it does not depend on where the video came from.
+
+    A working copy of a frames folder links to the user's original files. Copying those links as links would
+    leave the checkpoint broken as soon as that folder is moved, deleted or opened on another machine, so each
+    link is followed: the checkpoint gets a hard link to the file itself (a copy across filesystems). Moving or
+    deleting the original no longer affects it; only rewriting the original's bytes in place would still show."""
+    try:
+        shutil.copytree(source, target, symlinks=False, copy_function=_link_or_copy)
+    except shutil.Error as error:
+        unreadable = error.args[0][0][0] if error.args and error.args[0] else source
+        raise OperationError(500, f"A frame of this session can no longer be read, so it cannot be saved: {unreadable}") from error
+
 def write_checkpoint(working: Path, target: Path, document: dict[str, Any], references: set[str],
                      known: set[str] | None) -> None:
     """Publish the working state to `target` without touching the previous checkpoint on failure.
@@ -99,7 +114,7 @@ def write_checkpoint(working: Path, target: Path, document: dict[str, Any], refe
     staging = target.parent / f".staging-{uuid.uuid4().hex}"
     try:
         (staging / "masks").mkdir(parents=True)
-        shutil.copytree(working / "frames", staging / "frames", symlinks=True, copy_function=_link_or_copy)
+        _write_frames(working / "frames", staging / "frames")
         link_files(working, staging, references)
         write_metadata_file(staging, document)
         os.replace(staging, target)

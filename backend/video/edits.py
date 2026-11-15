@@ -6,6 +6,7 @@ import numpy as np
 from core.context import AppContext
 from core.errors import OperationError
 from core.state import SessionState
+from sam2_video_masker import mask_logits_to_2d_bool
 from schemas.video import (
     AnnotationPrecondition,
     VideoAddMaskRequest,
@@ -16,7 +17,7 @@ from schemas.video import (
 from sessions.cache import reset_video_session_state
 from video.mask_encoding import encode_live_mask_payload
 from video.masks import (
-    as_2d_bool, effective_mask_data, mask_logits_to_2d_bool, retain_empty_mask, retain_interactive_masks, store_mask_override,
+    as_2d_bool, effective_mask_data, retain_empty_mask, retain_interactive_masks, store_mask_override,
 )
 from video.prompts import annotation_edit, record_prompt_event
 from video.responses import annotation_update

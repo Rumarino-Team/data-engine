@@ -4,6 +4,9 @@ from pathlib import Path
 from typing import Any
 
 from core.annotations import tracked_prompt_keys
+from core.config import (
+    TRACKING_DIR, TRACKING_RESULT_ID, TRACKING_RESULT_PATH, TRACKING_RESULT_SUMMARY, TRACKING_RESULT_UPDATED_AT,
+)
 from core.errors import OperationError
 from core.state import SessionState
 from core.jobs import utc_now_iso
@@ -22,7 +25,7 @@ def _validate_result_id(result_id: str) -> str:
 
 
 def _tracking_dir(session_path: Path) -> Path:
-    return session_path / "tracking"
+    return session_path / TRACKING_DIR
 
 
 def _tracking_result_path(session_path: Path, result_id: str) -> Path:
@@ -80,10 +83,10 @@ def save_prompt_tracking_result(
         "streaming_frame_threshold": int(streaming_frame_threshold),
     }
     session.session_metadata.update({
-        "latest_tracking_result_id": result_id,
-        "latest_tracking_result_path": f"tracking/{result_id}.json",
-        "latest_tracking_result_updated_at": created_at,
-        "latest_tracking_result_summary": summary,
+        TRACKING_RESULT_ID: result_id,
+        TRACKING_RESULT_PATH: f"{TRACKING_DIR}/{result_id}.json",
+        TRACKING_RESULT_UPDATED_AT: created_at,
+        TRACKING_RESULT_SUMMARY: summary,
     })
     # The previous result file is deleted once the new one is named.
     reclaim_superseded_artifacts(session)
@@ -96,7 +99,7 @@ def load_prompt_tracking_result(session: SessionState, result_id: str) -> dict[s
     if session_path is None:
         raise OperationError(404, "No active session.")
 
-    if normalized_result_id != session.session_metadata.get("latest_tracking_result_id"):
+    if normalized_result_id != session.session_metadata.get(TRACKING_RESULT_ID):
         raise OperationError(404, "Tracking result is not published for this session.")
     result_path = _tracking_result_path(session_path, normalized_result_id)
     try:
@@ -132,8 +135,8 @@ def current_tracking_result(session: SessionState, result: dict[str, Any]) -> di
 
 
 def tracking_validity(session: SessionState) -> dict[str, Any] | None:
-    result_id = session.session_metadata.get("latest_tracking_result_id")
-    summary = session.session_metadata.get("latest_tracking_result_summary", {})
+    result_id = session.session_metadata.get(TRACKING_RESULT_ID)
+    summary = session.session_metadata.get(TRACKING_RESULT_SUMMARY, {})
     if (not result_id or summary.get("session_id") != session.active_session_id or
             summary.get("num_frames") != len(session.video_frame_files)):
         return None
@@ -143,8 +146,8 @@ def tracking_validity(session: SessionState) -> dict[str, Any] | None:
 
 
 def restored_tracking_result_payload(session: SessionState, session_path: Path, session_metadata: dict[str, Any]) -> dict[str, Any] | None:
-    result_id = session_metadata.get("latest_tracking_result_id")
-    relative_path = session_metadata.get("latest_tracking_result_path")
+    result_id = session_metadata.get(TRACKING_RESULT_ID)
+    relative_path = session_metadata.get(TRACKING_RESULT_PATH)
     if not result_id or not relative_path:
         return None
     try:
@@ -167,7 +170,7 @@ def restored_tracking_result_payload(session: SessionState, session_path: Path, 
     except (OperationError, OSError, ValueError, KeyError):
         return None
 
-    summary = session_metadata.get("latest_tracking_result_summary")
+    summary = session_metadata.get(TRACKING_RESULT_SUMMARY)
     return {
         "result_id": normalized_result_id,
         "summary": summary if isinstance(summary, dict) else {},

@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Callable, Optional
 import cv2
 import numpy as np
-from core.config import IMAGE_EXTENSIONS, SESSION_CACHE_ROOT
+from core.config import IMAGE_EXTENSIONS, JPEG_EXTENSIONS, JPEG_QUALITY, SESSION_CACHE_ROOT
 from core.state import SessionState
 from sessions.checkpoints import clone_session_directory
 
@@ -65,11 +65,29 @@ def open_checkpoint_as_working_copy(checkpoint_dir: Path, *, session: SessionSta
     session.active_session_id = session_id
     return session_dir
 
+def needs_jpeg_conversion(path: Path) -> bool:
+    return path.suffix.lower() not in JPEG_EXTENSIONS
+
+def convert_image_to_jpeg(source_path: Path, target_path: Path) -> None:
+    """Write `source_path` (PNG, BMP) as a JPEG, the only format SAM2 reads.
+
+    Decoded to 8-bit color, so an alpha channel is dropped (not blended) and 16-bit or grayscale images become
+    8-bit RGB. JPEG is lossy; the quality matches the frames extracted from a video file."""
+    image = cv2.imread(str(source_path), cv2.IMREAD_COLOR)
+    if image is None:
+        raise ValueError(f"Unable to read image: {source_path}")
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    if not cv2.imwrite(str(target_path), image, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY]):
+        raise RuntimeError(f"Failed to write converted frame: {target_path}")
+
 def copy_frames_directory_to_session(
     source_dir: Path,
     frames_dir: Path,
     progress_callback: Optional[Callable[[int, int, Path], None]] = None,
 ) -> list[str]:
+    """Make the folder's images the working copy's frames, numbered in file-name order.
+
+    JPEG files are linked (or copied) as they are; every other format is converted to JPEG."""
     source_frames = sorted(
         frame_path
         for frame_path in source_dir.iterdir()
@@ -78,9 +96,12 @@ def copy_frames_directory_to_session(
     total = len(source_frames)
     frame_names: list[str] = []
     for index, source_path in enumerate(source_frames, start=1):
-        target_name = f"{index - 1:05d}{source_path.suffix.lower()}"
-        target_path = frames_dir / target_name
-        link_or_copy_file(source_path, target_path)
+        if needs_jpeg_conversion(source_path):
+            target_name = f"{index - 1:05d}.jpg"
+            convert_image_to_jpeg(source_path, frames_dir / target_name)
+        else:
+            target_name = f"{index - 1:05d}{source_path.suffix.lower()}"
+            link_or_copy_file(source_path, frames_dir / target_name)
         frame_names.append(target_name)
         if progress_callback is not None:
             progress_callback(index, total, source_path)
@@ -107,7 +128,7 @@ def extract_video_to_session_frames(
                 break
             frame_name = f"{frame_idx:05d}.jpg"
             output_path = frames_dir / frame_name
-            if not cv2.imwrite(str(output_path), frame):
+            if not cv2.imwrite(str(output_path), frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY]):
                 raise RuntimeError(f"Failed to write extracted frame: {output_path}")
             frame_names.append(frame_name)
             frame_idx += 1

@@ -3,7 +3,8 @@ import copy
 
 from core.context import AppContext
 from core.errors import OperationError
-from core.history import TRACKING_METADATA_KEYS, HistoryState, tracking_metadata
+from core.config import TRACKING_METADATA_KEYS
+from core.history import HistoryState, tracking_metadata
 from core.state import SessionState
 from schemas.video import AnnotationPrecondition
 from video.prompts import annotation_edit, create_masker_runtime

@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends
 
-from app.dependencies import get_context
+from routers.dependencies import get_context
 from core.context import AppContext
 from schemas.responses import HealthResponse, RootResponse, StatusResponse
 

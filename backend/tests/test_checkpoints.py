@@ -203,6 +203,33 @@ class CheckpointTests(SessionStateTestCase):
         self.assertEqual(self.files(checkpoint), ["frames/00000.jpg", f"masks/interactive/{kept}", "session.json"])
         self.assertTrue((checkpoint / "masks").is_dir())
 
+    def link_frame_to_an_original(self) -> Path:
+        """Make the working copy's frame a link to a file outside the app, as a loaded frames folder is."""
+        original = self.temp_dir() / "originals" / "00000.jpg"
+        original.parent.mkdir()
+        original.write_bytes(b"original")
+        frame = self.working / "frames" / "00000.jpg"
+        frame.unlink()
+        frame.symlink_to(original)
+        return original
+
+    def test_a_checkpoint_holds_real_frame_files_that_outlive_the_originals(self):
+        original = self.link_frame_to_an_original()
+        checkpoint = Path(self.save(name="Bedroom").json()["saved_path"])
+        saved = checkpoint / "frames" / "00000.jpg"
+        self.assertFalse(saved.is_symlink())
+        shutil.rmtree(original.parent)
+        self.assertEqual(saved.read_bytes(), b"original")
+        # Opening it later works from the checkpoint alone.
+        self.assertEqual(self.open_checkpoint(checkpoint)["num_frames"], 1)
+
+    def test_saving_fails_cleanly_when_an_original_frame_is_gone(self):
+        self.link_frame_to_an_original().unlink()
+        response = self.save(name="Bedroom")
+        self.assertEqual(response.status_code, 500)
+        self.assertIn("00000.jpg", response.json()["detail"])
+        self.assert_nothing_saved()
+
     def test_resave_copies_only_new_files_and_deletes_superseded_ones(self):
         first = self.commit_result()
         checkpoint = Path(self.save(name="Bedroom").json()["saved_path"])

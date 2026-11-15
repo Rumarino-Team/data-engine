@@ -247,6 +247,20 @@ class VideoEditTests(SessionStateTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.content, b"overlay")
 
+    def test_overlay_frame_is_served_from_a_manifest_written_with_backslashes(self):
+        # A session saved on Windows names its overlay "overlays_a\frame_00000_masks.png".
+        from utils import load_mask_manifest, write_mask_manifest
+        self.seed_manifest()
+        masks = self.session / "masks"
+        (masks / "overlays_a").mkdir()
+        (masks / "overlays_a" / "frame_00000_masks.png").write_bytes(b"nested overlay")
+        manifest = load_mask_manifest(masks / "manifest.json")
+        manifest["frames"]["0"]["overlay_path"] = "overlays_a\\frame_00000_masks.png"
+        write_mask_manifest(masks / "manifest.json", manifest)
+        response = self.client.get("/video/mask_frame/0")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"nested overlay")
+
     def test_empty_override_wins_and_replays_without_frontend_cache(self):
         self.seed_manifest()
         response = self.add_override()
