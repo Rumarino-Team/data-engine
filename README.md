@@ -26,8 +26,8 @@ Add the `--host xxx.xxx.xxx.xxx` and/or `--port xxxx` args to change its ip and 
 Mainly for developing the frontend, for production its recommended to use the Tauri Desktop env instead
 
 1. Change into `frontend-ng/data-engine`
-2. Install dependencies with `bun install` or `npm install`
-3. Start the frontend with `bun run start` or `npm run start`
+2. Install dependencies with `npm install`
+3. Start the frontend with `npm run start`
 4. Keep the Python backend running separately
 
 The frontend defaults to `http://127.0.0.1:8000` for backend requests and also exposes a compact API URL override in the top bar.
@@ -36,11 +36,11 @@ The frontend defaults to `http://127.0.0.1:8000` for backend requests and also e
 Please install Rust (Cargo) before proceeding with the Tauri build.
 
 1. Change into `frontend-ng/data-engine`
-2. Install JavaScript dependencies with `bun install` or `npm install`
+2. Install JavaScript dependencies with `npm install`
 3. Install the Rust toolchain and Tauri prerequisites for your OS
 4. Start the Python backend separately
-5. Run `bun run tauri:dev` or `npm run tauri:dev:npm` for the desktop dev workflow
-6. Run `bun run tauri:build` or `npm run tauri:build:npm` to produce a packaged desktop build
+5. Run `npm run tauri:dev` for the desktop dev workflow
+6. Run `npm run tauri:build` to produce a packaged desktop build
 
 The Tauri app only wraps the Angular frontend. It does not bundle or launch the Python backend.
 

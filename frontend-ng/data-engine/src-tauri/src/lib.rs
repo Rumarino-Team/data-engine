@@ -5,7 +5,7 @@ use std::env;
 ///   none           no workaround; fastest path, may crash or show a blank window on NVIDIA + Wayland
 ///   explicit-sync  only `__NV_DISABLE_EXPLICIT_SYNC=1`; reported to avoid Error 71 without the speed cost
 ///   both           both workarounds
-/// Example: `DATA_ENGINE_WEBKIT_MODE=explicit-sync bun run tauri:dev`
+/// Example: `DATA_ENGINE_WEBKIT_MODE=explicit-sync npm run tauri:dev`
 #[cfg(target_os = "linux")]
 fn apply_webkit_workarounds() {
     let mode = env::var("DATA_ENGINE_WEBKIT_MODE").unwrap_or_else(|_| "dmabuf".into());

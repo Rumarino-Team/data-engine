@@ -18,10 +18,9 @@ The frontend expects the FastAPI backend to be running separately and defaults t
 
 The same Angular app can also run as a Tauri desktop application.
 
-1. Install dependencies with either Bun or npm:
+1. Install dependencies:
 
 ```bash
-bun install
 npm install
 ```
 
@@ -30,15 +29,13 @@ npm install
 3. Start the desktop app in development:
 
 ```bash
-bun run tauri:dev
-npm run tauri:dev:npm
+npm run tauri:dev
 ```
 
 4. Build a packaged desktop app:
 
 ```bash
-bun run tauri:build
-npm run tauri:build:npm
+npm run tauri:build
 ```
 
 The desktop build adds native file and directory pickers, but it still talks to the same HTTP backend API.

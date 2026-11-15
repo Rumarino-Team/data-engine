@@ -10,8 +10,6 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "tauri:dev:npm": "tauri dev -c src-tauri/tauri.npm.conf.json",
-    "tauri:build:npm": "tauri build -c src-tauri/tauri.npm.conf.json",
     "lint": "ng lint",
     "format:check": "prettier --write \"src/**/*.{ts,html,css}\"",
     "typecheck": "tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.spec.json"
