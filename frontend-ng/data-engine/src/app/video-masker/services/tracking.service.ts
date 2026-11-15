@@ -46,6 +46,7 @@ export class TrackingService {
       return;
     }
     if (response.saved_state !== undefined) this.store.savedState.set(response.saved_state);
+    if (response.history !== undefined) this.store.history.set(response.history);
     // Fetching the finished result is part of the operation, so edits wait for it.
     this.store.isLoading.set(true);
     let loaded: boolean;

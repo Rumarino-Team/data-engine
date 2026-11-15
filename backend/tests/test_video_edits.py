@@ -341,15 +341,19 @@ class VideoEditTests(SessionStateTestCase):
         self.assertIsNone(state.mask_manifest_path)
         self.assertEqual(self.client.get("/video/mask_data/0").json()["objects"], {})
 
-    def test_replaced_and_cleared_overrides_reclaim_their_artifacts(self):
+    def test_replaced_and_cleared_overrides_are_kept_while_undo_can_bring_them_back_and_then_reclaimed(self):
+        state.history.limit = 1  # undo can bring back only the last step
         self.add_override(True)
         first = state.annotations.mask_overrides[0].artifact
+        self.assertEqual(self.override_files(), [first])
         self.add_override(False)
         second = state.annotations.mask_overrides[0].artifact
-        self.assertEqual(self.override_files(), [second])
+        # The replaced file is what undoing the last step restores; the accepted state (a checkpoint) never names it.
+        self.assertEqual(self.override_files(), sorted([first, second]))
         self.assertNotIn(first, json.dumps(self.metadata()))
         self.client.post("/video/clear_all_prompts_in_frame", params={"frame_idx": 0, "obj_id": 1})
-        self.assertEqual(self.override_files(), [])
+        # Undo now reaches back only to the override that was just cleared; the one before it is gone.
+        self.assertEqual(self.override_files(), [second])
 
     # --- failing safely ----------------------------------------------------------------------------------
 

@@ -79,6 +79,14 @@ class MaskData(Response):
 
 # ---- video routes -----------------------------------------------------------------------------------------------------
 
+class HistoryStatus(Response):
+    """How many accepted changes can be undone and redone, and what the next of each is."""
+    undo: int
+    redo: int
+    next_undo: Optional[str]
+    next_redo: Optional[str]
+
+
 class AnnotationUpdate(Response):
     """Every mutation answers with what changed since the revision the client sent."""
     session_id: Optional[str]
@@ -87,6 +95,11 @@ class AnnotationUpdate(Response):
     saved_state: Optional[SavedState]
     # Per object, the frame runs (first, last) whose shown mask predates the object's latest point change.
     outdated_masks: dict[str, list[tuple[int, int]]]
+    history: HistoryStatus
+
+
+class HistoryResponse(AnnotationUpdate):
+    message: str
 
 
 class ResetResponse(AnnotationUpdate):
@@ -120,6 +133,7 @@ class VideoInfoResponse(Response):
     tracking_validity: Optional[TrackingValidity]
     saved_state: Optional[SavedState]
     outdated_masks: dict[str, list[tuple[int, int]]]
+    history: HistoryStatus
     predictor_ready: bool
     num_frames: int
     frame_files: list[str]
@@ -263,6 +277,7 @@ class TrackingJobResult(Response):
     streaming_frame_threshold: int
     tracking_result_id: str
     saved_state: SavedState
+    history: HistoryStatus
 
 
 # ---- tracking routes --------------------------------------------------------------------------------------------------

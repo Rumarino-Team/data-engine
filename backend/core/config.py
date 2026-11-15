@@ -15,5 +15,7 @@ SAM2_MODEL_ID = "facebook/sam2.1-hiera-large"
 SAM2_MODEL_REVISION = "665f8e2ad61cf5f53d65644ff27c8ee525124610"
 COTRACKER_REPO = "facebookresearch/co-tracker"
 COTRACKER_REVISION = "82e02e8029753ad4ef13cf06be7f4fc5facdda4d"
+# How many accepted changes can be undone. The history only lives in the backend's memory.
+UNDO_LIMIT = int(os.getenv("UNDO_HISTORY_LIMIT", "10"))
 DEFAULT_PROMPT_TRACK_BATCH_SIZE = int(os.getenv("TRACK_PROMPT_BATCH_SIZE", "32"))
 DEFAULT_STREAMING_TRACK_FRAME_THRESHOLD = int(os.getenv("TRACK_STREAMING_FRAME_THRESHOLD", "256"))

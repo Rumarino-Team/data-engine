@@ -29,6 +29,7 @@ import { ObjectOperationsService } from '../services/object-operations.service';
 import { PointEditingService } from '../services/point-editing.service';
 import { SessionService } from '../services/session.service';
 import { ToastService } from '../services/toast.service';
+import { HistoryService } from '../services/history.service';
 import { TrackingService } from '../services/tracking.service';
 import { Point, VideoMaskerStateStore } from '../services/video-masker-state.store';
 
@@ -230,6 +231,8 @@ export function createBackendMocks() {
     setApiUrl: vi.fn((value: string) => value),
     resetApiUrl: vi.fn(() => 'http://127.0.0.1:8000'),
     saveVideoSession: vi.fn(),
+    undoVideoChange: vi.fn(),
+    redoVideoChange: vi.fn(),
     closeVideoSession: vi.fn(() => of({ message: 'Session closed', closed_session_id: 'session-1' })),
     createObject:
       vi.fn<(precondition: AnnotationPrecondition) => Observable<ObjectCreationResponse>>(),
@@ -395,6 +398,7 @@ export function createWorkflowFixture() {
       ConfirmService,
       EditorJobService,
       FramePipelineService,
+      HistoryService,
       MaskPropagationService,
       ObjectOperationsService,
       PointEditingService,
@@ -419,6 +423,7 @@ export function createWorkflowFixture() {
     editor,
     objectOperations: TestBed.inject(ObjectOperationsService),
     confirm: TestBed.inject(ConfirmService),
+    history: TestBed.inject(HistoryService),
     leave: TestBed.inject(SessionLeaveService),
     connection: TestBed.inject(BackendConnectionService),
   };

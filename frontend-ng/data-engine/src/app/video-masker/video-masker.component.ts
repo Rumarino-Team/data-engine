@@ -27,6 +27,7 @@ import { PointEditingService } from './services/point-editing.service';
 import { MaskPropagationService } from './services/mask-propagation.service';
 import { TrackingService } from './services/tracking.service';
 import { ToastService } from './services/toast.service';
+import { HistoryService } from './services/history.service';
 import { EditorJobService } from './services/editor-job.service';
 import { DesktopBridgeService } from '../services/desktop-bridge.service';
 import { LoadSourceMode } from './state/video-masker-ui.types';
@@ -36,6 +37,7 @@ import {
   frameLoadingHint,
   isFrameLoadingMode,
   loadModeHint,
+  historyButtonTitle,
   loadPathPlaceholder,
   outdatedTimelineSegments,
 } from './video-masker.util';
@@ -73,6 +75,7 @@ import {
     ObjectOperationsService,
     ConfirmService,
     SessionLeaveService,
+    HistoryService,
   ],
 })
 export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
@@ -92,6 +95,7 @@ export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
   private readonly desktopBridge = inject(DesktopBridgeService);
   readonly framePipeline = inject(FramePipelineService);
   readonly viewport = inject(CanvasViewportService);
+  readonly changes = inject(HistoryService);
   /** Stretches of the timeline whose masks predate the latest point change, merged across objects. */
   readonly outdatedSegments = computed(() =>
     outdatedTimelineSegments(
@@ -129,6 +133,35 @@ export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
 
   ngOnDestroy(): void {
     this.framePipeline.detach();
+  }
+
+  undoTitle(): string {
+    return historyButtonTitle('undo', this.store.history().next_undo);
+  }
+
+  redoTitle(): string {
+    return historyButtonTitle('redo', this.store.history().next_redo);
+  }
+
+  /** Ctrl/Cmd+Z undoes, Ctrl/Cmd+Shift+Z and Ctrl/Cmd+Y redo, except while typing in a field. */
+  @HostListener('window:keydown', ['$event'])
+  onHistoryShortcut(event: KeyboardEvent): void {
+    if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+    const key = event.key.toLowerCase();
+    const redo = (key === 'z' && event.shiftKey) || (key === 'y' && !event.shiftKey);
+    const undo = key === 'z' && !event.shiftKey;
+    if (!redo && !undo) return;
+    const target = event.target as HTMLElement | null;
+    const typing =
+      !!target &&
+      (target.isContentEditable ||
+        target.tagName === 'TEXTAREA' ||
+        target.tagName === 'SELECT' ||
+        (target.tagName === 'INPUT' &&
+          !['range', 'checkbox', 'radio', 'button'].includes((target as HTMLInputElement).type)));
+    if (typing) return;
+    event.preventDefault();
+    void (undo ? this.changes.undo() : this.changes.redo());
   }
 
   /** Closing or reloading the window would drop unsaved working changes. */

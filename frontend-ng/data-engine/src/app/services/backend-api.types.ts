@@ -157,12 +157,21 @@ export interface TrackingValidity {
   point_ids: string[];
 }
 
+/** How many accepted changes can be undone and redone, and what the next of each is. */
+export interface HistoryStatus {
+  undo: number;
+  redo: number;
+  next_undo: string | null;
+  next_redo: string | null;
+}
+
 /** Per object id, the frame runs (first, last) whose shown mask predates the object's latest point change. */
 export type OutdatedMasks = Record<string, [number, number][]>;
 
 export interface AnnotationSnapshot {
   tracking_validity?: TrackingValidity | null;
   outdated_masks?: OutdatedMasks;
+  history?: HistoryStatus;
   saved_state?: SavedState | null;
   mask_data?: VideoMaskDataResponse;
   session_id: string | null;
@@ -173,10 +182,16 @@ export interface AnnotationSnapshot {
 export interface AnnotationUpdate {
   tracking_validity?: TrackingValidity | null;
   outdated_masks?: OutdatedMasks;
+  history?: HistoryStatus;
   saved_state?: SavedState | null;
   mask_data?: VideoMaskDataResponse;
   session_id: string | null;
   annotation_delta: AnnotationDelta;
+}
+
+/** Answer to undo and redo: what changed, like any edit, plus what was undone or redone. */
+export interface VideoHistoryResponse extends AnnotationUpdate {
+  message: string;
 }
 
 export interface ObjectCreationResponse extends AnnotationUpdate {
@@ -260,6 +275,7 @@ export interface TrackPromptPointsJobResponse {
   streaming_frame_threshold?: number;
   tracking_result_id: string;
   saved_state?: SavedState | null;
+  history?: HistoryStatus;
 }
 
 export interface TrackPromptPointsResult {

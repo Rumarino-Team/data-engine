@@ -3,6 +3,7 @@ import {
   ApiHealthStatus,
   BackendJob,
   FrameLoadingMode,
+  HistoryStatus,
   OutdatedMasks,
   TrackPromptPointMetadata,
   VideoAnnotations,
@@ -14,6 +15,8 @@ import {
 import { LoadSourceMode, TrackingOverlayStyle } from '../state/video-masker-ui.types';
 
 import { ToastService } from './toast.service';
+
+export const NO_HISTORY: HistoryStatus = { undo: 0, redo: 0, next_undo: null, next_redo: null };
 
 /** A session the backend still holds that this tab is not showing (after a reload, a crash or a new tab). */
 export interface OpenBackendSession {
@@ -53,6 +56,8 @@ export class VideoMaskerStateStore {
   openBackendSession = signal<OpenBackendSession | null>(null);
   /** Stretches whose shown masks were made before the latest point change: still shown, still exported. */
   outdatedMasks = signal<OutdatedMasks>({});
+  /** What undo and redo can do right now; the backend keeps the history and says so in its answers. */
+  history = signal<HistoryStatus>(NO_HISTORY);
   numFrames = signal<number>(0);
   targetFrameIdx = signal<number>(0);
   displayedFrameIdx = signal<number>(-1);
@@ -102,6 +107,7 @@ export class VideoMaskerStateStore {
     this.acceptAnnotations(info.session_id, structuredClone(info.annotations));
     this.applyTrackingValidity(info.tracking_validity);
     this.outdatedMasks.set(structuredClone(info.outdated_masks ?? {}));
+    this.history.set(info.history ?? NO_HISTORY);
     if (info.saved_state !== undefined || replaceSession)
       this.savedState.set(info.saved_state ?? null);
     return true;
@@ -150,6 +156,7 @@ export class VideoMaskerStateStore {
     });
     this.applyTrackingValidity(update.tracking_validity);
     if (update.outdated_masks !== undefined) this.outdatedMasks.set(structuredClone(update.outdated_masks));
+    if (update.history !== undefined) this.history.set(update.history);
     if (update.saved_state !== undefined) this.savedState.set(update.saved_state);
     return true;
   }
@@ -167,11 +174,14 @@ export class VideoMaskerStateStore {
 
   private applyTrackingValidity(validity?: TrackingValidity | null): void {
     const ids = new Set(validity?.point_ids ?? []);
-    this.trackedPoints.update((points) =>
-      validity?.result_id === this.trackingResultId
-        ? points.filter((point) => ids.has(point.point_id))
-        : [],
-    );
+    if (validity?.result_id !== this.trackingResultId) {
+      // The result on screen is not the one the session holds (or it holds none): nothing of it stays, and the
+      // id goes with it, so a later answer that names the same result again loads it instead of assuming it shows.
+      this.trackingResultId = null;
+      this.trackedPoints.set([]);
+      return;
+    }
+    this.trackedPoints.update((points) => points.filter((point) => ids.has(point.point_id)));
   }
 
   invalidateTracking(): void {
@@ -235,6 +245,7 @@ export class VideoMaskerStateStore {
     this.annotations.set(null);
     this.savedState.set(null);
     this.outdatedMasks.set({});
+    this.history.set(NO_HISTORY);
     this.selectedObjectId.set(null);
     this.numFrames.set(0);
     this.targetFrameIdx.set(0);

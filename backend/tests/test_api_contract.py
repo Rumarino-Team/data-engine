@@ -53,6 +53,8 @@ CORRESPONDING_MODELS = {
     "VideoAddPointsResponse": [responses.PointsResponse],
     "VideoInitStateResponse": [responses.InitResult],
     "VideoCloseResponse": [responses.CloseResult],
+    "HistoryStatus": [responses.HistoryStatus],
+    "VideoHistoryResponse": [responses.HistoryResponse],
     "VideoObject": [VideoObject],
     "MaskOverride": [MaskOverride],
     "VideoPrompt": [VideoPrompt],

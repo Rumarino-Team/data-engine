@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 def reset_video_state(ctx: AppContext, precondition: AnnotationPrecondition):
     with ctx.edit(precondition) as session:
         masker = session.require_masker()
-        with annotation_edit(session):
+        with annotation_edit(session, label="Clear all masks"):
             masker.reset_state()
             reset_video_session_state(session)
             # Reset publishes empty references and invalidates input revisions.
@@ -73,7 +73,7 @@ def add_new_points_or_box(ctx: AppContext, request: VideoAddPointsOrBoxRequest, 
         if request.obj_id not in session.annotations.objects:
             raise OperationError(404, "Prompt object does not exist.")
 
-        with annotation_edit(session):
+        with annotation_edit(session, label="Add points"):
             if any(mask.frame_idx == request.frame_idx and mask.obj_id == request.obj_id
                    for mask in session.annotations.mask_overrides):
                 masker.clear_all_prompts_in_frame(request.frame_idx, request.obj_id)
@@ -128,7 +128,7 @@ def add_new_mask(ctx: AppContext, request: VideoAddMaskRequest, precondition: An
         mask = np.asarray(request.mask, dtype=bool)
         if mask.shape != _frame_shape(session, request.frame_idx):
             raise OperationError(400, "Mask dimensions must match the video frame.")
-        with annotation_edit(session):
+        with annotation_edit(session, label="Draw mask"):
             masker.clear_all_prompts_in_frame(request.frame_idx, request.obj_id)
             masker.add_new_mask(frame_idx=request.frame_idx, obj_id=request.obj_id, mask=mask)
             session.annotations.set_mask(store_mask_override(session.active_session_dir, request.frame_idx, request.obj_id, mask))
@@ -142,7 +142,7 @@ def clear_all_prompts_in_frame(ctx: AppContext, frame_idx: int, obj_id: int, pre
         session.require_frame(frame_idx)
         if obj_id not in session.annotations.objects:
             raise OperationError(404, "Prompt object does not exist.")
-        with annotation_edit(session):
+        with annotation_edit(session, label="Clear points"):
             shown = effective_mask_data(session, frame_idx)["objects"].get(str(obj_id))
             revision = session.annotations.revision
             masker.clear_all_prompts_in_frame(frame_idx, obj_id)
@@ -160,14 +160,14 @@ def remove_object(ctx: AppContext, obj_id: int, precondition: AnnotationPrecondi
         masker = session.require_masker()
         if obj_id not in session.annotations.objects:
             raise OperationError(404, "Object does not exist.")
-        with annotation_edit(session):
+        with annotation_edit(session, label="Remove object"):
             masker.remove_object(obj_id)
             session.annotations.remove_object(obj_id)
         return annotation_update(session, precondition)
 
 def create_object(ctx: AppContext, precondition: AnnotationPrecondition):
     with ctx.edit(precondition) as session:
-        with annotation_edit(session, restore_runtime=False):
+        with annotation_edit(session, label="Add object", restore_runtime=False):
             obj = session.annotations.create_object()
         return {**annotation_update(session, precondition), "created_object_id": obj.id}
 
@@ -177,6 +177,6 @@ def update_object(ctx: AppContext, obj_id: int, request: VideoObjectUpdate, prec
         if obj_id not in session.annotations.objects:
             raise OperationError(404, "Object does not exist.")
         obj = VideoObject(id=obj_id, **request.model_dump()).model_dump()
-        with annotation_edit(session, restore_runtime=False):
+        with annotation_edit(session, label="Edit object", restore_runtime=False):
             session.annotations.upsert_object(obj)
         return annotation_update(session, precondition)

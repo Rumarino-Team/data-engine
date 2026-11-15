@@ -196,6 +196,25 @@
         >
           Masks only
         </button>
+        <button
+          type="button"
+          class="history-button"
+          (click)="changes.undo()"
+          [disabled]="!changes.canUndo()"
+          [title]="undoTitle()"
+          aria-label="Undo"
+        >
+          Undo
+        </button>
+        <button
+          type="button"
+          (click)="changes.redo()"
+          [disabled]="!changes.canRedo()"
+          [title]="redoTitle()"
+          aria-label="Redo"
+        >
+          Redo
+        </button>
         <span id="canvas-help">Scroll to zoom · Space + drag to pan</span>
       </div>
       <div

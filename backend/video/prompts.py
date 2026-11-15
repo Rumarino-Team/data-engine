@@ -1,7 +1,9 @@
 from contextlib import contextmanager
+from typing import Optional
 from sessions.artifacts import reclaim_superseded_artifacts, sweep_unreferenced_artifacts
 from video.masks import override_pixels
 from core.errors import OperationError
+from core.history import HistoryState, tracking_metadata
 import sam2_video_masker as svm
 from core.runtime import cleanup_cuda_memory
 from core.state import SessionState
@@ -40,13 +42,20 @@ def create_masker_runtime(session: SessionState) -> VideoMaskerRuntime:
     )
 
 
+def changed_since(session: SessionState, before: HistoryState) -> bool:
+    """Whether accepted inputs or click results differ from `before`; an edit that changed nothing is no step."""
+    return (session.annotations.revision != before.annotations.revision
+            or session.interactive_mask_files != before.live_masks)
+
+
 @contextmanager
-def annotation_edit(session: SessionState, *, restore_runtime: bool = True):
+def annotation_edit(session: SessionState, *, label: Optional[str] = None, restore_runtime: bool = True):
     """Stage accepted inputs and restore them when an edit fails.
 
     Caller holds `ctx.edit()`. The edit is accepted when the block exits without error, and files its
     new state no longer names are deleted then.
-    Set restore_runtime=False for changes that never touch the predictor.
+    With a label, an accepted edit that changed something becomes an undo step. Set restore_runtime=False
+    for changes that never touch the predictor.
     """
     # Frame entries are replaced, never mutated by foreground edits.
     previous_manifest = session.mask_manifest_path
@@ -54,9 +63,14 @@ def annotation_edit(session: SessionState, *, restore_runtime: bool = True):
     session.interactive_mask_files = dict(previous_masks)
     previous = session.annotations
     session.annotations = previous.model_copy(deep=True)
+    # `previous` is no longer touched by the edit, so the step can keep it as it is.
+    before = (HistoryState(label, previous, previous_masks, tracking_metadata(session.session_metadata))
+              if label is not None else None)
+    session.history.pending = before
     try:
         yield
     except Exception:
+        session.history.pending = None
         session.annotations = previous
         session.interactive_mask_files = previous_masks
         session.mask_manifest_path = previous_manifest
@@ -72,5 +86,9 @@ def annotation_edit(session: SessionState, *, restore_runtime: bool = True):
             ) from recovery_error
         raise
     else:
+        session.history.pending = None
+        if before is not None and changed_since(session, before):
+            # Recorded before reclaiming, so the files the step can bring back are kept.
+            session.history.record(before)
         # Files become garbage only after the accepted state stops naming them.
         reclaim_superseded_artifacts(session)

@@ -38,6 +38,27 @@ describe('tracking workflows', () => {
     expect(editor.store.isInteractionBusy()).toBe(false);
   });
 
+  it('takes the undo availability from a finished tracking run, which is a step', async () => {
+    vi.spyOn(TestBed.inject(VideoJobsService), 'run').mockResolvedValue({
+      result: {
+        tracking_result_id: 'tracks-1',
+        history: { undo: 2, redo: 0, next_undo: 'Track points', next_redo: null },
+      },
+      completedJobId: null,
+    });
+    backendMock.getTrackingResult.mockReturnValue(
+      of({
+        result: {
+          points: [{ point_id: 'p1', obj_id: 1, source_frame_idx: 0, source_x: 1, source_y: 2 }],
+          tracks: [[[1, 2]]],
+          visibility: [[true]],
+        },
+      }),
+    );
+    await editor.tracking.runTracking();
+    expect(editor.store.history()).toEqual({ undo: 2, redo: 0, next_undo: 'Track points', next_redo: null });
+  });
+
   it('runs CoTracker without sending a model selector value', async () => {
     mockJob(
       backendMock.trackPromptPoints,

@@ -9,6 +9,7 @@ import {
   frameLoadingHint,
   isFrameLoadingMode,
   outdatedTimelineSegments,
+  historyButtonTitle,
 } from './video-masker.util';
 
 import { VideoMaskObjectData } from '../services/backend-api.types';
@@ -181,5 +182,14 @@ describe('outdatedTimelineSegments', () => {
   it('falls back to a generic name for an object it cannot name', () => {
     const [segment] = outdatedTimelineSegments({ '7': [[0, 3]] }, labelOf, 101);
     expect(segment.labels).toEqual(['Object 7']);
+  });
+});
+
+describe('historyButtonTitle', () => {
+  it('names the next step and the shortcut, or says there is nothing to do', () => {
+    expect(historyButtonTitle('undo', 'Add points')).toBe('Undo: Add points (Ctrl+Z)');
+    expect(historyButtonTitle('redo', 'Edit object')).toBe('Redo: Edit object (Ctrl+Shift+Z)');
+    expect(historyButtonTitle('undo', null)).toBe('Nothing to undo');
+    expect(historyButtonTitle('redo', null)).toBe('Nothing to redo');
   });
 });

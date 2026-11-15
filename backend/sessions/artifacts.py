@@ -46,6 +46,23 @@ def referenced_artifacts(session: SessionState) -> Optional[set[str]]:
         refs.update(overlays)
     return refs
 
+def retained_artifacts(session: SessionState) -> Optional[set[str]]:
+    """Everything that must stay on disk: what the accepted state names plus what undo and redo can bring back.
+
+    Saving uses `referenced_artifacts` only, so a checkpoint never carries history.
+    """
+    refs = referenced_artifacts(session)
+    if refs is None:
+        return None
+    for state in session.history.states():
+        refs.update(f"masks/overrides/{mask.artifact}" for mask in state.annotations.mask_overrides)
+        refs.update(f"masks/interactive/{name}" for name in state.live_masks.values() if isinstance(name, str))
+        tracking_path = state.tracking.get("latest_tracking_result_path")
+        if tracking_path:
+            refs.add(f"tracking/{Path(tracking_path).name}")
+    return refs
+
+
 def _unlink(path: Path) -> None:
     try:
         path.unlink(missing_ok=True)
@@ -71,7 +88,7 @@ def reclaim_superseded_artifacts(session: SessionState) -> None:
     if session.active_session_dir is None:
         return
     try:
-        refs = referenced_artifacts(session)
+        refs = retained_artifacts(session)
         if refs is None:
             return
         remove_artifacts(Path(session.active_session_dir), session.committed_artifacts - refs)
@@ -84,7 +101,7 @@ def sweep_unreferenced_artifacts(session: SessionState) -> None:
     if session.active_session_dir is None:
         return
     try:
-        refs = referenced_artifacts(session)
+        refs = retained_artifacts(session)
         if refs is None:
             return
         root = Path(session.active_session_dir)

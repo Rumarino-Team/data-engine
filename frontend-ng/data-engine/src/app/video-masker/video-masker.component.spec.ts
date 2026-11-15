@@ -108,6 +108,88 @@ describe('VideoMaskerComponent UI', () => {
     });
   });
 
+  describe('undo and redo', () => {
+    const buttons = (): { undo: HTMLButtonElement; redo: HTMLButtonElement } => {
+      const [undo, redo] = Array.from(
+        fixture.nativeElement.querySelectorAll('.canvas-toolbar button[aria-label="Undo"], .canvas-toolbar button[aria-label="Redo"]'),
+      ) as HTMLButtonElement[];
+      return { undo, redo };
+    };
+    const steps = { undo: 2, redo: 1, next_undo: 'Add points', next_redo: 'Edit object' };
+    const press = (init: KeyboardEventInit, target: EventTarget = window) =>
+      target.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init }));
+
+    it('are disabled until the backend has steps', () => {
+      component.store.isInitialized.set(true);
+      fixture.detectChanges();
+      expect(buttons().undo.disabled).toBe(true);
+      expect(buttons().redo.disabled).toBe(true);
+      expect(buttons().undo.title).toBe('Nothing to undo');
+    });
+
+    it('enable with the next step in their tooltip and call the history service', () => {
+      const undo = vi.spyOn(component.changes, 'undo').mockResolvedValue(true);
+      const redo = vi.spyOn(component.changes, 'redo').mockResolvedValue(true);
+      component.store.isInitialized.set(true);
+      component.store.history.set(steps);
+      fixture.detectChanges();
+      expect(buttons().undo.title).toBe('Undo: Add points (Ctrl+Z)');
+      expect(buttons().redo.title).toBe('Redo: Edit object (Ctrl+Shift+Z)');
+      buttons().undo.click();
+      buttons().redo.click();
+      expect(undo).toHaveBeenCalledTimes(1);
+      expect(redo).toHaveBeenCalledTimes(1);
+    });
+
+    it('answer Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y (and the Cmd versions)', () => {
+      const undo = vi.spyOn(component.changes, 'undo').mockResolvedValue(true);
+      const redo = vi.spyOn(component.changes, 'redo').mockResolvedValue(true);
+      press({ key: 'z', ctrlKey: true });
+      press({ key: 'z', metaKey: true });
+      expect(undo).toHaveBeenCalledTimes(2);
+      press({ key: 'z', ctrlKey: true, shiftKey: true });
+      press({ key: 'y', ctrlKey: true });
+      press({ key: 'Z', metaKey: true, shiftKey: true });
+      expect(redo).toHaveBeenCalledTimes(3);
+    });
+
+    it('take over the shortcut so the browser does not also act on it', () => {
+      vi.spyOn(component.changes, 'undo').mockResolvedValue(true);
+      expect(press({ key: 'z', ctrlKey: true })).toBe(false); // preventDefault was called
+    });
+
+    it('ignore other keys, shortcuts with Alt and plain Z', () => {
+      const undo = vi.spyOn(component.changes, 'undo').mockResolvedValue(true);
+      const redo = vi.spyOn(component.changes, 'redo').mockResolvedValue(true);
+      press({ key: 'z' });
+      press({ key: 'z', ctrlKey: true, altKey: true });
+      press({ key: 'y', ctrlKey: true, shiftKey: true });
+      press({ key: 'c', ctrlKey: true });
+      expect(undo).not.toHaveBeenCalled();
+      expect(redo).not.toHaveBeenCalled();
+    });
+
+    it('leave Ctrl+Z to a text field while the user is typing', () => {
+      const undo = vi.spyOn(component.changes, 'undo').mockResolvedValue(true);
+      const field = document.createElement('input');
+      field.type = 'text';
+      document.body.appendChild(field);
+      expect(press({ key: 'z', ctrlKey: true }, field)).toBe(true); // not prevented: the field undoes its text
+      field.remove();
+      expect(undo).not.toHaveBeenCalled();
+    });
+
+    it('still work while the timeline slider has focus', () => {
+      const undo = vi.spyOn(component.changes, 'undo').mockResolvedValue(true);
+      const slider = document.createElement('input');
+      slider.type = 'range';
+      document.body.appendChild(slider);
+      press({ key: 'z', ctrlKey: true }, slider);
+      slider.remove();
+      expect(undo).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('the timeline tint for masks from an earlier propagation', () => {
     const segments = (): HTMLElement[] =>
       Array.from(fixture.nativeElement.querySelectorAll('.timeline-outdated-segment'));

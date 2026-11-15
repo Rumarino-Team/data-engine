@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 from core.annotations import SessionAnnotations
+from core.history import UndoHistory
 from core.errors import OperationError
 
 @dataclass
@@ -28,6 +29,8 @@ class SessionState:
     checkpoint_artifacts: set[str] = field(default_factory=set)
     # Content identity when the session was loaded or last saved; None only before initialization completes.
     saved_fingerprint: Optional[tuple] = None
+    # What undo and redo can bring back; lives with the session in memory only, never in a checkpoint.
+    history: UndoHistory = field(default_factory=UndoHistory)
 
 
     def adopt_checkpoint(self, checkpoint_id: str, checkpoint_dir: Path, display_name: str) -> None:

@@ -222,8 +222,8 @@ def _interactive_stamps(path: Path) -> dict[str, int]:
 
 
 def outdated_mask_ranges(session: SessionState) -> dict[str, list[list[int]]]:
-    """For each object, the runs of frames (first, last, inclusive) whose shown mask was made before the
-    object's latest input change.
+    """For each object, the runs of frames (first, last, inclusive) whose shown mask was not made under the
+    object's current inputs: before its latest change, or (after an undo) under inputs that were undone.
 
     This is information only: those masks are still shown and still exported. It lets the editor mark the
     stretches the user may want to propagate again, without calling the masks wrong.
@@ -254,7 +254,7 @@ def outdated_mask_ranges(session: SessionState) -> dict[str, list[list[int]]]:
     for obj_id, by_frame in stamps.items():
         latest = session.annotations.input_revisions.get(obj_id, 0)
         runs: list[list[int]] = []
-        for frame_idx in sorted(f for f, stamp in by_frame.items() if stamp < latest and (f, obj_id) not in overridden):
+        for frame_idx in sorted(f for f, stamp in by_frame.items() if stamp != latest and (f, obj_id) not in overridden):
             if runs and runs[-1][1] == frame_idx - 1:
                 runs[-1][1] = frame_idx
             else:

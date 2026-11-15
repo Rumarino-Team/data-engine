@@ -243,5 +243,6 @@ def run_prompt_tracking_job(
         "streaming_frame_threshold": int(DEFAULT_STREAMING_TRACK_FRAME_THRESHOLD),
         "tracking_result_id": tracking_result["result_id"],
         "saved_state": saved_state(session),
+        "history": session.history.status(),
     }
     return TrackingJobResult(**result).model_dump()

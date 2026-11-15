@@ -169,6 +169,16 @@ export function outdatedTimelineSegments(
   });
 }
 
+/** Tooltip for the undo and redo buttons: what the next step is, and the shortcut. */
+export function historyButtonTitle(
+  kind: 'undo' | 'redo',
+  nextLabel: string | null,
+): string {
+  const verb = kind === 'undo' ? 'Undo' : 'Redo';
+  const shortcut = kind === 'undo' ? 'Ctrl+Z' : 'Ctrl+Shift+Z';
+  return nextLabel ? `${verb}: ${nextLabel} (${shortcut})` : `Nothing to ${verb.toLowerCase()}`;
+}
+
 // --- misc shared helpers ---
 
 export function getErrorMessage(error: any, fallback: string): string {

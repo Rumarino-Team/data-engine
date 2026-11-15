@@ -9,6 +9,7 @@ from schemas.responses import (
     AnnotationUpdate,
     ClearPromptsResponse,
     CloseResult,
+    HistoryResponse,
     JobStartResponse,
     MaskData,
     MaskEditResponse,
@@ -37,6 +38,7 @@ from video.edits import (
     reset_video_state,
     update_object,
 )
+from video.history import redo_last_change, undo_last_change
 from video.loading import close_video_session, start_video_init
 from video.queries import get_mask_data, get_video_frame_path, get_video_info, get_video_mask_frame_path
 from video.save import save_video_session
@@ -83,6 +85,22 @@ def add_new_mask_route(
     ctx: AppContext = Depends(get_context),
 ):
     return add_new_mask(ctx, request, precondition)
+
+
+@router.post("/video/undo", response_model=HistoryResponse)
+def undo_route(
+    precondition: AnnotationPrecondition = Depends(annotation_precondition),
+    ctx: AppContext = Depends(get_context),
+):
+    return undo_last_change(ctx, precondition)
+
+
+@router.post("/video/redo", response_model=HistoryResponse)
+def redo_route(
+    precondition: AnnotationPrecondition = Depends(annotation_precondition),
+    ctx: AppContext = Depends(get_context),
+):
+    return redo_last_change(ctx, precondition)
 
 
 @router.post("/video/close_session", response_model=CloseResult)

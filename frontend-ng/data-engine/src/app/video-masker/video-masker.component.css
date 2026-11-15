@@ -482,6 +482,10 @@
 
 /* A faint strip just above the track: stretches whose masks come from an earlier propagation. Hovering a
    stretch says so; nothing about it is an error, those masks are still shown and exported. */
+.history-button {
+  margin-left: 8px;
+}
+
 .timeline-outdated {
   position: absolute;
   top: 3px;

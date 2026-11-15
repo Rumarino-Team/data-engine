@@ -22,6 +22,7 @@ import type {
   VideoAddPointsOrBoxRequest,
   VideoAddPointsResponse,
   VideoCloseResponse,
+  VideoHistoryResponse,
   VideoInitStateRequest,
   VideoInfoResponse,
   VideoMaskDataResponse,
@@ -93,6 +94,22 @@ export class BackendService {
       ...options,
     };
     return this.http.post<JobStartResponse>(this.endpoint('/video/init_state'), payload);
+  }
+
+  undoVideoChange(precondition: AnnotationPrecondition): Observable<VideoHistoryResponse> {
+    return this.http.post<VideoHistoryResponse>(
+      this.endpoint('/video/undo'),
+      {},
+      { headers: this.annotationHeaders(precondition) },
+    );
+  }
+
+  redoVideoChange(precondition: AnnotationPrecondition): Observable<VideoHistoryResponse> {
+    return this.http.post<VideoHistoryResponse>(
+      this.endpoint('/video/redo'),
+      {},
+      { headers: this.annotationHeaders(precondition) },
+    );
   }
 
   /** Frees the backend's copy of the session; only the model weights stay loaded for the next video. */

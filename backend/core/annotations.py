@@ -189,6 +189,38 @@ class SessionAnnotations(BaseModel):
     def snapshot(self) -> dict:
         return self.model_dump(mode="json")
 
+    def restore_to(self, target: "SessionAnnotations") -> None:
+        """Make the accepted inputs equal `target`'s, as one new revision.
+
+        The revision counter never goes back (clients compare it, and generated results are stamped with it),
+        so an undo is a change like any other whose content happens to be an earlier state. Object ids are not
+        reused either: `next_object_id` keeps the larger of the two.
+        """
+        target = target.model_copy(deep=True)
+        changed = self._changed
+        for obj_id in self.objects.keys() | target.objects.keys():
+            if self.objects.get(obj_id) != target.objects.get(obj_id):
+                changed.add(("object", obj_id))
+        mine = {(event.frame_idx, event.obj_id): event for event in self.prompts}
+        theirs = {(event.frame_idx, event.obj_id): event for event in target.prompts}
+        for key in mine.keys() | theirs.keys():
+            if mine.get(key) != theirs.get(key):
+                changed.add(("prompt", key))
+        mine_masks = {(mask.frame_idx, mask.obj_id): mask for mask in self.mask_overrides}
+        theirs_masks = {(mask.frame_idx, mask.obj_id): mask for mask in target.mask_overrides}
+        for key in mine_masks.keys() | theirs_masks.keys():
+            if mine_masks.get(key) != theirs_masks.get(key):
+                changed.add(("mask", key))
+        for obj_id in self.input_revisions.keys() | target.input_revisions.keys():
+            if self.input_revisions.get(obj_id) != target.input_revisions.get(obj_id):
+                changed.add(("input", obj_id))
+        self.objects = target.objects
+        self.prompts = target.prompts
+        self.mask_overrides = target.mask_overrides
+        self.input_revisions = dict(target.input_revisions)
+        self.next_object_id = max(self.next_object_id, target.next_object_id)
+        self.revision += 1
+
     def take_delta(self, base_revision: int) -> dict:
         """Current values for keys changed since the previous delta, applied to `base_revision`."""
         changed, self._changed = self._changed, set()
