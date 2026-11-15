@@ -15,7 +15,7 @@ from sessions.metadata import current_masks_dir
 from sessions.publication import publish_results
 import numpy as np
 from utils import build_empty_mask_manifest, load_mask_manifest, prepare_video_masks_output, save_single_video_mask_frame, write_mask_manifest
-from video.masks import manifest_frame_payload, override_pixels
+from video.masks import manifest_frame_payload, outdated_mask_ranges, override_pixels
 from video.prompts import create_masker_runtime
 from video.runtime import MaskerRestorationError, MaskerSettings
 from tracking.guidance import TrackingGuidance, load_latest_tracking_guidance
@@ -319,6 +319,7 @@ def propagation_result(run: PropagationRun, inputs: dict[str, Any], session: Ses
         "tracked_points_seeded_frames": len(run.tracked_points_seeded_frames),
         "mask_manifest_path": session.mask_manifest_path,
         "saved_state": saved_state(session),
+        "outdated_masks": outdated_mask_ranges(session),
     }
     return PropagationResult(**result).model_dump()
 

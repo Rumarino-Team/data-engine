@@ -93,6 +93,10 @@ class PartialPropagationTests(unittest.TestCase):
                                 self.assertEqual(overlay.read_bytes(), f"old-{i}".encode())
                         self.assertEqual(response["video_segments_total_frames"], 2)
                         self.assertEqual(set(state.interactive_mask_files), {"0", "3", "4"})
+                        # The frames it did not touch keep their masks, marked as older than the latest edit
+                        # (only when there was one); the frames it refreshed are current.
+                        outdated = {obj: [list(run) for run in runs] for obj, runs in response["outdated_masks"].items()}
+                        self.assertEqual(outdated, {"1": [[0, 0], [3, 4]]} if explicit_override else {})
                         if explicit_override:
                             self.assertTrue(any(call.kwargs["mask"].all() for call in masker.add_new_mask.call_args_list))
 

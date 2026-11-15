@@ -157,8 +157,12 @@ export interface TrackingValidity {
   point_ids: string[];
 }
 
+/** Per object id, the frame runs (first, last) whose shown mask predates the object's latest point change. */
+export type OutdatedMasks = Record<string, [number, number][]>;
+
 export interface AnnotationSnapshot {
   tracking_validity?: TrackingValidity | null;
+  outdated_masks?: OutdatedMasks;
   saved_state?: SavedState | null;
   mask_data?: VideoMaskDataResponse;
   session_id: string | null;
@@ -168,6 +172,7 @@ export interface AnnotationSnapshot {
 /** Mutation response; full snapshots come only from /video/info and initialization. */
 export interface AnnotationUpdate {
   tracking_validity?: TrackingValidity | null;
+  outdated_masks?: OutdatedMasks;
   saved_state?: SavedState | null;
   mask_data?: VideoMaskDataResponse;
   session_id: string | null;
@@ -206,6 +211,7 @@ export interface VideoPropagateResponse {
   tracked_points_seeded_count?: number;
   tracked_points_seeded_frames?: number;
   saved_state?: SavedState | null;
+  outdated_masks?: OutdatedMasks;
 }
 
 export interface VideoMaskObjectData {

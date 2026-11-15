@@ -105,13 +105,37 @@ def retain_interactive_masks(session: SessionState, frame_idx: int, obj_ids: lis
     masks_dir = current_masks_dir(session)
     if masks_dir is None:
         raise ValueError("No active session for interactive masks.")
+    # SAM2 answers with every object on the frame, but an object nobody prompted here comes back empty because
+    # there is nothing to say about it, not because the user wants it empty. Keeping that would hide its
+    # propagated mask, so only objects prompted on this frame keep a result.
+    prompted = {event.obj_id for event in session.annotations.prompts if event.frame_idx == frame_idx}
     payload = {
         str(obj_id): {"input_revision": session.annotations.input_revisions.get(obj_id, 0),
                       "mask": mask}
-        for obj_id, mask in zip(obj_ids, encoded_masks) if obj_id in session.annotations.objects
+        for obj_id, mask in zip(obj_ids, encoded_masks)
+        if obj_id in session.annotations.objects and obj_id in prompted
     }
     # Publish an immutable artifact first, then accept its reference with annotations.
     # If metadata acceptance fails, the previous reference still names untouched pixels.
+    artifact_name = f"{uuid4().hex}.json"
+    write_mask_manifest(masks_dir / "interactive" / artifact_name, payload)
+    session.interactive_mask_files[str(frame_idx)] = artifact_name
+
+
+def retain_empty_mask(session: SessionState, frame_idx: int, obj_id: int, shape: tuple[int, int]) -> None:
+    """Record that the object has no mask on this frame because the user cleared it.
+
+    It is an empty result stamped with the object's current input revision, so it is newer than any propagated
+    mask under it and the cleared mask cannot come back. The frame's other live results are kept.
+    """
+    from sessions.metadata import current_masks_dir
+    from utils import write_mask_manifest
+    masks_dir = current_masks_dir(session)
+    if masks_dir is None:
+        raise ValueError("No active session for interactive masks.")
+    payload = {key: value for key, value in load_interactive_masks(session, frame_idx).items() if key != str(obj_id)}
+    payload[str(obj_id)] = {"input_revision": session.annotations.input_revisions.get(obj_id, 0),
+                            "mask": encode_live_mask_payload(np.zeros(shape, dtype=bool))}
     artifact_name = f"{uuid4().hex}.json"
     write_mask_manifest(masks_dir / "interactive" / artifact_name, payload)
     session.interactive_mask_files[str(frame_idx)] = artifact_name
@@ -151,36 +175,93 @@ def load_interactive_masks(session: SessionState, frame_idx: int) -> dict[str, A
     return _read_interactive_mask_file(masks_dir / "interactive" / artifact_name)
 
 
-def effective_mask_data(session: SessionState, frame_idx: int) -> dict[str, Any]:
-    """One authoritative frame: explicit input > interactive result > propagation.
-
-    Empty masks are present values, so they suppress lower-precedence sources.
-    Generated results expire on edits to their object's inputs, not display labels.
-    """
+def _manifest_frames(session: SessionState) -> dict[str, Any]:
     from video.manifest_cache import load_cached_mask_manifest
-    objects, sources = {}, {}
     manifest_path = Path(session.mask_manifest_path) if session.mask_manifest_path else None
-    frame = {}
     if manifest_path and manifest_path.exists():
-        frame = load_cached_mask_manifest(manifest_path).get("frames", {}).get(str(frame_idx), {})
+        return load_cached_mask_manifest(manifest_path).get("frames", {})
+    return {}
+
+
+def effective_mask_data(session: SessionState, frame_idx: int) -> dict[str, Any]:
+    """One authoritative frame: explicit input > the newest generated result.
+
+    For each object the frame shows the newer of its interactive result and its propagation result, judged by
+    the input revision each was made under; a tie goes to propagation, which ran after the click it repeats.
+    A result made under older inputs is not hidden by a later edit: the user keeps the masks they have until a
+    new click or a new propagation over those frames replaces them. Empty masks are present values, so they
+    suppress older results.
+    """
+    objects, sources = {}, {}
+    frame = _manifest_frames(session).get(str(frame_idx), {})
+    manifest_stamps = frame.get("input_revisions", {})
     for obj_id, mask in frame.get("objects", {}).items():
-        object_id = int(obj_id)
-        if (object_id in session.annotations.objects and
-                frame.get("input_revisions", {}).get(str(obj_id)) == session.annotations.input_revisions.get(object_id, 0)):
+        if int(obj_id) in session.annotations.objects:
             objects[str(obj_id)] = mask
             sources[str(obj_id)] = "manifest"
     for obj_id, result in load_interactive_masks(session, frame_idx).items():
-        object_id = int(obj_id)
-        if (object_id in session.annotations.objects and
-                result["input_revision"] == session.annotations.input_revisions.get(object_id, 0)):
-            objects[str(obj_id)] = result["mask"]
-            sources[str(obj_id)] = "live"
+        if int(obj_id) not in session.annotations.objects:
+            continue
+        if str(obj_id) in objects and manifest_stamps.get(str(obj_id), 0) >= result["input_revision"]:
+            continue
+        objects[str(obj_id)] = result["mask"]
+        sources[str(obj_id)] = "live"
     for mask in session.annotations.mask_overrides:
         if mask.frame_idx == frame_idx:
             objects[str(mask.obj_id)] = override_payload(mask, session.active_session_dir)
             sources[str(mask.obj_id)] = "override"
     return {"session_id": session.active_session_id, "annotation_revision": session.annotations.revision,
             "frame_idx": frame_idx, "objects": objects, "sources": sources}
+
+
+@lru_cache(maxsize=512)
+def _interactive_stamps(path: Path) -> dict[str, int]:
+    """The input revision of each object's result in one interactive artifact (artifacts never change)."""
+    from utils import load_mask_manifest
+    return {obj_id: int(entry["input_revision"]) for obj_id, entry in load_mask_manifest(path).items()}
+
+
+def outdated_mask_ranges(session: SessionState) -> dict[str, list[list[int]]]:
+    """For each object, the runs of frames (first, last, inclusive) whose shown mask was made before the
+    object's latest input change.
+
+    This is information only: those masks are still shown and still exported. It lets the editor mark the
+    stretches the user may want to propagate again, without calling the masks wrong.
+    """
+    from sessions.metadata import current_masks_dir
+    objects = session.annotations.objects
+    stamps: dict[int, dict[int, int]] = {}  # object -> frame -> input revision of the mask effective_mask_data shows
+    for frame_key, frame in _manifest_frames(session).items():
+        frame_stamps = frame.get("input_revisions", {})
+        for obj_key in frame.get("objects", {}):
+            if int(obj_key) in objects:
+                stamps.setdefault(int(obj_key), {})[int(frame_key)] = int(frame_stamps.get(obj_key, 0))
+    masks_dir = current_masks_dir(session)
+    if masks_dir is not None:
+        for frame_key, name in session.interactive_mask_files.items():
+            try:
+                live = _interactive_stamps(masks_dir / "interactive" / name)
+            except (OSError, ValueError, KeyError, TypeError):
+                continue  # an unreadable artifact is reported where its masks are read
+            for obj_key, stamp in live.items():
+                if int(obj_key) not in objects:
+                    continue
+                by_frame = stamps.setdefault(int(obj_key), {})
+                if stamp > by_frame.get(int(frame_key), -1):
+                    by_frame[int(frame_key)] = stamp
+    overridden = {(mask.frame_idx, mask.obj_id) for mask in session.annotations.mask_overrides}
+    outdated: dict[str, list[list[int]]] = {}
+    for obj_id, by_frame in stamps.items():
+        latest = session.annotations.input_revisions.get(obj_id, 0)
+        runs: list[list[int]] = []
+        for frame_idx in sorted(f for f, stamp in by_frame.items() if stamp < latest and (f, obj_id) not in overridden):
+            if runs and runs[-1][1] == frame_idx - 1:
+                runs[-1][1] = frame_idx
+            else:
+                runs.append([frame_idx, frame_idx])
+        if runs:
+            outdated[str(obj_id)] = runs
+    return outdated
 
 
 def mask_overlay_path(session: SessionState, frame_idx: int) -> Path:

@@ -108,6 +108,53 @@ describe('VideoMaskerComponent UI', () => {
     });
   });
 
+  describe('the timeline tint for masks from an earlier propagation', () => {
+    const segments = (): HTMLElement[] =>
+      Array.from(fixture.nativeElement.querySelectorAll('.timeline-outdated-segment'));
+
+    it('draws nothing when every mask is current', () => {
+      component.store.isInitialized.set(true);
+      component.store.numFrames.set(101);
+      fixture.detectChanges();
+      expect(segments()).toEqual([]);
+    });
+
+    it('draws each stretch where it is on the timeline, with a plain tooltip', () => {
+      const label = component.store.objects()[0].label;
+      component.store.isInitialized.set(true);
+      component.store.numFrames.set(101);
+      component.store.outdatedMasks.set({ [String(component.store.objects()[0].id)]: [[0, 49]] });
+      fixture.detectChanges();
+      const [segment] = segments();
+      expect(segments()).toHaveLength(1);
+      expect(segment.style.left).toBe('0%');
+      expect(segment.style.width).toBe('49%');
+      expect(segment.getAttribute('title')).toBe(
+        `Frames 0\u201349: masks for ${label} come from an earlier propagation. They are still shown and included in exports.`,
+      );
+    });
+
+    it('follows the store when the stretches change', () => {
+      component.store.isInitialized.set(true);
+      component.store.numFrames.set(101);
+      component.store.outdatedMasks.set({ '1': [[0, 9]] });
+      fixture.detectChanges();
+      expect(segments()).toHaveLength(1);
+      component.store.outdatedMasks.set({});
+      fixture.detectChanges();
+      expect(segments()).toHaveLength(0);
+    });
+
+    it('leaves the slider usable: the strip does not take pointer events itself', () => {
+      component.store.isInitialized.set(true);
+      component.store.numFrames.set(101);
+      fixture.detectChanges();
+      const strip = fixture.nativeElement.querySelector('.timeline-outdated') as HTMLElement;
+      expect(strip).not.toBeNull();
+      expect(getComputedStyle(strip).pointerEvents).toBe('none');
+    });
+  });
+
   it('hides the API URL scheme while the input is not focused', () => {
     component.store.apiUrlInput.set('http://127.0.0.1:8000');
 

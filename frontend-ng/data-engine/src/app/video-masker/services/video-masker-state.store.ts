@@ -3,6 +3,7 @@ import {
   ApiHealthStatus,
   BackendJob,
   FrameLoadingMode,
+  OutdatedMasks,
   TrackPromptPointMetadata,
   VideoAnnotations,
   AnnotationSnapshot,
@@ -50,6 +51,8 @@ export class VideoMaskerStateStore {
   apiUrlInput = signal<string>('');
   isInitialized = signal<boolean>(false);
   openBackendSession = signal<OpenBackendSession | null>(null);
+  /** Stretches whose shown masks were made before the latest point change: still shown, still exported. */
+  outdatedMasks = signal<OutdatedMasks>({});
   numFrames = signal<number>(0);
   targetFrameIdx = signal<number>(0);
   displayedFrameIdx = signal<number>(-1);
@@ -98,6 +101,7 @@ export class VideoMaskerStateStore {
 
     this.acceptAnnotations(info.session_id, structuredClone(info.annotations));
     this.applyTrackingValidity(info.tracking_validity);
+    this.outdatedMasks.set(structuredClone(info.outdated_masks ?? {}));
     if (info.saved_state !== undefined || replaceSession)
       this.savedState.set(info.saved_state ?? null);
     return true;
@@ -145,6 +149,7 @@ export class VideoMaskerStateStore {
       input_revisions: inputRevisions,
     });
     this.applyTrackingValidity(update.tracking_validity);
+    if (update.outdated_masks !== undefined) this.outdatedMasks.set(structuredClone(update.outdated_masks));
     if (update.saved_state !== undefined) this.savedState.set(update.saved_state);
     return true;
   }
@@ -229,6 +234,7 @@ export class VideoMaskerStateStore {
     this.sessionId.set(null);
     this.annotations.set(null);
     this.savedState.set(null);
+    this.outdatedMasks.set({});
     this.selectedObjectId.set(null);
     this.numFrames.set(0);
     this.targetFrameIdx.set(0);

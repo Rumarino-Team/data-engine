@@ -59,6 +59,7 @@ export class MaskPropagationService {
       return;
     }
     if (response.saved_state !== undefined) this.store.savedState.set(response.saved_state);
+    if (response.outdated_masks !== undefined) this.store.outdatedMasks.set(response.outdated_masks);
     if (response.tracked_points_skipped_reason) {
       this.toast.show(
         'warning',

@@ -1,6 +1,7 @@
 import {
   FrameLoadingMode,
   LiveMask,
+  OutdatedMasks,
   PackedBitMask,
   VideoMaskObjectData,
 } from '../services/backend.service';
@@ -98,6 +99,74 @@ export function frameLoadingHint(mode: FrameLoadingMode): string {
     return 'Eager: the original SAM2 loader. Decodes every frame at full precision when the video loads: the fastest propagation, but the most memory and the slowest start.';
   }
   return 'Lazy: decodes frames as they are used and keeps only a few. Memory stays flat however long the video is, and it starts instantly; the first click on a new frame is about 20 ms slower.';
+}
+
+/** A stretch of the timeline whose masks come from an earlier propagation than the latest point change. */
+export interface OutdatedSegment {
+  first: number;
+  last: number;
+  leftPercent: number;
+  widthPercent: number;
+  labels: string[];
+  tooltip: string;
+}
+
+/**
+ * The stretches to tint on the timeline: the frames any object has outdated masks on, merged across
+ * objects, with the names of the objects affected. Positions use the same frame-to-percent mapping as the
+ * start and end markers. The wording is deliberately plain: these masks are fine to keep using and export.
+ */
+export function outdatedTimelineSegments(
+  outdated: OutdatedMasks,
+  labelOf: (objectId: number) => string | undefined,
+  numFrames: number,
+): OutdatedSegment[] {
+  const maxFrame = numFrames - 1;
+  if (maxFrame <= 0) return [];
+  // Sweep over run boundaries, tracking which objects are outdated between them.
+  const events: { frame: number; objectId: number; delta: 1 | -1 }[] = [];
+  for (const [id, runs] of Object.entries(outdated)) {
+    for (const [first, last] of runs) {
+      events.push({ frame: first, objectId: Number(id), delta: 1 });
+      events.push({ frame: last + 1, objectId: Number(id), delta: -1 });
+    }
+  }
+  events.sort((a, b) => a.frame - b.frame);
+  const active = new Map<number, number>();
+  const pieces: { first: number; last: number; ids: number[] }[] = [];
+  for (let index = 0; index < events.length; ) {
+    const frame = events[index].frame;
+    while (index < events.length && events[index].frame === frame) {
+      const { objectId, delta } = events[index++];
+      const count = (active.get(objectId) ?? 0) + delta;
+      if (count > 0) active.set(objectId, count);
+      else active.delete(objectId);
+    }
+    if (active.size > 0 && index < events.length) {
+      const ids = [...active.keys()].sort((a, b) => a - b);
+      const last = events[index].frame - 1;
+      const previous = pieces[pieces.length - 1];
+      if (previous && previous.last === frame - 1 && previous.ids.join() === ids.join()) {
+        previous.last = last;
+      } else {
+        pieces.push({ first: frame, last, ids });
+      }
+    }
+  }
+  return pieces.map(({ first, last, ids }) => {
+    const clampedLast = Math.min(last, maxFrame);
+    const labels = ids.map((id) => labelOf(id) ?? `Object ${id}`);
+    const range = first === clampedLast ? `Frame ${first}` : `Frames ${first}\u2013${clampedLast}`;
+    return {
+      first,
+      last: clampedLast,
+      leftPercent: (first / maxFrame) * 100,
+      // Measured between frame positions, like the selection bar, so the last stretch ends at the track's end.
+      widthPercent: ((clampedLast - first) / maxFrame) * 100,
+      labels,
+      tooltip: `${range}: masks for ${labels.join(', ')} come from an earlier propagation. They are still shown and included in exports.`,
+    };
+  });
 }
 
 // --- misc shared helpers ---

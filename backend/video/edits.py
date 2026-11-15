@@ -15,7 +15,9 @@ from schemas.video import (
 )
 from sessions.cache import reset_video_session_state
 from video.mask_encoding import encode_live_mask_payload
-from video.masks import as_2d_bool, effective_mask_data, mask_logits_to_2d_bool, retain_interactive_masks, store_mask_override
+from video.masks import (
+    as_2d_bool, effective_mask_data, mask_logits_to_2d_bool, retain_empty_mask, retain_interactive_masks, store_mask_override,
+)
 from video.prompts import annotation_edit, record_prompt_event
 from video.responses import annotation_update
 
@@ -141,8 +143,14 @@ def clear_all_prompts_in_frame(ctx: AppContext, frame_idx: int, obj_id: int, pre
         if obj_id not in session.annotations.objects:
             raise OperationError(404, "Prompt object does not exist.")
         with annotation_edit(session):
+            shown = effective_mask_data(session, frame_idx)["objects"].get(str(obj_id))
+            revision = session.annotations.revision
             masker.clear_all_prompts_in_frame(frame_idx, obj_id)
             session.annotations.clear_prompts(frame_idx, obj_id)
+            if shown is not None and session.annotations.revision != revision:
+                # Clearing is the user's decision that this frame has no mask for the object. Without a result
+                # newer than the propagated mask under it, that mask would reappear.
+                retain_empty_mask(session, frame_idx, obj_id, tuple(shown["size"]))
             mask_data = effective_mask_data(session, frame_idx)
             return {**annotation_update(session, precondition), "mask_data": mask_data,
                     "message": "Cleared all prompts in frame successfully"}

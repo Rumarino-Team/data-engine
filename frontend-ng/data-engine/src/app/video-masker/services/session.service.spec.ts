@@ -470,6 +470,14 @@ describe('a session the backend still holds', () => {
       });
     });
 
+    it('brings back which stretches of the timeline come from an earlier propagation', async () => {
+      backendMock.getVideoInfo.mockReturnValue(
+        of(heldByBackend({ outdated_masks: { '1': [[0, 500]] } })),
+      );
+      await editor.sessions.resumeOpenSession();
+      expect(editor.store.outdatedMasks()).toEqual({ '1': [[0, 500]] });
+    });
+
     it('refuses a session that was replaced meanwhile and shows what is there now', async () => {
       backendMock.getVideoInfo.mockReturnValue(of(heldByBackend({ session_id: 'held-2' })));
 

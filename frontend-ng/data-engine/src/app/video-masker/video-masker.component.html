@@ -374,6 +374,15 @@
         [style.--range-start.%]="getPropagationFramePercent(store.propagationStartFrameIdx())"
         [style.--range-end.%]="getPropagationFramePercent(store.propagationEndFrameIdx())"
       >
+        <div class="timeline-outdated">
+          <span
+            *ngFor="let segment of outdatedSegments()"
+            class="timeline-outdated-segment"
+            [style.left.%]="segment.leftPercent"
+            [style.width.%]="segment.widthPercent"
+            [attr.title]="segment.tooltip"
+          ></span>
+        </div>
         <div class="timeline-selection" aria-hidden="true"></div>
         <span class="timeline-marker timeline-marker-start" aria-hidden="true">
           <span>Start {{ store.propagationStartFrameIdx() }}</span>

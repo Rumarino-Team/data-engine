@@ -5,6 +5,7 @@ import {
   HostListener,
   OnDestroy,
   ViewChild,
+  computed,
   effect,
   inject,
 } from '@angular/core';
@@ -36,6 +37,7 @@ import {
   isFrameLoadingMode,
   loadModeHint,
   loadPathPlaceholder,
+  outdatedTimelineSegments,
 } from './video-masker.util';
 
 /**
@@ -90,6 +92,14 @@ export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
   private readonly desktopBridge = inject(DesktopBridgeService);
   readonly framePipeline = inject(FramePipelineService);
   readonly viewport = inject(CanvasViewportService);
+  /** Stretches of the timeline whose masks predate the latest point change, merged across objects. */
+  readonly outdatedSegments = computed(() =>
+    outdatedTimelineSegments(
+      this.store.outdatedMasks(),
+      (id) => this.store.objects().find((object) => object.id === id)?.label,
+      this.store.numFrames(),
+    ),
+  );
   apiUrlInputHasFocus = false;
 
   constructor() {

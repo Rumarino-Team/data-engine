@@ -85,6 +85,8 @@ class AnnotationUpdate(Response):
     annotation_delta: AnnotationDelta
     tracking_validity: Optional[TrackingValidity]
     saved_state: Optional[SavedState]
+    # Per object, the frame runs (first, last) whose shown mask predates the object's latest point change.
+    outdated_masks: dict[str, list[tuple[int, int]]]
 
 
 class ResetResponse(AnnotationUpdate):
@@ -117,6 +119,7 @@ class VideoInfoResponse(Response):
     annotations: Optional[AnnotationsSnapshot]
     tracking_validity: Optional[TrackingValidity]
     saved_state: Optional[SavedState]
+    outdated_masks: dict[str, list[tuple[int, int]]]
     predictor_ready: bool
     num_frames: int
     frame_files: list[str]
@@ -245,6 +248,7 @@ class PropagationResult(Response):
     tracked_points_seeded_frames: int
     mask_manifest_path: Optional[str]
     saved_state: SavedState
+    outdated_masks: dict[str, list[tuple[int, int]]]
 
 
 class TrackingJobResult(Response):

@@ -55,6 +55,30 @@ describe('mask-propagation workflows', () => {
     );
   });
 
+  it('takes the outdated stretches from a finished propagation, so the timeline shows what it left behind', async () => {
+    mockJob(
+      backendMock.propagateInVideo,
+      backendMock.getJob,
+      'mask_propagation',
+      {
+        result: {
+          video_segments: {},
+          saved_mask_paths: {},
+          video_segments_total_frames: 2,
+          outdated_masks: { '1': [[0, 0], [3, 4]] },
+        },
+      },
+      'job-propagate',
+    );
+    editor.store.isInitialized.set(true);
+    editor.store.numFrames.set(5);
+    editor.store.outdatedMasks.set({ '1': [[0, 4]] });
+
+    await editor.propagation.propagate();
+
+    expect(editor.store.outdatedMasks()).toEqual({ '1': [[0, 0], [3, 4]] });
+  });
+
   it.each([
     ['sends use_tracked_points by default', undefined, true],
     ['sends use_tracked_points false when the toggle is off', false, false],

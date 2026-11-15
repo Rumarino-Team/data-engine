@@ -43,6 +43,11 @@ class VideoEditTests(SessionStateTestCase):
 
     # --- helpers -----------------------------------------------------------------------------------------
 
+    def assert_cleared(self, objects):
+        """The object has an explicit empty mask on the frame (the user cleared it), not an absent one."""
+        self.assertEqual(set(objects), {"1"})
+        self.assertEqual(objects["1"]["rle"], [])
+
     def start_fresh_session(self):
         """A clean working session with one object; table tests call this before each case."""
         self.reset_backend_state()
@@ -274,9 +279,9 @@ class VideoEditTests(SessionStateTestCase):
         self.reopen()
         self.assertEqual(self.client.get("/video/mask_data/0").json()["objects"], mask_data["objects"])
         self.client.post("/video/clear_all_prompts_in_frame", params={"frame_idx": 0, "obj_id": 1})
-        self.assertEqual(self.client.get("/video/mask_data/0").json()["objects"], {})
+        self.assert_cleared(self.client.get("/video/mask_data/0").json()["objects"])
         self.reopen()
-        self.assertEqual(self.client.get("/video/mask_data/0").json()["objects"], {})
+        self.assert_cleared(self.client.get("/video/mask_data/0").json()["objects"])
 
     def test_a_frame_outside_the_video_is_404_on_every_frame_route(self):
         outside = {**PROMPT, "frame_idx": 99}
@@ -310,18 +315,24 @@ class VideoEditTests(SessionStateTestCase):
         self.masker.clear_all_prompts_in_frame.assert_not_called()
         self.assertEqual(state.annotations.revision, 0)
 
-    def test_input_changes_invalidate_masks_but_label_changes_do_not(self):
+    def test_input_changes_keep_the_masks_the_user_has_and_only_mark_them_outdated(self):
         state.annotations.set_prompt(VideoPrompt(**PROMPT))
         self.seed_manifest()
         self.assertEqual(self.client.get("/video/mask_data/0").json()["sources"], {"1": "manifest"})
+        self.assertEqual(self.client.get("/video/info").json()["outdated_masks"], {})
         response = self.client.put("/video/objects/1", json={"label": "Renamed", "color": "#00ff00"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self.client.get("/video/mask_data/0").json()["sources"], {"1": "manifest"})
+        self.assertEqual(response.json()["outdated_masks"], {})
+        # A changed point does not take the propagated mask away; it is only marked as older than the point.
         state.annotations.set_prompt(VideoPrompt(**{**PROMPT, "points": [[2, 2]]}))
-        self.assertEqual(self.client.get("/video/mask_data/0").json()["objects"], {})
-        self.assertEqual(self.client.get("/video/mask_frame/0").status_code, 404)
+        self.assertEqual(self.client.get("/video/mask_data/0").json()["sources"], {"1": "manifest"})
+        self.assertEqual(self.client.get("/video/mask_frame/0").status_code, 200)
+        self.assertEqual(self.client.get("/video/info").json()["outdated_masks"], {"1": [[0, 0]]})
+        # Putting the point back is another change, so the mask stays marked until it is propagated again.
         state.annotations.set_prompt(VideoPrompt(**PROMPT))
-        self.assertEqual(self.client.get("/video/mask_data/0").json()["objects"], {})
+        self.assertEqual(self.client.get("/video/mask_data/0").json()["sources"], {"1": "manifest"})
+        self.assertEqual(self.client.get("/video/info").json()["outdated_masks"], {"1": [[0, 0]]})
 
     def test_reset_invalidates_propagated_masks(self):
         self.seed_manifest()
@@ -522,7 +533,11 @@ class VideoEditTests(SessionStateTestCase):
                     self.assertEqual(state.annotations.prompts, [])
                     self.assertEqual(state.annotations.mask_overrides, [])
                     self.assertNotIn("points", restored["interactive_state"])
-                    self.assertEqual(self.client.get("/video/mask_data/0").json()["objects"], {})
+                    objects = self.client.get("/video/mask_data/0").json()["objects"]
+                    if endpoint == "clear_all_prompts_in_frame":
+                        self.assert_cleared(objects)  # the user's clear stays, instead of the propagated mask returning
+                    else:
+                        self.assertEqual(objects, {})
                     if endpoint == "remove_object":
                         self.assertEqual(state.annotations.objects, {})
                         self.assertEqual(restored["annotations"]["next_object_id"], 2)
