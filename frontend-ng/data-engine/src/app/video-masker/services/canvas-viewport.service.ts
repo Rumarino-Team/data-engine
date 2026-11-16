@@ -273,7 +273,8 @@ export class CanvasViewportService {
         }
         flush();
       }
-      if (track.visibility[frameIdx] !== false) {
+      // Before the frame a point was placed on there is no track, only the placed position.
+      if (frameIdx >= track.source_frame_idx && track.visibility[frameIdx] !== false) {
         const [x, y] = track.tracks[frameIdx];
         this.addPoint({ x, y }, color, 4.5);
       }

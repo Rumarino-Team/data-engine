@@ -91,6 +91,14 @@ describe('undo and redo availability in the store', () => {
   });
 });
 
+describe('tracking and propagation defaults', () => {
+  it('tracks with the support grid and propagates without tracked points unless the user changes it', () => {
+    const { editor } = createWorkflowFixture();
+    expect(editor.store.trackingUseSupportGrid()).toBe(true);
+    expect(editor.store.propagationUseTrackedPoints()).toBe(false);
+  });
+});
+
 describe("tracked points follow the session's tracking result", () => {
   let editor: ReturnType<typeof createWorkflowFixture>['editor'];
   const series = (id: string) => ({

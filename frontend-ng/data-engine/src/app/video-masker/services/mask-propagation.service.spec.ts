@@ -47,7 +47,7 @@ describe('mask-propagation workflows', () => {
       {
         start_frame_idx: 1,
         max_frame_num_to_track: 2,
-        use_tracked_points: true,
+        use_tracked_points: false,
         include_masks_in_response: false,
         include_saved_mask_paths: false,
       },
@@ -80,8 +80,8 @@ describe('mask-propagation workflows', () => {
   });
 
   it.each([
-    ['sends use_tracked_points by default', undefined, true],
-    ['sends use_tracked_points false when the toggle is off', false, false],
+    ['sends use_tracked_points false by default', undefined, false],
+    ['sends use_tracked_points true when the toggle is on', true, true],
   ])('%s', async (_name, toggle, expected) => {
     mockJob(
       backendMock.propagateInVideo,

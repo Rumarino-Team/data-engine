@@ -108,6 +108,21 @@ describe('CanvasViewportService', () => {
     host.dispatchEvent(event);
   }
 
+  it('draws a tracked point only from the frame it was placed on', () => {
+    const track = {
+      point_id: 'p0', obj_id: 1, source_frame_idx: 2, source_x: 10, source_y: 10,
+      tracks: [[10, 10], [10, 10], [10, 10], [12, 11]], visibility: [true, true, true, true],
+    };
+    const trackedPointCircles = (frame: number) => {
+      viewport.render(image, masks, [], [track], [], 'point', frame);
+      return stage.find<Konva.Circle>('Circle').length;
+    };
+
+    expect(trackedPointCircles(1)).toBe(0);
+    expect(trackedPointCircles(2)).toBe(1);
+    expect(trackedPointCircles(3)).toBe(1);
+  });
+
   it('uses separate Konva images and vector markers in source-image coordinates', () => {
     expect(stage.find('Image')).toHaveLength(2);
     const circle = stage.findOne<Konva.Circle>('Circle')!;

@@ -220,9 +220,9 @@ export class VideoMaskerStateStore {
   saveName = signal<string>('');
 
   trackingOverlayStyle = signal<TrackingOverlayStyle>('short');
-  trackingUseSupportGrid = signal<boolean>(false);
+  trackingUseSupportGrid = signal<boolean>(true);
   // Whether propagation seeds the latest tracking result's points. Each seeded keyframe slows every frame.
-  propagationUseTrackedPoints = signal<boolean>(true);
+  propagationUseTrackedPoints = signal<boolean>(false);
   trackedPoints = signal<TrackedPointSeries[]>([]);
 
   isLoading = signal<boolean>(false);
