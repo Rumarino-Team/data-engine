@@ -61,7 +61,9 @@ class VideoPropagateRequest(BaseModel):
     max_frame_num_to_track: Optional[int] = Field(default=None, ge=1)
     batch_size: Optional[int] = None
     online_mode: Optional[bool] = None
-    use_tracked_points: bool = True
+    # Off by default: seeding from tracked points has not been shown to help and misleads SAM2 when the tracked
+    # points are wrong (COTRACKER_AND_SAM2_FINDINGS.md).
+    use_tracked_points: bool = False
     tracked_point_keyframe_interval: int = Field(default=8, ge=1)
     # Seeded keyframes slow every frame (measured: roughly 3 ms per keyframe on every frame), so a long range
     # gets at most this many, evenly spaced, whatever the interval says.

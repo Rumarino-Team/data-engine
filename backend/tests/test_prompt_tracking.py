@@ -14,7 +14,9 @@ from core.annotations import SessionAnnotations
 from core.errors import OperationError
 from support import SessionStateTestCase
 from core.runtime import is_out_of_memory
-from tracking.prompt_tracking import run_prompt_tracking_job, track_in_batches, track_prompt_queries
+from tracking.prompt_tracking import (
+    hide_before_query_frame, run_prompt_tracking_job, track_in_batches, track_prompt_queries,
+)
 from tracking.runtime import VideoTrackerRuntime
 from video.runtime import VideoMaskerRuntime
 
@@ -115,6 +117,15 @@ class PromptTrackingStatusTests(SessionStateTestCase):
         self.assertIn("Restoring interactive masking state", labels)
         self.assert_masker_untouched_but_for_its_weights()
         self.assertEqual(result["tracking_result_id"], "track-1")
+
+    def test_the_published_result_hides_frames_before_the_prompt_frame(self):
+        state.annotations.prompts[0].frame_idx = 1  # the fake tracker reports both frames visible
+
+        with self.tracking_environment() as saved:
+            saved.return_value = {"result_id": "track-1", "summary": {}}
+            self.run_tracking()
+
+        self.assertEqual(saved.call_args.kwargs["visibility"], [[False, True]])
 
     def test_weights_that_cannot_return_disable_the_predictor_without_publishing(self):
         self.masker.reload_weights.side_effect = RuntimeError("restore failed")
@@ -281,8 +292,8 @@ class BatchedTrackingTests(unittest.TestCase):
         track_batch.assert_called_once()
         self.cleanup.assert_not_called()
 
-    def test_tracking_retries_once_without_the_support_grid_when_memory_runs_out(self):
-        grids = []
+    def test_running_out_of_memory_halves_the_batch_and_never_drops_the_support_grid(self):
+        grids, sizes = [], []
 
         class Tracker:
             def prepare_video(self, video):
@@ -290,19 +301,36 @@ class BatchedTrackingTests(unittest.TestCase):
 
             def track(self, video, *, queries, add_support_grid):
                 grids.append(add_support_grid)
-                if add_support_grid:
+                sizes.append(len(queries))
+                if len(queries) > 2:
                     raise RuntimeError("CUDA out of memory.")
                 return BatchedTrackingTests.rows(queries)
 
         with patch("tracking.prompt_tracking.load_tracking_video_from_current_video_state",
                    return_value=(np.zeros((2, 2, 2, 3), dtype=np.uint8), "frames")):
-            tracks, _, grid_used = track_prompt_queries(
-                Mock(), Tracker(), np.zeros((1, 3), dtype=np.float32), add_support_grid=True, streaming=False,
+            tracks, visibility = track_prompt_queries(
+                Mock(), Tracker(), np.zeros((4, 3), dtype=np.float32), add_support_grid=True, streaming=False,
                 on_progress=Mock())
 
-        self.assertEqual(grids, [True, False])
-        self.assertFalse(grid_used)
-        self.assertEqual(tracks.shape, (1, 2, 2))
+        self.assertEqual(sizes, [4, 2, 2])
+        self.assertEqual(set(grids), {True})
+        self.assertEqual((tracks.shape, visibility.shape), ((4, 2, 2), (4, 2)))
+
+    def test_many_points_go_through_in_one_pass_by_default(self):
+        from core import config
+        self.assertGreaterEqual(config.DEFAULT_PROMPT_TRACK_BATCH_SIZE, 256)
+        self.assertLessEqual(config.DEFAULT_STREAMING_TRACK_FRAME_THRESHOLD, 0)  # every video is streamed
+
+    def test_a_point_is_not_visible_before_the_frame_it_was_placed_on(self):
+        visibility = np.ones((3, 6), dtype=bool)
+        hidden = hide_before_query_frame(visibility, [[0.0, 1.0, 1.0], [2.0, 5.0, 5.0], [6.0, 9.0, 9.0]])
+
+        self.assertEqual(hidden.tolist(), [
+            [True] * 6,
+            [False, False, True, True, True, True],
+            [False] * 6,
+        ])
+        self.assertTrue(visibility.all(), "the caller's array is left alone")
 
     def test_without_the_support_grid_an_out_of_memory_error_is_not_retried(self):
         tracker = Mock()

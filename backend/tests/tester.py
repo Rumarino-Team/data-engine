@@ -393,7 +393,7 @@ def add_new_points_or_box(frame_idx, obj_id, points=None, labels=None, clear_old
     return response.status_code == 200, response.json() if response.status_code == 200 else None
 
 
-def propagate_in_video(start_frame_idx=None, max_frame_num_to_track=None, reverse=False, use_tracked_points=True):
+def propagate_in_video(start_frame_idx=None, max_frame_num_to_track=None, reverse=False, use_tracked_points=False):
     """Calls the /video/propagate_in_video endpoint."""
     url = f"{BASE_URL}/video/propagate_in_video"
     payload = {

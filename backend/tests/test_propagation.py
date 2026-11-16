@@ -23,6 +23,12 @@ from video.prompts import replay_annotation_prompts
 from video.runtime import VideoMaskerRuntime
 
 
+class PropagationDefaultsTests(unittest.TestCase):
+    def test_tracked_points_are_not_used_unless_asked_for(self):
+        self.assertFalse(VideoPropagateRequest().use_tracked_points)
+        self.assertTrue(VideoPropagateRequest(use_tracked_points=True).use_tracked_points)
+
+
 class PartialPropagationTests(unittest.TestCase):
     def test_replaces_only_processed_frames_and_preserves_earlier_and_later_outputs(self):
         for export_overlay_frames, explicit_override in [(True, False), (False, False), (True, True), (False, True)]:

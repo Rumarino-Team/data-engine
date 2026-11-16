@@ -346,5 +346,19 @@ class TrackingResultTests(SessionStateTestCase):
         self.assertIsNone(restored)
 
 
+class SeedingFramesTests(unittest.TestCase):
+    def test_frames_before_the_point_existed_are_not_seeded(self):
+        guidance = TrackingGuidance(points=[TrackedGuidancePoint(
+            obj_id=1, source_frame_idx=2, tracks=[[i, i] for i in range(5)], visibility=[True] * 5)])
+
+        batches, seeded_count, seeded_frames = guidance.build_seed_batches(
+            range_start=0, range_end=4, frame_width=32, frame_height=32, keyframe_interval=1, max_keyframes=100,
+            max_points_per_object_per_frame=1)
+
+        self.assertEqual(sorted(seeded_frames), [2, 3, 4])
+        self.assertEqual(sorted(batches), [2, 3, 4])
+        self.assertEqual(seeded_count, 3)
+
+
 if __name__ == "__main__":
     unittest.main()

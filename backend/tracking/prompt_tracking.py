@@ -50,11 +50,12 @@ def track_in_batches(track_batch, queries: np.ndarray, *, on_progress) -> tuple[
 
 def track_prompt_queries(
     session, tracker: VideoTracker, queries: np.ndarray, *, add_support_grid: bool, streaming: bool, on_progress,
-) -> tuple[np.ndarray, np.ndarray, bool]:
+) -> tuple[np.ndarray, np.ndarray]:
     """Track the query points with the session's tracker, in memory or streamed from the frame files.
 
-    Returns the tracks, their visibility and whether the support grid was used: if the GPU runs out of
-    memory with it, tracking is retried once without it.
+    Returns the tracks and their visibility. When the GPU runs out of memory the batch is halved; the support grid is
+    never dropped, because it adds almost no memory and without it a point that is covered by something else is
+    still reported visible (COTRACKER_AND_SAM2_FINDINGS.md).
     """
     if streaming:
         if session.video_dir is None or not session.video_frame_files:
@@ -73,14 +74,19 @@ def track_prompt_queries(
 
         def batch_tracker(grid: bool):
             return lambda batch: tracker.track(prepared, queries=batch, add_support_grid=grid)
-    try:
-        tracks, visibility = track_in_batches(batch_tracker(add_support_grid), queries, on_progress=on_progress)
-    except RuntimeError as error:
-        if not (add_support_grid and is_out_of_memory(error)):
-            raise
-        add_support_grid = False
-        tracks, visibility = track_in_batches(batch_tracker(False), queries, on_progress=on_progress)
-    return tracks, visibility, add_support_grid
+    return track_in_batches(batch_tracker(add_support_grid), queries, on_progress=on_progress)
+
+
+def hide_before_query_frame(visibility: np.ndarray, queries) -> np.ndarray:
+    """Mark a point not visible on the frames before its own frame.
+
+    CoTracker's online model only tracks forward: before the frame a point was placed on, its track just stays near
+    the placed position and is sometimes reported visible. Those frames are not tracking results.
+    """
+    visibility = np.array(visibility, dtype=bool, copy=True)
+    for row, query in enumerate(queries):
+        visibility[row, : int(query[0])] = False
+    return visibility
 
 
 def start_prompt_tracking(ctx: AppContext, request: TrackingPromptPointsRequest, precondition):
@@ -146,8 +152,9 @@ def track_prompts(session, tracker_runtime: VideoTrackerRuntime, request, job: J
 
     try:
         streaming = should_stream_tracking(len(session.video_frame_files))
-        tracks, visibility, support_grid_used = track_prompt_queries(
-            session, tracker, np.asarray(queries, dtype=np.float32), add_support_grid=bool(request.add_support_grid),
+        support_grid_used = bool(request.add_support_grid)
+        tracks, visibility = track_prompt_queries(
+            session, tracker, np.asarray(queries, dtype=np.float32), add_support_grid=support_grid_used,
             streaming=streaming, on_progress=report_progress,
         )
         expected_frames = len(session.video_frame_files)
@@ -158,13 +165,14 @@ def track_prompts(session, tracker_runtime: VideoTrackerRuntime, request, job: J
                 f"Tracking returned tracks shape {tracks.shape} and visibility shape {visibility.shape}; "
                 f"expected {expected_tracks_shape} and {expected_visibility_shape} for the session frame sequence."
             )
+        visibility = hide_before_query_frame(visibility, queries)
     except ValueError as error:
         raise OperationError(400, str(error)) from error
     except RuntimeError as error:
         if is_out_of_memory(error):
             cleanup_cuda_memory()
             raise OperationError(
-                507, "CUDA out of memory during tracking. Try fewer prompt points or disable support grid."
+                507, "CUDA out of memory during tracking. Try fewer prompt points or a smaller video."
             ) from error
         raise OperationError(500, f"Prompt-point tracking failed: {error}") from error
     except Exception as error:

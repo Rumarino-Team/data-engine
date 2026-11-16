@@ -63,6 +63,8 @@ class TrackingGuidance:
                     continue
                 if global_frame_idx < 0 or global_frame_idx >= len(tracked_point.tracks):
                     continue
+                if global_frame_idx < tracked_point.source_frame_idx:
+                    continue  # the point did not exist yet; the online tracker only tracks forward
                 if global_frame_idx < len(tracked_point.visibility) and tracked_point.visibility[global_frame_idx] is False:
                     continue
 
