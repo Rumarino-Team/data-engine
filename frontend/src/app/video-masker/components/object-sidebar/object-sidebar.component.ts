@@ -1,4 +1,4 @@
-import { Component, inject } from '@angular/core';
+import { Component, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ObjectOperationsService } from '../../services/object-operations.service';
 import { PointEditingService } from '../../services/point-editing.service';
@@ -15,6 +15,19 @@ export class ObjectSidebarComponent {
   readonly store = inject(VideoMaskerStateStore);
   readonly objects = inject(ObjectOperationsService);
   private readonly prompts = inject(PointEditingService);
+
+  /** Point lists the user opened or closed by hand; an object left alone shows its list while selected. */
+  private readonly pointListChoices = signal(new Map<number, boolean>());
+
+  isPointListOpen(objectId: number): boolean {
+    return this.pointListChoices().get(objectId) ?? this.store.selectedObjectId() === objectId;
+  }
+
+  togglePointList(objectId: number): void {
+    const choices = new Map(this.pointListChoices());
+    choices.set(objectId, !this.isPointListOpen(objectId));
+    this.pointListChoices.set(choices);
+  }
 
   renameObject(id: number, input: HTMLInputElement): void {
     this.objects.renameObject(id, input.value);

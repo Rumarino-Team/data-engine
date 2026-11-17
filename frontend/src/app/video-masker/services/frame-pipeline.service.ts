@@ -2,7 +2,7 @@ import { Injectable, inject, untracked } from '@angular/core';
 import { firstValueFrom, Subject, takeUntil } from 'rxjs';
 import { BackendService, VideoMaskDataResponse } from '../../services/backend.service';
 import { MaskOverlay } from './mask-texture';
-import { CanvasViewportService } from './canvas-viewport.service';
+import { CanvasViewportService, PointEdit } from './canvas-viewport.service';
 import { VideoMaskerStateStore } from './video-masker-state.store';
 import { evictWithLimit, encodedMaskPixelCount } from '../video-masker.util';
 
@@ -58,8 +58,12 @@ export class FramePipelineService {
     currentMaskObjects: {},
   };
 
-  attach(host: HTMLDivElement, onPoint: (point: { x: number; y: number }) => void): void {
-    this.viewport.attach(host, onPoint);
+  attach(
+    host: HTMLDivElement,
+    onPoint: (point: { x: number; y: number }) => void,
+    onPointEdit?: (edit: PointEdit) => void,
+  ): void {
+    this.viewport.attach(host, onPoint, onPointEdit);
     this.attached = true;
   }
 
@@ -213,7 +217,10 @@ export class FramePipelineService {
       if (object) overlays.push({ objectId: object.id, source: mask, color: object.color });
     }
 
-    const points = Array.from(this.store.previewPoints().get(frameIdx)?.values() ?? []).flat();
+    // Each point carries its object and its place in that object's list, so the canvas can edit it.
+    const points = Array.from(this.store.previewPoints().get(frameIdx)?.entries() ?? []).flatMap(
+      ([objId, objectPoints]) => objectPoints.map((point, index) => ({ ...point, objId, index })),
+    );
     const tracks = this.store.trackedPoints();
     const objects = this.store.objects();
     const style = this.store.trackingOverlayStyle();

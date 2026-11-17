@@ -14,6 +14,17 @@ interface Position {
   y: number;
 }
 
+/** A prompt point as drawn; one that says which object and position in its list it is can be edited. */
+export type CanvasPoint = Point & { objId?: number; index?: number };
+
+/** What the user did to an existing prompt point on the canvas. */
+export type PointEdit =
+  | { action: 'move'; objId: number; index: number; x: number; y: number }
+  | { action: 'delete' | 'flip'; objId: number; index: number };
+
+/** How close, in screen pixels, the pointer has to be to a point to grab it. */
+const GRAB_RADIUS = 9;
+
 /** Konva scene and viewport. All scene geometry stays in source-image pixels. */
 @Injectable()
 export class CanvasViewportService {
@@ -43,9 +54,15 @@ export class CanvasViewportService {
     origin: Position;
     pan: boolean;
     moved: boolean;
+    button: number;
+    point: { objId: number; index: number } | null;
   } | null = null;
 
-  attach(host: HTMLDivElement, onPoint: (point: Position) => void): void {
+  attach(
+    host: HTMLDivElement,
+    onPoint: (point: Position) => void,
+    onPointEdit: (edit: PointEdit) => void = () => {},
+  ): void {
     this.detach();
     this.stage = new Stage({
       container: host,
@@ -80,16 +97,22 @@ export class CanvasViewportService {
     host.addEventListener(
       'pointerdown',
       (event) => {
-        if (!this.ready() || this.gesture || (event.button !== 0 && event.button !== 1)) return;
+        if (!this.ready() || this.gesture || event.button < 0 || event.button > 2) return;
+        const pan = event.button === 1 || this.panMode() || this.spacePressed();
+        const start = this.clientToStage(event.clientX, event.clientY);
+        // An existing point under the pointer is edited: dragged, or removed with the right button.
+        const point = pan ? null : this.promptAt(start);
+        if (event.button === 2 && !point) return;
         host.focus({ preventScroll: true });
         event.preventDefault();
-        const pan = event.button === 1 || this.panMode() || this.spacePressed();
         this.gesture = {
           id: event.pointerId,
-          start: this.clientToStage(event.clientX, event.clientY),
+          start,
           origin: this.scene!.position(),
           pan,
           moved: false,
+          button: event.button,
+          point,
         };
         this.panning.set(pan);
         host.setPointerCapture(event.pointerId);
@@ -100,11 +123,22 @@ export class CanvasViewportService {
       'pointermove',
       (event) => {
         const gesture = this.gesture;
-        if (!gesture || gesture.id !== event.pointerId) return;
+        if (!gesture) {
+          const over = this.ready() && !this.panMode() && !this.spacePressed();
+          host.style.cursor =
+            over && this.promptAt(this.clientToStage(event.clientX, event.clientY)) ? 'grab' : '';
+          return;
+        }
+        if (gesture.id !== event.pointerId) return;
         const point = this.clientToStage(event.clientX, event.clientY);
         const dx = point.x - gesture.start.x;
         const dy = point.y - gesture.start.y;
         gesture.moved ||= Math.hypot(dx, dy) > 3;
+        if (gesture.point && gesture.button === 0 && gesture.moved) {
+          // The point follows the pointer; the mask is asked for once, on release.
+          this.promptCircle(gesture.point)?.position(this.stageToImage(point));
+          this.stage!.batchDraw();
+        }
         if (gesture.pan) {
           this.fitMode = false;
           this.scene!.position({ x: gesture.origin.x + dx, y: gesture.origin.y + dy });
@@ -120,7 +154,27 @@ export class CanvasViewportService {
         if (!gesture || gesture.id !== event.pointerId) return;
         const point = this.clientToImage(event.clientX, event.clientY);
         this.cancelGesture();
+        if (gesture.point) {
+          if (gesture.button === 2) onPointEdit({ action: 'delete', ...gesture.point });
+          else if (gesture.moved)
+            onPointEdit({
+              action: 'move',
+              ...gesture.point,
+              ...this.stageToImage(this.clientToStage(event.clientX, event.clientY)),
+            });
+          else if (event.shiftKey) onPointEdit({ action: 'flip', ...gesture.point });
+          return;
+        }
         if (!gesture.pan && !gesture.moved && point) onPoint(point);
+      },
+      options,
+    );
+    // The right button removes a point, so the browser menu stays closed over one.
+    host.addEventListener(
+      'contextmenu',
+      (event) => {
+        if (this.ready() && this.promptAt(this.clientToStage(event.clientX, event.clientY)))
+          event.preventDefault();
       },
       options,
     );
@@ -209,7 +263,7 @@ export class CanvasViewportService {
   render(
     image: HTMLImageElement,
     masks: MaskOverlay[],
-    points: Point[],
+    points: CanvasPoint[],
     tracks: TrackedPointSeries[],
     objects: MaskObject[],
     style: TrackingOverlayStyle,
@@ -243,7 +297,11 @@ export class CanvasViewportService {
     }
     this.annotations.destroyChildren();
     for (const point of points) {
-      this.addPoint(point, point.label === 1 ? '#00ff00' : '#ff0000', 5);
+      this.addPoint(point, point.label === 1 ? '#00ff00' : '#ff0000', 5, {
+        name: 'prompt',
+        objId: point.objId,
+        index: point.index,
+      });
     }
     for (const track of tracks) {
       if (frameIdx < 0 || frameIdx >= track.tracks.length) continue;
@@ -285,10 +343,12 @@ export class CanvasViewportService {
     this.stage!.batchDraw();
   }
 
-  private addPoint(point: Position, color: string, radius: number): void {
+  private addPoint(point: Position, color: string, radius: number, attrs: object = {}): void {
     this.annotations!.add(
       new Circle({
-        ...point,
+        ...attrs,
+        x: point.x,
+        y: point.y,
         radius,
         screenRadius: radius,
         fill: color,
@@ -350,6 +410,43 @@ export class CanvasViewportService {
     return point.x >= 0 && point.y >= 0 && point.x < this.width && point.y < this.height
       ? point
       : null;
+  }
+
+  /** The editable prompt point nearest to a stage position, if one is within reach. */
+  private promptAt(stagePoint: Position): { objId: number; index: number } | null {
+    if (!this.annotations?.isVisible()) return null;
+    let nearest: { objId: number; index: number } | null = null;
+    let reach = GRAB_RADIUS;
+    for (const circle of this.annotations.find<Circle>('.prompt')) {
+      const objId = circle.getAttr('objId');
+      const index = circle.getAttr('index');
+      if (typeof objId !== 'number' || typeof index !== 'number') continue;
+      const at = circle.getAbsolutePosition();
+      const distance = Math.hypot(at.x - stagePoint.x, at.y - stagePoint.y);
+      if (distance <= reach) {
+        reach = distance;
+        nearest = { objId, index };
+      }
+    }
+    return nearest;
+  }
+
+  private promptCircle(point: { objId: number; index: number }): Circle | undefined {
+    return this.annotations
+      ?.find<Circle>('.prompt')
+      .find(
+        (circle) =>
+          circle.getAttr('objId') === point.objId && circle.getAttr('index') === point.index,
+      );
+  }
+
+  /** A stage position in image pixels, kept inside the image. */
+  private stageToImage(stagePoint: Position): Position {
+    const point = this.scene!.getTransform().copy().invert().point(stagePoint);
+    return {
+      x: Math.min(Math.max(point.x, 0), Math.max(0, this.width - 1)),
+      y: Math.min(Math.max(point.y, 0), Math.max(0, this.height - 1)),
+    };
   }
 
   private clientToStage(clientX: number, clientY: number): Position {

@@ -35,6 +35,39 @@ export class PointEditingService {
     );
   }
 
+  async movePoint(
+    objId: number,
+    frameIdx: number,
+    pointIndex: number,
+    x: number,
+    y: number,
+  ): Promise<void> {
+    await this.replacePoint(objId, frameIdx, pointIndex, (point) => ({ ...point, x, y }));
+  }
+
+  /** Turn a positive point into a negative one, or back. */
+  async flipPoint(objId: number, frameIdx: number, pointIndex: number): Promise<void> {
+    await this.replacePoint(objId, frameIdx, pointIndex, (point) => ({
+      ...point,
+      label: point.label === 1 ? 0 : 1,
+    }));
+  }
+
+  private async replacePoint(
+    objId: number,
+    frameIdx: number,
+    pointIndex: number,
+    change: (point: Point) => Point,
+  ): Promise<void> {
+    const points = this.store.points().get(frameIdx)?.get(objId) ?? [];
+    if (pointIndex < 0 || pointIndex >= points.length) return;
+    await this.submitObjectPoints(
+      objId,
+      frameIdx,
+      points.map((point, index) => (index === pointIndex ? change(point) : point)),
+    );
+  }
+
   private async submitObjectPoints(
     objId: number,
     frameIdx: number,

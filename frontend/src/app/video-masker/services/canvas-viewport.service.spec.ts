@@ -1,7 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 import Konva from 'konva';
 import { vi } from 'vitest';
-import { CanvasViewportService } from './canvas-viewport.service';
+import { CanvasViewportService, PointEdit } from './canvas-viewport.service';
 import { MaskOverlay } from './mask-texture';
 
 describe('CanvasViewportService', () => {
@@ -9,6 +9,7 @@ describe('CanvasViewportService', () => {
   let host: HTMLDivElement;
   let stage: Konva.Stage;
   let onPoint = vi.fn<(point: { x: number; y: number }) => void>();
+  let onPointEdit = vi.fn<(edit: PointEdit) => void>();
   let image: HTMLImageElement;
   let masks: MaskOverlay[];
   let disconnect: ReturnType<typeof vi.fn>;
@@ -67,7 +68,8 @@ describe('CanvasViewportService', () => {
     host.releasePointerCapture = vi.fn();
     host.hasPointerCapture = vi.fn(() => true);
     onPoint = vi.fn();
-    viewport.attach(host, onPoint);
+    onPointEdit = vi.fn();
+    viewport.attach(host, onPoint, onPointEdit);
     stage = Konva.stages[Konva.stages.length - 1];
     image = document.createElement('img');
     image.width = 1000;
@@ -102,16 +104,122 @@ describe('CanvasViewportService', () => {
     expect(stage.findOne('.mask')!.getAttr('objectId')).toBe(2);
   });
 
-  function pointer(type: string, x: number, y: number, button = 0): void {
-    const event = new MouseEvent(type, { clientX: x, clientY: y, button, bubbles: true });
+  function pointer(type: string, x: number, y: number, button = 0, shiftKey = false): void {
+    const event = new MouseEvent(type, { clientX: x, clientY: y, button, shiftKey, bubbles: true });
     Object.defineProperty(event, 'pointerId', { value: 1 });
     host.dispatchEvent(event);
   }
 
+  describe('editing a point that is already placed', () => {
+    // The point of object 7 sits at image (100, 50), which is client (132, 92) in this layout.
+    beforeEach(() => {
+      viewport.render(
+        image,
+        masks,
+        [{ x: 100, y: 50, label: 1, objId: 7, index: 0 }],
+        [],
+        [],
+        'point',
+        0,
+      );
+    });
+
+    it('moves it by dragging: it follows the pointer and is reported once, on release', () => {
+      pointer('pointerdown', 132, 92);
+      pointer('pointermove', 172, 102);
+      expect(stage.findOne<Konva.Circle>('.prompt')!.position()).toEqual({ x: 140, y: 60 });
+      expect(onPointEdit).not.toHaveBeenCalled();
+      pointer('pointerup', 172, 102);
+      expect(onPointEdit).toHaveBeenCalledExactlyOnceWith({
+        action: 'move',
+        objId: 7,
+        index: 0,
+        x: 140,
+        y: 60,
+      });
+      expect(onPoint).not.toHaveBeenCalled();
+    });
+
+    it('keeps a point dragged past the edge inside the image', () => {
+      pointer('pointerdown', 132, 92);
+      pointer('pointermove', 5, 5);
+      pointer('pointerup', 5, 5);
+      expect(onPointEdit).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'move', x: 0, y: 0 }),
+      );
+    });
+
+    it('removes it with the right button and keeps the browser menu closed over it', () => {
+      pointer('pointerdown', 132, 92, 2);
+      pointer('pointerup', 132, 92, 2);
+      expect(onPointEdit).toHaveBeenCalledExactlyOnceWith({ action: 'delete', objId: 7, index: 0 });
+      const overPoint = new MouseEvent('contextmenu', {
+        clientX: 132,
+        clientY: 92,
+        cancelable: true,
+      });
+      host.dispatchEvent(overPoint);
+      expect(overPoint.defaultPrevented).toBe(true);
+      const elsewhere = new MouseEvent('contextmenu', {
+        clientX: 400,
+        clientY: 300,
+        cancelable: true,
+      });
+      host.dispatchEvent(elsewhere);
+      expect(elsewhere.defaultPrevented).toBe(false);
+    });
+
+    it('flips it between positive and negative with a shift-click', () => {
+      pointer('pointerdown', 132, 92, 0, true);
+      pointer('pointerup', 132, 92, 0, true);
+      expect(onPointEdit).toHaveBeenCalledExactlyOnceWith({ action: 'flip', objId: 7, index: 0 });
+    });
+
+    it('does not add a second point on top of it, and still adds one elsewhere', () => {
+      pointer('pointerdown', 134, 93);
+      pointer('pointerup', 134, 93);
+      expect(onPoint).not.toHaveBeenCalled();
+      expect(onPointEdit).not.toHaveBeenCalled();
+      pointer('pointerdown', 400, 300);
+      pointer('pointerup', 400, 300);
+      expect(onPoint).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves points alone while panning and when only masks are shown', () => {
+      viewport.panMode.set(true);
+      pointer('pointerdown', 132, 92);
+      pointer('pointermove', 172, 102);
+      pointer('pointerup', 172, 102);
+      viewport.panMode.set(false);
+      viewport.fit();
+      viewport.toggleViewMode('masks');
+      pointer('pointerdown', 132, 92, 2);
+      pointer('pointerup', 132, 92, 2);
+      expect(onPointEdit).not.toHaveBeenCalled();
+    });
+
+    it('shows a grab cursor over a point', () => {
+      pointer('pointermove', 132, 92);
+      expect(host.style.cursor).toBe('grab');
+      pointer('pointermove', 400, 300);
+      expect(host.style.cursor).toBe('');
+    });
+  });
+
   it('draws a tracked point only from the frame it was placed on', () => {
     const track = {
-      point_id: 'p0', obj_id: 1, source_frame_idx: 2, source_x: 10, source_y: 10,
-      tracks: [[10, 10], [10, 10], [10, 10], [12, 11]], visibility: [true, true, true, true],
+      point_id: 'p0',
+      obj_id: 1,
+      source_frame_idx: 2,
+      source_x: 10,
+      source_y: 10,
+      tracks: [
+        [10, 10],
+        [10, 10],
+        [10, 10],
+        [12, 11],
+      ],
+      visibility: [true, true, true, true],
     };
     const trackedPointCircles = (frame: number) => {
       viewport.render(image, masks, [], [track], [], 'point', frame);

@@ -82,6 +82,57 @@ describe('ObjectSidebarComponent', () => {
     expect(removePoint).toHaveBeenCalledTimes(1);
   });
 
+  it('collapses and opens an object point list, whether or not the object is selected', () => {
+    component.store.annotations.set({
+      version: 1,
+      revision: 0,
+      next_object_id: 3,
+      objects: {
+        '1': { id: 1, label: 'Car', color: '#ff0000' },
+        '2': { id: 2, label: 'Person', color: '#00ff00' },
+      },
+      prompts: [],
+    });
+    setAcceptedPoints(
+      component.store,
+      new Map([
+        [
+          0,
+          new Map([
+            [1, [{ x: 1, y: 2, label: 1 }]],
+            [2, [{ x: 3, y: 4, label: 1 }]],
+          ]),
+        ],
+      ]),
+    );
+    component.store.selectedObjectId.set(1);
+    fixture.detectChanges();
+    const element: HTMLElement = fixture.nativeElement;
+    const toggles = () =>
+      element.querySelectorAll<HTMLButtonElement>('app-object-sidebar .point-list-toggle');
+    const lists = () => element.querySelectorAll('app-object-sidebar .child-point-list').length;
+
+    // Only the selected object's list is open until the user says otherwise.
+    expect(lists()).toBe(1);
+    expect(toggles()[0].getAttribute('aria-expanded')).toBe('true');
+    expect(toggles()[1].getAttribute('aria-expanded')).toBe('false');
+
+    toggles()[0].click();
+    fixture.detectChanges();
+    expect(lists()).toBe(0);
+
+    toggles()[1].click();
+    fixture.detectChanges();
+    expect(lists()).toBe(1);
+    expect(component.store.selectedObjectId()).toBe(1);
+
+    // A list the user closed stays closed when its object is selected again.
+    component.store.selectedObjectId.set(2);
+    component.store.selectedObjectId.set(1);
+    fixture.detectChanges();
+    expect(toggles()[0].getAttribute('aria-expanded')).toBe('false');
+  });
+
   it('shows separately placed points under their owning object and navigates to their frame', () => {
     component.store.annotations.set({
       version: 1,

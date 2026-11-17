@@ -136,6 +136,46 @@ describe('point-editing workflows', () => {
     },
   );
 
+  it('moves or flips one point by sending the whole list with only that point changed', async () => {
+    backendMock.addNewPointsOrBox.mockReturnValue(of(makeResponse({})));
+    const accepted = [
+      { x: 1, y: 2, label: 1 },
+      { x: 3, y: 4, label: 0 },
+    ];
+    setAcceptedPoints(editor.store, new Map([[5, new Map([[1, accepted]])]]));
+
+    await editor.prompts.movePoint(1, 5, 1, 30, 40);
+    expect(backendMock.addNewPointsOrBox).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        frame_idx: 5,
+        obj_id: 1,
+        points: [
+          [1, 2],
+          [30, 40],
+        ],
+        labels: [1, 0],
+        clear_old_points: true,
+      }),
+      expect.anything(),
+    );
+
+    setAcceptedPoints(editor.store, new Map([[5, new Map([[1, accepted]])]]));
+    await editor.prompts.flipPoint(1, 5, 0);
+    expect(backendMock.addNewPointsOrBox).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        points: [
+          [1, 2],
+          [3, 4],
+        ],
+        labels: [0, 0],
+      }),
+      expect.anything(),
+    );
+
+    await editor.prompts.movePoint(1, 5, 9, 0, 0);
+    expect(backendMock.addNewPointsOrBox).toHaveBeenCalledTimes(2);
+  });
+
   it('uses displayed frame index in request and stores mask on that frame', async () => {
     backendMock.addNewPointsOrBox.mockReturnValue(of(makeResponse({})));
 

@@ -2,40 +2,58 @@
   <h3>Objects</h3>
   <div class="object-list">
     <div *ngFor="let obj of store.objectPointGroups()" class="object-family">
-      <div
-        *ngIf="store.selectedObjectId() === obj.id; else unselectedObject"
-        class="object-item selected"
-      >
-        <span class="color-indicator" [style.background-color]="obj.color"></span>
-        <input
-          #objectLabel
-          type="text"
-          class="object-name-input"
-          aria-label="Object label"
-          [value]="obj.label"
-          maxlength="200"
-          [disabled]="store.isInteractionBusy()"
-          (change)="renameObject(obj.id, objectLabel)"
-          (keydown.enter)="objectLabel.blur()"
-        />
-        <small>{{ obj.children.length }} points</small>
-      </div>
-      <ng-template #unselectedObject>
+      <div class="object-row">
         <button
           type="button"
-          class="object-item"
-          [disabled]="store.isInteractionBusy()"
-          (click)="store.selectedObjectId.set(obj.id)"
-          aria-pressed="false"
+          class="point-list-toggle"
+          [attr.aria-expanded]="isPointListOpen(obj.id)"
+          [attr.aria-label]="
+            (isPointListOpen(obj.id) ? 'Collapse' : 'Open') + ' the point list of ' + obj.label
+          "
+          [title]="isPointListOpen(obj.id) ? 'Collapse point list' : 'Open point list'"
+          (click)="togglePointList(obj.id)"
+        >
+          {{ isPointListOpen(obj.id) ? '▾' : '▸' }}
+        </button>
+        <div
+          *ngIf="store.selectedObjectId() === obj.id; else unselectedObject"
+          class="object-item selected"
         >
           <span class="color-indicator" [style.background-color]="obj.color"></span>
-          <span>{{ obj.label }}</span>
+          <input
+            #objectLabel
+            type="text"
+            class="object-name-input"
+            aria-label="Object label"
+            [value]="obj.label"
+            maxlength="200"
+            [disabled]="store.isInteractionBusy()"
+            (change)="renameObject(obj.id, objectLabel)"
+            (keydown.enter)="objectLabel.blur()"
+          />
           <small>{{ obj.children.length }} points</small>
-        </button>
-      </ng-template>
-      <div class="object-children" *ngIf="store.selectedObjectId() === obj.id">
+        </div>
+        <ng-template #unselectedObject>
+          <button
+            type="button"
+            class="object-item"
+            [disabled]="store.isInteractionBusy()"
+            (click)="store.selectedObjectId.set(obj.id)"
+            aria-pressed="false"
+          >
+            <span class="color-indicator" [style.background-color]="obj.color"></span>
+            <span>{{ obj.label }}</span>
+            <small>{{ obj.children.length }} points</small>
+          </button>
+        </ng-template>
+      </div>
+      <div class="object-children" *ngIf="isPointListOpen(obj.id)">
         <p *ngIf="!obj.children.length" class="point-empty">
-          Click the canvas to add child points.
+          {{
+            store.selectedObjectId() === obj.id
+              ? 'Click the canvas to add child points.'
+              : 'No points yet.'
+          }}
         </p>
         <ul class="child-point-list" aria-label="Child points">
           <li *ngFor="let point of obj.children">

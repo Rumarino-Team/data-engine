@@ -108,8 +108,8 @@ describe('FramePipelineService', () => {
 
     expect(rendered[6]).toBe(0);
     expect(rendered[2]).toEqual([
-      { x: 12, y: 24, label: 1 },
-      { x: 30, y: 40, label: 0 },
+      { x: 12, y: 24, label: 1, objId: 1, index: 0 },
+      { x: 30, y: 40, label: 0, objId: 1, index: 1 },
     ]);
   });
 

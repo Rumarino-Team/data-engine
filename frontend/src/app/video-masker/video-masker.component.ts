@@ -18,7 +18,7 @@ import { ConfirmService } from './services/confirm.service';
 import { SessionLeaveService } from './services/session-leave.service';
 import { VideoMaskerStateStore } from './services/video-masker-state.store';
 import { FramePipelineService } from './services/frame-pipeline.service';
-import { CanvasViewportService } from './services/canvas-viewport.service';
+import { CanvasViewportService, PointEdit } from './services/canvas-viewport.service';
 import { ObjectSidebarComponent } from './components/object-sidebar/object-sidebar.component';
 import { ObjectOperationsService } from './services/object-operations.service';
 import { BackendConnectionService } from './services/backend-connection.service';
@@ -124,8 +124,10 @@ export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
 
   ngAfterViewInit(): void {
     if (this.canvasHostRef?.nativeElement) {
-      this.framePipeline.attach(this.canvasHostRef.nativeElement, (point) =>
-        this.onCanvasPoint(point),
+      this.framePipeline.attach(
+        this.canvasHostRef.nativeElement,
+        (point) => this.onCanvasPoint(point),
+        (edit) => this.onCanvasPointEdit(edit),
       );
     }
     this.connection.checkApiHealth(true);
@@ -407,6 +409,27 @@ export class VideoMaskerComponent implements AfterViewInit, OnDestroy {
       return;
     }
     void this.prompts.addPoint(point.x, point.y, label, frameIdx);
+  }
+
+  /** A point on the canvas was dragged, right-clicked or shift-clicked. */
+  onCanvasPointEdit(edit: PointEdit): void {
+    const frameIdx = this.store.displayedFrameIdx();
+    if (
+      frameIdx < 0 ||
+      this.store.isFrameLoading() ||
+      this.store.isInteractionBusy() ||
+      !this.framePipeline.currentBaseImage
+    ) {
+      // Nothing is sent, so put a dragged point back where it was.
+      this.framePipeline.redraw();
+      return;
+    }
+    this.store.selectedObjectId.set(edit.objId);
+    if (edit.action === 'move')
+      void this.prompts.movePoint(edit.objId, frameIdx, edit.index, edit.x, edit.y);
+    else if (edit.action === 'delete')
+      void this.prompts.removePoint(edit.objId, frameIdx, edit.index);
+    else void this.prompts.flipPoint(edit.objId, frameIdx, edit.index);
   }
 
   onScrubberFrameChange(value: number | string): void {
