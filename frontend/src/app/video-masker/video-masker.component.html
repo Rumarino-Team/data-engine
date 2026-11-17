@@ -224,7 +224,10 @@
         >
           Redo
         </button>
-        <span id="canvas-help">Scroll to zoom · Space + drag to pan</span>
+        <span id="canvas-help"
+          >Scroll to zoom · Space + drag to pan · Drag a point to move it · Right-click to delete ·
+          Shift + click to flip</span
+        >
       </div>
       <div
         #canvasHost
@@ -276,20 +279,6 @@
       <div class="section action-section">
         <h3>Actions</h3>
         <div class="action-panel">
-          <button
-            class="panel-action-btn"
-            (click)="tracking.runTracking()"
-            [disabled]="!store.isInitialized() || store.isInteractionBusy()"
-          >
-            Track Prompt Points
-          </button>
-          <button
-            class="panel-action-btn"
-            (click)="propagation.propagate()"
-            [disabled]="!store.isInitialized() || store.isInteractionBusy()"
-          >
-            Propagate Masks
-          </button>
           <div class="propagation-range" aria-label="Propagation frame range">
             <button
               class="panel-action-btn"
@@ -310,6 +299,20 @@
               End Frame
             </button>
           </div>
+          <button
+            class="panel-action-btn"
+            (click)="propagation.propagate()"
+            [disabled]="!store.isInitialized() || store.isInteractionBusy()"
+          >
+            Propagate Masks
+          </button>
+          <button
+            class="panel-action-btn"
+            (click)="tracking.runTracking()"
+            [disabled]="!store.isInitialized() || store.isInteractionBusy()"
+          >
+            Track Prompt Points
+          </button>
           <button
             class="panel-action-btn panel-action-btn-danger"
             (click)="propagation.clearMasks()"

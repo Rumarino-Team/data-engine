@@ -72,6 +72,8 @@ describe('ObjectSidebarComponent', () => {
     );
     const removePoint = vi.spyOn(component.prompts, 'removePoint').mockResolvedValue();
     fixture.detectChanges();
+    fixture.nativeElement.querySelector('app-object-sidebar .point-list-toggle').click();
+    fixture.detectChanges();
     const buttons = fixture.nativeElement.querySelectorAll('app-object-sidebar .point-remove');
     buttons[1].click();
     expect(component.store.targetFrameIdx()).toBe(2);
@@ -112,25 +114,20 @@ describe('ObjectSidebarComponent', () => {
       element.querySelectorAll<HTMLButtonElement>('app-object-sidebar .point-list-toggle');
     const lists = () => element.querySelectorAll('app-object-sidebar .child-point-list').length;
 
-    // Only the selected object's list is open until the user says otherwise.
-    expect(lists()).toBe(1);
-    expect(toggles()[0].getAttribute('aria-expanded')).toBe('true');
-    expect(toggles()[1].getAttribute('aria-expanded')).toBe('false');
-
-    toggles()[0].click();
-    fixture.detectChanges();
+    // Every list starts collapsed, selected or not.
     expect(lists()).toBe(0);
+    expect(toggles()[0].getAttribute('aria-expanded')).toBe('false');
+    expect(toggles()[1].getAttribute('aria-expanded')).toBe('false');
 
     toggles()[1].click();
     fixture.detectChanges();
     expect(lists()).toBe(1);
+    expect(toggles()[1].getAttribute('aria-expanded')).toBe('true');
     expect(component.store.selectedObjectId()).toBe(1);
 
-    // A list the user closed stays closed when its object is selected again.
-    component.store.selectedObjectId.set(2);
-    component.store.selectedObjectId.set(1);
+    toggles()[1].click();
     fixture.detectChanges();
-    expect(toggles()[0].getAttribute('aria-expanded')).toBe('false');
+    expect(lists()).toBe(0);
   });
 
   it('shows separately placed points under their owning object and navigates to their frame', () => {

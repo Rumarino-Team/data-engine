@@ -16,17 +16,17 @@ export class ObjectSidebarComponent {
   readonly objects = inject(ObjectOperationsService);
   private readonly prompts = inject(PointEditingService);
 
-  /** Point lists the user opened or closed by hand; an object left alone shows its list while selected. */
-  private readonly pointListChoices = signal(new Map<number, boolean>());
+  /** Objects whose point list the user opened; every list starts collapsed. */
+  private readonly openPointLists = signal(new Set<number>());
 
   isPointListOpen(objectId: number): boolean {
-    return this.pointListChoices().get(objectId) ?? this.store.selectedObjectId() === objectId;
+    return this.openPointLists().has(objectId);
   }
 
   togglePointList(objectId: number): void {
-    const choices = new Map(this.pointListChoices());
-    choices.set(objectId, !this.isPointListOpen(objectId));
-    this.pointListChoices.set(choices);
+    const open = new Set(this.openPointLists());
+    if (!open.delete(objectId)) open.add(objectId);
+    this.openPointLists.set(open);
   }
 
   renameObject(id: number, input: HTMLInputElement): void {
