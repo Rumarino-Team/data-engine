@@ -1,7 +1,9 @@
 <div class="loading-overlay" *ngIf="isLoading">
   <div class="progress-panel">
     <div class="progress-title">{{ activeJobTitle || 'Processing' }}</div>
-    <div class="progress-stage">{{ activeJob?.stage_label || 'Starting operation' }}</div>
+    <div class="progress-stage" *ngIf="showStage()">
+      {{ activeJob?.stage_label || 'Starting operation' }}
+    </div>
 
     <div class="progress-bars" *ngIf="isPropagationJob(); else singleProgress">
       <div class="progress-bar-block">

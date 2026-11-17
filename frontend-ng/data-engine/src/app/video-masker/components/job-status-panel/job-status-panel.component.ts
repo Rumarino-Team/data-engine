@@ -14,6 +14,12 @@ export class JobStatusPanelComponent {
   @Input() activeJob: BackendJob | null = null;
   @Input() activeJobTitle = '';
 
+  /** A stage named like the job itself ("Propagating masks" under "Propagating masks") says nothing new. */
+  showStage(): boolean {
+    const stage = this.activeJob?.stage_label?.trim().toLowerCase();
+    return !stage || stage !== this.activeJobTitle.trim().toLowerCase();
+  }
+
   isPropagationJob(): boolean {
     return this.activeJob?.operation === 'mask_propagation';
   }
