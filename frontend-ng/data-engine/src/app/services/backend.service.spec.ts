@@ -96,6 +96,21 @@ describe('BackendService', () => {
     expect(service.getApiUrl()).toBe('http://192.168.0.50:9000');
   });
 
+  it('still works when browser storage is blocked', () => {
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new DOMException('blocked', 'SecurityError');
+    });
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('blocked', 'SecurityError');
+    });
+    const http = { post: vi.fn(), get: vi.fn() } as unknown as HttpClient;
+
+    const service = new BackendService(http);
+    service.setApiUrl('http://localhost:9001/');
+
+    expect(service.getApiUrl()).toBe('http://localhost:9001');
+  });
+
   it('updates future requests after applying a new API URL', () => {
     const http = {
       post: vi.fn(() => of({})),
