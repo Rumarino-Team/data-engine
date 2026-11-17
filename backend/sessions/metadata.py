@@ -54,6 +54,7 @@ def session_metadata_document(session: SessionState, overrides: Optional[dict[st
                 "batch_size": session.video_masker.default_batch_size,
                 "offload_video_to_cpu": session.video_masker.offload_video_to_cpu,
                 "offload_state_to_cpu": session.video_masker.offload_state_to_cpu,
+                "frame_loading": session.video_masker.frame_loading,
             }
         )
     metadata.update(session.session_metadata)

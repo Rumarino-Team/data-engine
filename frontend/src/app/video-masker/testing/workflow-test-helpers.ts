@@ -253,6 +253,7 @@ export function createBackendMocks() {
     return job.pipe(
       map(({ job: { result } }) => ({
         predictor_ready: true,
+        frame_loading: result.frame_loading,
         session_id: 'session-1',
         num_frames: result.num_frames,
         frame_files: Array.from({ length: result.num_frames }, (_, frame) => `${frame}.jpg`),

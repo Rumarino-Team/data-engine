@@ -200,6 +200,8 @@ export interface ObjectCreationResponse extends AnnotationUpdate {
 
 export interface VideoInfoResponse extends AnnotationSnapshot {
   predictor_ready: boolean;
+  /** How the open session holds its frames; null when no video is loaded. */
+  frame_loading?: FrameLoadingMode | null;
   num_frames: number;
   frame_files: string[];
 }

@@ -136,6 +136,7 @@ class VideoInfoResponse(Response):
     outdated_masks: dict[str, list[tuple[int, int]]]
     history: HistoryStatus
     predictor_ready: bool
+    frame_loading: Optional[FrameLoading]
     num_frames: int
     frame_files: list[str]
 

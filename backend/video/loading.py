@@ -1,6 +1,6 @@
 import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, get_args
 from pydantic import ValidationError
 from core.annotations import SessionAnnotations
 from core.config import IMAGE_EXTENSIONS
@@ -24,10 +24,13 @@ from video.runtime import MaskerSettings, VideoMasker
 
 logger = logging.getLogger(__name__)
 
-def open_saved_session(checkpoint_dir: Path, session: SessionState, job: JobHandle) -> dict[str, Any]:
+def open_saved_session(
+    checkpoint_dir: Path, session: SessionState, job: JobHandle,
+) -> tuple[dict[str, Any], Optional[FrameLoading]]:
     """Open a checkpoint as a new working copy and restore its accepted state into `session`.
 
-    Returns the restored payload for the response.
+    Returns the restored payload for the response, and the frame loading mode the session was saved with
+    (None when it was saved before the mode was recorded, or names a mode this version does not know).
     """
     session_metadata = load_session_metadata(checkpoint_dir)
     checkpoint_id, display_name = session_metadata.get("checkpoint_id"), session_metadata.get("display_name")
@@ -79,7 +82,8 @@ def open_saved_session(checkpoint_dir: Path, session: SessionState, job: JobHand
         restored["tracking_result"] = tracking_result
     if not frame_files:
         raise OperationError(400, f"No image frames found under saved session frames directory: {frames_dir}")
-    return restored
+    saved_frame_loading = session_metadata.get("frame_loading")
+    return restored, saved_frame_loading if saved_frame_loading in get_args(FrameLoading) else None
 
 
 def import_frames(resolved_input_path: Path, session: SessionState, job: JobHandle) -> None:
@@ -194,7 +198,9 @@ def initialize_video_state_from_resolved_input(
     saved_session_layout = resolve_saved_session_layout(resolved_input_path)
     if saved_session_layout is not None:
         source_type = "saved_session"
-        restored_session_payload = open_saved_session(saved_session_layout[0], session, job)
+        restored_session_payload, saved_frame_loading = open_saved_session(saved_session_layout[0], session, job)
+        # A saved session reopens the way it was last used, whatever the request asks for.
+        frame_loading = saved_frame_loading or frame_loading
     else:
         validate_video_input_path(resolved_input_path)
         source_type = "video_file" if resolved_input_path.is_file() else "frames_dir"

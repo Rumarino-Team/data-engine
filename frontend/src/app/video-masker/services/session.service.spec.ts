@@ -166,6 +166,16 @@ describe('session workflows', () => {
     });
   });
 
+  it('shows the mode a saved session reopened with, not the one that was selected', async () => {
+    mockInitJob(backendMock, { frame_loading: 'preload', source_type: 'saved_session' });
+    editor.store.videoDir.set('C:/saved');
+    editor.store.frameLoadingMode.set('eager');
+
+    await editor.sessions.initVideo();
+
+    expect(editor.store.frameLoadingMode()).toBe('preload');
+  });
+
   it('creates an error toast when a job fails', async () => {
     mockJob(
       backendMock.initVideoState,
@@ -398,6 +408,8 @@ describe('a session the backend still holds', () => {
       expect(editor.store.selectedObjectId()).toBe(1);
       expect(editor.store.propagationEndFrameIdx()).toBe(923);
       expect(editor.store.openBackendSession()).toBeNull();
+      // Nothing reported: the selector is left as it was.
+      expect(editor.store.frameLoadingMode()).toBe('lazy');
       expect(editor.store.isLoading()).toBe(false);
       expect(backendMock.initVideoState).not.toHaveBeenCalled();
     });

@@ -219,6 +219,8 @@ export class SessionService {
       this.store.applyAnnotationSnapshot(info, true);
       this.store.saveName.set(info.saved_state?.display_name ?? '');
       this.store.numFrames.set(info.num_frames);
+      // The selector shows the mode the session really uses: a saved session reopens with its own.
+      if (info.frame_loading) this.store.frameLoadingMode.set(info.frame_loading);
       this.restoreInteractiveSessionState(restored);
       if (!this.store.objects().some((object) => object.id === this.store.selectedObjectId())) {
         this.store.selectedObjectId.set(this.store.objects()[0]?.id ?? null);

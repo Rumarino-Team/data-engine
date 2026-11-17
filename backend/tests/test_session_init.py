@@ -287,6 +287,27 @@ class SessionReplacementTests(SessionStateTestCase):
         self.assertIsNone(state.mask_manifest_path)
         self.assertNotIn("tracking_result", result)
 
+    def test_a_saved_session_reopens_with_the_frame_loading_it_was_saved_with(self):
+        self.old_masker.frame_loading = "preload"
+        self.assertEqual(session_metadata_document(state)["frame_loading"], "preload")
+        for label, saved_mode, expected in (
+            ("saved with a mode", "preload", "preload"),
+            ("saved before modes were recorded", None, "eager"),
+            ("names a mode this version does not know", "streaming", "eager"),
+        ):
+            with self.subTest(label):
+                saved = self.hand_edited_checkpoint(frame_loading=saved_mode)
+                if saved_mode is None:
+                    metadata = json.loads((saved / "session.json").read_text())
+                    del metadata["frame_loading"]
+                    (saved / "session.json").write_text(json.dumps(metadata))
+                candidate = self.masker()
+                request = VideoInitStateRequest(video_frames_dir=str(saved), frame_loading="eager")
+                with patch.object(prompts.svm, "SAM2VideoMasker", return_value=candidate):
+                    loading.run_video_init_job(self.ctx, request, self.job_handle())
+                self.assertEqual(candidate.init_state.call_args.kwargs["frame_loading"], expected)
+                shutil.rmtree(saved)
+
     def test_saved_session_replay_failure_preserves_both_sessions_and_artifacts(self):
         saved = self.root / "saved"
         (saved / "frames").mkdir(parents=True)

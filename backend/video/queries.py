@@ -13,6 +13,7 @@ def get_video_info(ctx: AppContext) -> dict[str, Any]:
         return {
             **annotation_snapshot(session),
             "predictor_ready": session.video_masker is not None and bool(session.video_masker.state_loaded),
+            "frame_loading": session.video_masker.frame_loading if session.video_masker is not None else None,
             "num_frames": len(session.video_frame_files),
             "frame_files": list(session.video_frame_files),
         }
