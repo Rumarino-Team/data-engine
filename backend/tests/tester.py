@@ -668,7 +668,7 @@ def run_tracking_mode_tests():
         return
 
     print("\n--- Track only ---")
-    success, tracking = track_prompt_points(add_support_grid=False)
+    success, tracking = track_prompt_points(add_support_grid=True)
     if not check("track only: tracking result saved", success and (tracking or {}).get("num_points", 0) > 0):
         reset_video_state()
         return

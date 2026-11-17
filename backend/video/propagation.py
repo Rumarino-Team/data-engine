@@ -6,7 +6,7 @@ import cv2
 from core.context import AppContext
 from core.errors import OperationError
 from core.jobs import JobHandle, capture_job_inputs, validate_job_inputs
-from core.runtime import cleanup_cuda_memory, is_out_of_memory
+from core.runtime import cleanup_cuda_memory, is_out_of_memory, release_heap_memory
 from core.session_layout import MANIFEST_PREFIX, OVERLAY_DIR_PREFIX
 from core.state import SessionState
 from schemas.responses import JobOperation, PropagationResult
@@ -15,7 +15,9 @@ from sessions.checkpoints import saved_state
 from sessions.metadata import current_masks_dir
 from sessions.publication import publish_results
 import numpy as np
-from utils import build_empty_mask_manifest, load_mask_manifest, prepare_video_masks_output, save_single_video_mask_frame, write_mask_manifest
+from tqdm import tqdm
+from mask_manifest import FrameRecord, frame_record, read_records, write_manifest
+from utils import build_empty_mask_manifest, prepare_video_masks_output, save_single_video_mask_frame
 from video.masks import manifest_frame_payload, outdated_mask_ranges, override_pixels
 from video.prompts import create_masker_runtime
 from video.runtime import MaskerRestorationError, MaskerSettings
@@ -64,7 +66,8 @@ class PropagationRun:
     frame_files: list
     masks_dir: Path
     manifest_path: Path
-    manifest: dict[str, Any]
+    manifest: dict[str, Any]  # everything but the frames, which are kept below as their JSON
+    frames: dict[str, FrameRecord]
     frame_width: int
     frame_height: int
     guidance: Optional[TrackingGuidance]
@@ -81,10 +84,6 @@ class PropagationRun:
     @property
     def expected_total_frames(self) -> int:
         return self.end_frame_idx - self.start_frame_idx + 1
-
-    @property
-    def manifest_frames(self) -> dict[str, Any]:
-        return self.manifest["frames"]
 
     def report(self, stage: str, label: str, message: str, *, frame_idx: int,
                current: Optional[int] = None, total: Optional[int] = None, **extra: Any) -> None:
@@ -168,9 +167,8 @@ def open_run(session: SessionState, request: VideoPropagateRequest, job: JobHand
     manifest["session_id"] = inputs["session_id"]
     manifest["input_revision"] = inputs["input_revision"]
     previous_manifest_path = Path(session.mask_manifest_path) if session.mask_manifest_path else None
-    if previous_manifest_path and previous_manifest_path.exists():
-        # Each processed frame replaces its previous result; other ranges survive.
-        manifest["frames"].update(load_mask_manifest(previous_manifest_path).get("frames", {}))
+    # Each processed frame replaces its previous result; other ranges survive.
+    frames = read_records(previous_manifest_path) if previous_manifest_path and previous_manifest_path.exists() else {}
 
     guidance = None
     if request.use_tracked_points:
@@ -182,7 +180,7 @@ def open_run(session: SessionState, request: VideoPropagateRequest, job: JobHand
     return PropagationRun(
         session=session, request=request, job=job, settings=settings,
         start_frame_idx=start_frame_idx, end_frame_idx=end_frame_idx, frame_files=frame_files,
-        masks_dir=masks_dir, manifest_path=manifest_path, manifest=manifest,
+        masks_dir=masks_dir, manifest_path=manifest_path, manifest=manifest, frames=frames,
         frame_width=frame_width, frame_height=frame_height, guidance=guidance, overlay_dir=overlay_dir,
     )
 
@@ -195,17 +193,26 @@ def seed_tracked_points(run: PropagationRun, masker) -> None:
     session, request = run.session, run.request
     run.report("seeding_tracked_points", "Seeding tracked points", "Seeding tracked points from the latest tracking result",
                frame_idx=run.start_frame_idx)
-    excluded = {(mask.frame_idx, mask.obj_id) for mask in session.annotations.mask_overrides}
+    # The frames the user prompted or gave a mask for stay exactly as they were defined.
+    user_frames = {(prompt.frame_idx, prompt.obj_id) for prompt in session.annotations.prompts}
+    user_frames.update((mask.frame_idx, mask.obj_id) for mask in session.annotations.mask_overrides)
     batches, seeded_count, seeded_frames = guidance.build_seed_batches(
         range_start=run.start_frame_idx,
         range_end=run.end_frame_idx,
+        num_video_frames=len(session.video_frame_files),
         frame_width=run.frame_width,
         frame_height=run.frame_height,
         keyframe_interval=request.tracked_point_keyframe_interval,
         max_keyframes=request.max_tracked_keyframes,
         max_points_per_object_per_frame=request.max_tracked_points_per_object_per_frame,
-        excluded_frame_objects=excluded,
+        excluded_frame_objects=user_frames,
     )
+    if not batches:
+        # propagation_result reports this when nothing was seeded; objects left out earlier are named in the reason.
+        earlier = f" {guidance.skipped_reason}" if guidance.skipped_reason else ""
+        guidance.skipped_reason = ("No frame could be seeded from tracked points under the seeding rules (prompted "
+                                   "frames, hidden points and the last 16 frames of the video are left alone)." + earlier)
+        guidance.should_warn = True
     for offset, obj_batches in sorted(batches.items()):
         for obj_id, points in sorted(obj_batches.items()):
             if points:
@@ -240,7 +247,7 @@ def collect_frame(run: PropagationRun, frame_idx: int, frame_masks: dict[int, np
     for mask in session.annotations.mask_overrides:
         if mask.frame_idx == frame_idx:
             frame_masks[mask.obj_id] = override_pixels(mask, session.active_session_dir)
-    run.manifest_frames[str(frame_idx)] = {
+    frame = {
         **manifest_frame_payload(frame_masks),
         "input_revisions": {str(obj_id): session.annotations.input_revisions.get(int(obj_id), 0)
                             for obj_id in frame_masks},
@@ -253,26 +260,33 @@ def collect_frame(run: PropagationRun, frame_idx: int, frame_masks: dict[int, np
         try:
             saved_path = save_single_video_mask_frame(run.frame_files, run.overlay_dir, frame_idx, frame_masks)
             if saved_path is not None:
-                run.manifest_frames[str(frame_idx)]["overlay_path"] = Path(saved_path).relative_to(run.masks_dir).as_posix()
+                frame["overlay_path"] = Path(saved_path).relative_to(run.masks_dir).as_posix()
                 run.saved_mask_frame_count += 1
                 if request.include_saved_mask_paths:
                     run.saved_mask_paths.setdefault(frame_idx, []).append(saved_path)
         except Exception:
             run.save_failures += 1
             logger.exception("Failed to save propagated mask frame %s", frame_idx)
+    run.frames[str(frame_idx)] = frame_record(frame)
 
 
 def propagate_range(run: PropagationRun, masker) -> None:
     settings = run.settings
-    masker.propagate_in_video(
-        start_frame_idx=run.start_frame_idx,
-        max_frame_num_to_track=run.expected_total_frames,
-        reverse=False,
-        batch_size=settings.batch_size,
-        online_mode=settings.online_mode,
-        collect_segments=False,
-        frame_callback=lambda frame_idx, frame_masks: collect_frame(run, frame_idx, frame_masks),
-    )
+    # SAM2 prints one bar per batch; this one, above it, covers the whole range. Shown only in a terminal.
+    with tqdm(total=run.expected_total_frames, desc="propagate (all frames)", unit="frame") as bar:
+        def frame_done(frame_idx: int, frame_masks: dict[int, np.ndarray]) -> None:
+            collect_frame(run, frame_idx, frame_masks)
+            bar.update(1)
+
+        masker.propagate_in_video(
+            start_frame_idx=run.start_frame_idx,
+            max_frame_num_to_track=run.expected_total_frames,
+            reverse=False,
+            batch_size=settings.batch_size,
+            online_mode=settings.online_mode,
+            collect_segments=False,
+            frame_callback=frame_done,
+        )
     run.report("propagating_masks", "Propagating masks", "Finished propagating", frame_idx=run.end_frame_idx)
 
 
@@ -286,7 +300,7 @@ def publish_run(ctx: AppContext, run: PropagationRun, inputs: dict[str, Any]) ->
         message="Saving mask manifest",
     )
     with publish_results(ctx, inputs, JobOperation.MASK_PROPAGATION) as session:
-        write_mask_manifest(run.manifest_path, run.manifest)
+        write_manifest(run.manifest_path, run.manifest, run.frames)
         session.interactive_mask_files = {key: value for key, value in session.interactive_mask_files.items()
                                           if int(key) not in run.processed_frames}
         session.mask_manifest_path = str(run.manifest_path)
@@ -358,4 +372,7 @@ def run_propagation_job(ctx: AppContext, request: VideoPropagateRequest, job: Jo
         raise OperationError(500, f"Failed to propagate video masks: {error}") from error
 
     published = publish_run(ctx, run, inputs)
-    return propagation_result(run, inputs, published)
+    result = propagation_result(run, inputs, published)
+    run.frames.clear()  # the manifest is on disk; do not keep its frames while the heap is given back
+    release_heap_memory()
+    return result

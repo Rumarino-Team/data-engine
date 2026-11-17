@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core.errors import OperationError
 from core.context import AppContext, SessionManager
 from core.jobs import JobHandle
+from core.runtime import release_heap_memory
 from core.state import SessionState
 from core.annotations import SessionAnnotations
 from schemas.video import VideoPropagateRequest
@@ -75,8 +76,9 @@ class PartialPropagationTests(unittest.TestCase):
                         "create_masker_runtime": lambda session: runtime,
                     }.items():
                         patches.enter_context(patch.object(propagation, name, value))
+                    released = patches.enter_context(patch.object(propagation, "release_heap_memory"))
                     # Repeat the shorter range: neither run may remove the earlier/later data.
-                    for _ in range(2):
+                    for run_number in (1, 2):
                         response = propagation.run_propagation_job(ctx, VideoPropagateRequest(
                             start_frame_idx=1, max_frame_num_to_track=2, use_tracked_points=False,
                             export_overlay_frames=export_overlay_frames,
@@ -108,13 +110,15 @@ class PartialPropagationTests(unittest.TestCase):
                         self.assertEqual(outdated, {"1": [[0, 0], [3, 4]]} if explicit_override else {})
                         if explicit_override:
                             self.assertTrue(any(call.kwargs["mask"].all() for call in masker.add_new_mask.call_args_list))
+                        # The finished job gives its freed memory back, and a successful publish is on disk by then.
+                        self.assertEqual(released.call_count, run_number)
 
                     previous_path = state.mask_manifest_path
                     previous_masks = dict(state.interactive_mask_files)
                     previous_manifest = Path(previous_path).read_bytes()
                     request = VideoPropagateRequest(start_frame_idx=1, max_frame_num_to_track=2,
                                                     use_tracked_points=False, export_overlay_frames=False)
-                    with patch.object(propagation, "write_mask_manifest", side_effect=OSError("disk full")):
+                    with patch.object(propagation, "write_manifest", side_effect=OSError("disk full")):
                         with self.assertRaises(OSError):
                             propagation.run_propagation_job(ctx, request, Mock(spec=JobHandle))
                     self.assertEqual(state.mask_manifest_path, previous_path)
@@ -134,6 +138,15 @@ class PartialPropagationTests(unittest.TestCase):
                     self.assertEqual(state.mask_manifest_path, previous_path)
                     self.assertEqual(state.interactive_mask_files, previous_masks)
 
+
+
+class ReleaseHeapMemoryTests(unittest.TestCase):
+    def test_it_runs_and_tolerates_a_system_without_malloc_trim(self):
+        release_heap_memory()
+        with patch("core.runtime.ctypes.CDLL", side_effect=OSError("no libc.so.6")):
+            release_heap_memory()
+        with patch("core.runtime.ctypes.CDLL", return_value=object()):
+            release_heap_memory()
 
 
 class PropagationProgressTests(unittest.TestCase):

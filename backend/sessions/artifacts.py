@@ -18,15 +18,14 @@ from core.session_layout import (
 )
 from core.state import SessionState
 from sessions.paths import manifest_relative_path
-from utils import load_mask_manifest
+from mask_manifest import manifest_index
 
 logger = logging.getLogger(__name__)
 
 @lru_cache(maxsize=1)
 def _read_manifest_overlays(manifest_path: str, mtime_ns: int, size: int) -> frozenset[str]:
-    frames = load_mask_manifest(Path(manifest_path)).get("frames", {})
-    return frozenset(f"{MASKS_DIR}/{manifest_relative_path(frame['overlay_path'])}"
-                     for frame in frames.values() if frame.get("overlay_path"))
+    return frozenset(f"{MASKS_DIR}/{manifest_relative_path(entry.overlay)}"
+                     for entry in manifest_index(Path(manifest_path)).values() if entry.overlay)
 
 def _manifest_overlays(manifest_path: str) -> frozenset[str]:
     # Published manifests are immutable, so the overlay set is cached per file version.

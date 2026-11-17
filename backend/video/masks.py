@@ -8,11 +8,11 @@ import numpy as np
 from core.errors import OperationError
 from core.session_layout import INTERACTIVE_DIR, MASKS_DIR, OVERRIDES_DIR
 from core.state import SessionState
+from mask_manifest import manifest_index, read_frame
 from schemas.video import InteractiveMaskRLE, MaskOverride
 from sessions.metadata import current_masks_dir
 from sessions.paths import manifest_relative_path, path_is_relative_to
 from utils import load_mask_manifest, write_mask_manifest
-from video.manifest_cache import load_cached_mask_manifest
 from video.mask_encoding import encode_mask_payload, encode_live_mask_payload
 
 logger = logging.getLogger(__name__)
@@ -158,11 +158,9 @@ def load_interactive_masks(session: SessionState, frame_idx: int) -> dict[str, A
     return _read_interactive_mask_file(masks_dir / INTERACTIVE_DIR / artifact_name)
 
 
-def _manifest_frames(session: SessionState) -> dict[str, Any]:
+def _manifest_path(session: SessionState) -> Path | None:
     manifest_path = Path(session.mask_manifest_path) if session.mask_manifest_path else None
-    if manifest_path and manifest_path.exists():
-        return load_cached_mask_manifest(manifest_path).get("frames", {})
-    return {}
+    return manifest_path if manifest_path and manifest_path.exists() else None
 
 
 def effective_mask_data(session: SessionState, frame_idx: int) -> dict[str, Any]:
@@ -175,7 +173,8 @@ def effective_mask_data(session: SessionState, frame_idx: int) -> dict[str, Any]
     suppress older results.
     """
     objects, sources = {}, {}
-    frame = _manifest_frames(session).get(str(frame_idx), {})
+    manifest_path = _manifest_path(session)
+    frame = read_frame(manifest_path, str(frame_idx)) if manifest_path else {}
     manifest_stamps = frame.get("input_revisions", {})
     for obj_id, mask in frame.get("objects", {}).items():
         if int(obj_id) in session.annotations.objects:
@@ -211,11 +210,11 @@ def outdated_mask_ranges(session: SessionState) -> dict[str, list[list[int]]]:
     """
     objects = session.annotations.objects
     stamps: dict[int, dict[int, int]] = {}  # object -> frame -> input revision of the mask effective_mask_data shows
-    for frame_key, frame in _manifest_frames(session).items():
-        frame_stamps = frame.get("input_revisions", {})
-        for obj_key in frame.get("objects", {}):
+    manifest_path = _manifest_path(session)
+    for frame_key, entry in (manifest_index(manifest_path) if manifest_path else {}).items():
+        for obj_key, stamp in entry.stamps.items():
             if int(obj_key) in objects:
-                stamps.setdefault(int(obj_key), {})[int(frame_key)] = int(frame_stamps.get(obj_key, 0))
+                stamps.setdefault(int(obj_key), {})[int(frame_key)] = stamp
     masks_dir = current_masks_dir(session)
     if masks_dir is not None:
         for frame_key, name in session.interactive_mask_files.items():
@@ -247,10 +246,10 @@ def outdated_mask_ranges(session: SessionState) -> dict[str, list[list[int]]]:
 def mask_overlay_path(session: SessionState, frame_idx: int) -> Path:
     """The propagation overlay image for a frame, only while it still shows the frame's effective masks."""
     masks_dir = current_masks_dir(session)
-    manifest_path = Path(session.mask_manifest_path) if session.mask_manifest_path else None
-    if masks_dir is None or not manifest_path or not manifest_path.exists():
+    manifest_path = _manifest_path(session)
+    if masks_dir is None or manifest_path is None:
         raise OperationError(404, "Mask frame not available")
-    frame = load_cached_mask_manifest(manifest_path).get("frames", {}).get(str(frame_idx), {})
+    frame = read_frame(manifest_path, str(frame_idx))
     effective = effective_mask_data(session, frame_idx)
     if (not frame.get("overlay_path") or effective["objects"] != frame.get("objects") or
             any(source != "manifest" for source in effective["sources"].values())):

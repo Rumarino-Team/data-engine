@@ -93,6 +93,15 @@ class MaskGenerationTests(SessionStateTestCase):
             self.assertEqual(self.shown(frame)["sources"], {"1": "manifest"})
         self.assertEqual(outdated_mask_ranges(state), {"1": [[0, 1], [4, 5]]})
 
+    def test_neither_a_mask_lookup_nor_the_outdated_stretches_parse_the_whole_manifest(self):
+        self.write_manifest({frame: {1: 1, 2: 0} for frame in range(5)})
+        self.edited(1, 4)
+        with patch("json.load", side_effect=AssertionError("parsed the whole manifest")):
+            self.assertEqual(outdated_mask_ranges(state), {"1": [[0, 4]]})
+            self.assertEqual(self.shown(3)["objects"], manifest_frame_payload({1: np.ones(SHAPE, dtype=bool),
+                                                                               2: np.ones(SHAPE, dtype=bool)})["objects"])
+            self.assertEqual(self.shown(5)["objects"], {})  # a frame the manifest has no entry for
+
     # --- the newest result wins per frame ------------------------------------------------------------------
 
     def test_a_frame_shows_the_newest_of_its_click_and_its_propagation(self):

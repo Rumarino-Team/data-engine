@@ -140,21 +140,25 @@ def build_empty_mask_manifest(
     }
 
 
-def write_mask_manifest(manifest_path: Path, manifest: dict[str, Any]) -> None:
-    # Readers must see either complete generation, never a partially overwritten manifest.
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+def write_atomically(path: Path, write, mode: str = "w") -> None:
+    # Readers must see either complete generation, never a partially overwritten file.
+    path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = None
     try:
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=manifest_path.parent,
+        with tempfile.NamedTemporaryFile(mode=mode, encoding=None if "b" in mode else "utf-8", dir=path.parent,
                                          prefix=".manifest-", suffix=".json", delete=False) as handle:
             temporary_path = Path(handle.name)
-            json.dump(manifest, handle, ensure_ascii=True, separators=(",", ":"))
+            write(handle)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary_path, manifest_path)
+        os.replace(temporary_path, path)
     finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
+
+
+def write_mask_manifest(manifest_path: Path, manifest: dict[str, Any]) -> None:
+    write_atomically(manifest_path, lambda handle: json.dump(manifest, handle, ensure_ascii=True, separators=(",", ":")))
 
 
 def load_mask_manifest(manifest_path: Path) -> dict[str, Any]:

@@ -27,12 +27,13 @@ SKIPPED_DIRECTORIES = {"tests", "tools", "cache", "saved", ".venv", "__pycache__
 IMPORTS = {
     "schemas": set(),                                                  # request, response and stored shapes
     "utils": set(),                                                    # overlay drawing, atomic JSON files
+    "mask_manifest": {"utils"},                                        # propagation manifests: frame index, streamed reads
     "core": {"schemas"},                                               # session state, annotations, jobs, undo
-    "sessions": {"core", "schemas", "utils"},                          # session files on disk: save, publish, cleanup
+    "sessions": {"core", "mask_manifest", "schemas", "utils"},         # session files on disk: save, publish, cleanup
     "sam2_frame_store": set(),                                         # model wrappers; they know nothing of the app
     "co_tracker": {"core"},
     "sam2_video_masker": {"core", "sam2_frame_store", "schemas"},
-    "video": {"core", "sam2_video_masker", "schemas", "sessions", "tracking", "utils"},     # feature services
+    "video": {"core", "mask_manifest", "sam2_video_masker", "schemas", "sessions", "tracking", "utils"},     # feature services
     "tracking": {"co_tracker", "core", "schemas", "sessions", "utils", "video"},
     "routers": {"core", "schemas", "tracking", "video"},               # HTTP
     "app": {"core", "routers", "sessions"},                            # assembly and startup/shutdown
