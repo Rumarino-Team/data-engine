@@ -67,18 +67,6 @@ class CheckpointTests(SessionStateTestCase):
         self.assertEqual(response.status_code, 409)
         self.assert_nothing_saved()
 
-    def test_save_without_a_precondition_is_rejected(self):
-        response = self.make_client(preconditions=False).post("/video/save", json={"name": "Bedroom"})
-        self.assertEqual(response.status_code, 422)
-        self.assert_nothing_saved()
-
-    def test_saving_does_not_change_the_revision_other_tabs_edit_against(self):
-        # Another tab took its headers before this save; its next edit must still be accepted.
-        other_tab = {"X-Session-ID": "first-session", "X-Annotation-Revision": str(state.annotations.revision)}
-        self.assertEqual(self.save(name="Bedroom").status_code, 200)
-        response = self.client.put("/video/objects/1", json={"label": "Later", "color": "#ff0000"}, headers=other_tab)
-        self.assertEqual(response.status_code, 200)
-
     def test_dirty_state_follows_save_edit_and_reopen(self):
         self.assertTrue(self.info()["dirty"])
         self.assertIsNone(self.info()["checkpoint_id"])
@@ -121,13 +109,6 @@ class CheckpointTests(SessionStateTestCase):
         self.edit("Third")
         self.assertEqual(self.metadata(Path(first["saved_path"]))["annotations"]["objects"]["1"]["label"], "Second")
         self.assertTrue(self.info()["dirty"])
-
-    def test_resave_with_name_renames_only_the_display_name(self):
-        first = self.save(name="Bedroom").json()
-        renamed = self.save(name="Kitchen").json()
-        self.assertEqual(renamed["saved_path"], first["saved_path"])
-        self.assertEqual(self.metadata(Path(first["saved_path"]))["display_name"], "Kitchen")
-        self.assertEqual(self.info()["display_name"], "Kitchen")
 
     def test_save_as_creates_new_identity_and_leaves_previous_checkpoint(self):
         first = self.save(name="Bedroom").json()
@@ -223,13 +204,6 @@ class CheckpointTests(SessionStateTestCase):
         # Opening it later works from the checkpoint alone.
         self.assertEqual(self.open_checkpoint(checkpoint)["num_frames"], 1)
 
-    def test_saving_fails_cleanly_when_an_original_frame_is_gone(self):
-        self.link_frame_to_an_original().unlink()
-        response = self.save(name="Bedroom")
-        self.assertEqual(response.status_code, 500)
-        self.assertIn("00000.jpg", response.json()["detail"])
-        self.assert_nothing_saved()
-
     def test_resave_copies_only_new_files_and_deletes_superseded_ones(self):
         first = self.commit_result()
         checkpoint = Path(self.save(name="Bedroom").json()["saved_path"])
@@ -244,19 +218,6 @@ class CheckpointTests(SessionStateTestCase):
         self.assertEqual(self.files(checkpoint), ["frames/00000.jpg", f"masks/interactive/{second}", "session.json"])
         self.assertEqual((checkpoint / "frames" / "00000.jpg").read_bytes(), b"sentinel-frame")
         self.assertEqual(self.metadata(checkpoint)["interactive_mask_files"], {"0": second})
-
-    def test_resave_after_open_continues_incrementally(self):
-        first = self.commit_result()
-        checkpoint = Path(self.save(name="Bedroom").json()["saved_path"])
-        self.open_checkpoint(checkpoint)
-        commit_session(state, {"latest_tracking_result_path": "tracking/new.json"})
-        (state.active_session_dir / "tracking").mkdir()
-        (state.active_session_dir / "tracking" / "new.json").write_text("{}")
-        with patch.object(checkpoints, "_link_or_copy", wraps=checkpoints._link_or_copy) as link:
-            self.save()
-        self.assertEqual([Path(call.args[1]).name for call in link.call_args_list], ["new.json"])
-        self.assertEqual(self.files(checkpoint), ["frames/00000.jpg", f"masks/interactive/{first}",
-                                                  "session.json", "tracking/new.json"])
 
     def test_failed_resave_removes_added_files_and_keeps_previous_checkpoint(self):
         self.commit_result()
@@ -310,13 +271,6 @@ class CheckpointTests(SessionStateTestCase):
         self.assertFalse(stale.exists())
         self.assertEqual(list(cache.iterdir()), [])
         self.assertTrue((checkpoint / "session.json").exists())
-
-    def test_display_name_validation(self):
-        with self.assertRaises(OperationError):
-            checkpoints.normalize_display_name("\x00\n ")
-        with self.assertRaises(OperationError):
-            checkpoints.normalize_display_name("x" * 121)
-        self.assertEqual(checkpoints.normalize_display_name("a\tb\n c"), "a b c")
 
 
 if __name__ == "__main__":

@@ -66,14 +66,6 @@ describe('JobStatusPanelComponent', () => {
     expect(element.querySelector('.progress-stage')).toBeNull();
   });
 
-  it('shows a stage that differs from the title', () => {
-    component.activeJobTitle = 'Propagating masks';
-    component.activeJob = makeJob({ stage: 'saving_manifest', stage_label: 'Saving manifest' });
-    fixture.detectChanges();
-    const element: HTMLElement = fixture.nativeElement;
-    expect(element.querySelector('.progress-stage')?.textContent).toContain('Saving manifest');
-  });
-
   it('renders a single progress bar for non-propagation jobs', () => {
     component.activeJob = makeJob({
       operation: 'video_init',

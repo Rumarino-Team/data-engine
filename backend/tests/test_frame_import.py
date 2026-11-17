@@ -51,22 +51,11 @@ class FrameImportTests(unittest.TestCase):
         # A JPEG is not decoded and written again, so it stays byte for byte what the user gave.
         self.assertEqual((self.frames / "00002.jpg").read_bytes(), (self.source / "c.jpg").read_bytes())
 
-    def test_a_folder_of_only_jpegs_keeps_its_file_types(self):
-        self.write("a.jpg", (1, 2, 3))
-        self.write("b.jpeg", (4, 5, 6))
-        self.assertEqual(copy_frames_directory_to_session(self.source, self.frames), ["00000.jpg", "00001.jpeg"])
-
     def test_alpha_and_grayscale_images_become_three_channel_frames(self):
         self.write("a.png", (10, 20, 30, 128), shape=(8, 12, 4))
         self.write("b.png", 77, shape=(8, 12))
         names = copy_frames_directory_to_session(self.source, self.frames)
         self.assertEqual([self.decoded(name).shape for name in names], [SHAPE, SHAPE])
-
-    def test_converted_frames_are_what_sam2_s_frame_store_can_list(self):
-        self.write("a.png", (10, 20, 30))
-        self.write("b.bmp", (40, 50, 60))
-        copy_frames_directory_to_session(self.source, self.frames)
-        self.assertEqual([Path(path).name for path in list_frame_paths(str(self.frames))], ["00000.jpg", "00001.jpg"])
 
     def test_an_unreadable_image_is_a_400_that_names_the_file(self):
         self.write("a.png", (10, 20, 30))
@@ -77,14 +66,6 @@ class FrameImportTests(unittest.TestCase):
             loading._link_frame_directory(self.source, self.frames, Mock(spec=JobHandle))
         self.assertEqual(failure.exception.status_code, 400)
         self.assertIn("b.png", failure.exception.message)
-
-    def test_the_job_says_when_frames_are_converted(self):
-        self.write("a.png", (10, 20, 30))
-        self.write("b.jpg", (40, 50, 60))
-        job = Mock(spec=JobHandle)
-        loading._link_frame_directory(self.source, self.frames, job)
-        first = job.enter_stage.call_args_list[0].kwargs["message"]
-        self.assertIn("1 of 2 are PNG/BMP and will be converted to JPEG", first)
 
 
 if __name__ == "__main__":

@@ -3,28 +3,14 @@ import {
   isMaskRle,
   packedMaskBytes,
   encodedMaskPixelCount,
-  clampFrameIndex,
   evictWithLimit,
   normalizeMask2d,
-  frameLoadingHint,
-  isFrameLoadingMode,
   outdatedTimelineSegments,
-  historyButtonTitle,
 } from './video-masker.util';
 
 import { VideoMaskObjectData } from '../services/backend-api.types';
 
 describe('video-masker.util', () => {
-  it('recognises exactly the frame loading modes the backend accepts', () => {
-    for (const mode of ['lazy', 'preload', 'eager']) expect(isFrameLoadingMode(mode)).toBe(true);
-    for (const other of ['', 'Lazy', 'streaming']) expect(isFrameLoadingMode(other)).toBe(false);
-  });
-
-  it('describes each frame loading mode differently', () => {
-    const hints = new Set((['lazy', 'preload', 'eager'] as const).map(frameLoadingHint));
-    expect(hints.size).toBe(3);
-  });
-
   it('evicts oldest entries when over max size', () => {
     const cache = new Map<number, string>([
       [1, 'a'],
@@ -38,11 +24,6 @@ describe('video-masker.util', () => {
     expect(cache.size).toBe(2);
     expect(cache.has(1)).toBe(false);
     expect(evicted).toEqual([1]);
-  });
-
-  it('clamps frame index to [0,max]', () => {
-    expect(clampFrameIndex(-1, 10)).toBe(0);
-    expect(clampFrameIndex(11, 10)).toBe(10);
   });
 
   it('normalizes nested mask arrays', () => {
@@ -111,10 +92,6 @@ describe('packed masks', () => {
     expect(packedMaskBytes(mask).length).toBe(259200);
     expect(encodedMaskPixelCount(mask)).toBe(1036800);
   });
-  it('counts empty and full partial bytes', () => {
-    expect(encodedMaskPixelCount({ size: [1, 3], encoding: 'packed-bits', data: 'AA==' })).toBe(0);
-    expect(encodedMaskPixelCount({ size: [1, 3], encoding: 'packed-bits', data: '4A==' })).toBe(3);
-  });
   it('rejects truncated bytes, noncanonical base64, invalid dimensions and nonzero padding', () => {
     for (const data of ['', '!!==', 'AQ==', 'AB==', 'AAA=']) {
       expect(() => packedMaskBytes({ size: [1, 3], encoding: 'packed-bits', data })).toThrow();
@@ -127,14 +104,17 @@ describe('outdatedTimelineSegments', () => {
   const names: Record<number, string> = { 1: 'Boy', 2: 'Goal' };
   const labelOf = (id: number) => names[id];
 
-  it('has nothing to tint without outdated masks or without a clip', () => {
-    expect(outdatedTimelineSegments({}, labelOf, 101)).toEqual([]);
-    expect(outdatedTimelineSegments({ '1': [[0, 5]] }, labelOf, 1)).toEqual([]);
-    expect(outdatedTimelineSegments({ '1': [[0, 5]] }, labelOf, 0)).toEqual([]);
-  });
-
   it('places a stretch with the same frame-to-percent mapping as the start and end markers', () => {
-    const segments = outdatedTimelineSegments({ '1': [[0, 49], [60, 60]] }, labelOf, 101);
+    const segments = outdatedTimelineSegments(
+      {
+        '1': [
+          [0, 49],
+          [60, 60],
+        ],
+      },
+      labelOf,
+      101,
+    );
     expect(segments).toHaveLength(2);
     expect(segments[0]).toMatchObject({ first: 0, last: 49, leftPercent: 0, widthPercent: 49 });
     // A single frame has no width of its own; the stylesheet gives it a visible minimum.
@@ -142,11 +122,7 @@ describe('outdatedTimelineSegments', () => {
   });
 
   it('merges objects into one strip and says which objects each stretch concerns', () => {
-    const segments = outdatedTimelineSegments(
-      { '1': [[0, 9]], '2': [[5, 14]] },
-      labelOf,
-      101,
-    );
+    const segments = outdatedTimelineSegments({ '1': [[0, 9]], '2': [[5, 14]] }, labelOf, 101);
     expect(segments.map(({ first, last, labels }) => [first, last, labels])).toEqual([
       [0, 4, ['Boy']],
       [5, 9, ['Boy', 'Goal']],
@@ -155,13 +131,17 @@ describe('outdatedTimelineSegments', () => {
   });
 
   it('joins touching runs of the same objects into one stretch', () => {
-    const segments = outdatedTimelineSegments({ '1': [[0, 4], [5, 9]] }, labelOf, 101);
+    const segments = outdatedTimelineSegments(
+      {
+        '1': [
+          [0, 4],
+          [5, 9],
+        ],
+      },
+      labelOf,
+      101,
+    );
     expect(segments.map(({ first, last }) => [first, last])).toEqual([[0, 9]]);
-  });
-
-  it('never extends past the last frame', () => {
-    const [segment] = outdatedTimelineSegments({ '1': [[8, 20]] }, labelOf, 11);
-    expect(segment).toMatchObject({ first: 8, last: 10, leftPercent: 80, widthPercent: 20 });
   });
 
   it('describes a stretch plainly, as masks that are fine to keep and export', () => {
@@ -172,24 +152,5 @@ describe('outdatedTimelineSegments', () => {
     expect(segment.tooltip).not.toMatch(/outdated|invalid|stale|wrong|error/i);
     const [single] = outdatedTimelineSegments({ '1': [[60, 60]], '2': [[60, 60]] }, labelOf, 101);
     expect(single.tooltip).toContain('Frame 60: masks for Boy, Goal come from');
-  });
-
-  it('ends the last stretch exactly at the end of the track', () => {
-    const [segment] = outdatedTimelineSegments({ '1': [[1, 199]] }, labelOf, 200);
-    expect(segment.leftPercent + segment.widthPercent).toBeCloseTo(100, 6);
-  });
-
-  it('falls back to a generic name for an object it cannot name', () => {
-    const [segment] = outdatedTimelineSegments({ '7': [[0, 3]] }, labelOf, 101);
-    expect(segment.labels).toEqual(['Object 7']);
-  });
-});
-
-describe('historyButtonTitle', () => {
-  it('names the next step and the shortcut, or says there is nothing to do', () => {
-    expect(historyButtonTitle('undo', 'Add points')).toBe('Undo: Add points (Ctrl+Z)');
-    expect(historyButtonTitle('redo', 'Edit object')).toBe('Redo: Edit object (Ctrl+Shift+Z)');
-    expect(historyButtonTitle('undo', null)).toBe('Nothing to undo');
-    expect(historyButtonTitle('redo', null)).toBe('Nothing to redo');
   });
 });

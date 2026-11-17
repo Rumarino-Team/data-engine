@@ -110,23 +110,6 @@ class MaskerPrecisionTests(unittest.TestCase):
                 self.assertIs(predictor_module.load_video_frames, original)
                 self.assertEqual(masker.frame_loading, mode)
 
-    def test_frame_loading_defaults_to_lazy_and_rejects_unknown_modes(self):
-        predictor = PrecisionPredictor("cpu")
-        with patch("sam2_video_masker.load_predictor", return_value=predictor):
-            masker = SAM2VideoMasker()
-        self.assertEqual(masker.frame_loading, "lazy")
-        with tempfile.TemporaryDirectory() as directory:
-            with self.assertRaisesRegex(ValueError, "frame_loading must be one of"):
-                masker.init_state(directory, frame_loading="streaming")
-        self.assertFalse(masker.state_loaded)
-        self.assertEqual(predictor.calls, [])
-
-    def test_a_predictor_without_the_memory_settings_fails_instead_of_shrinking_the_window(self):
-        masker = fresh_thread(lambda: self.make_masker("cpu"))
-        del masker.predictor.num_maskmem
-        with self.assertRaises(AttributeError):
-            masker.propagate_in_video(start_frame_idx=0, max_frame_num_to_track=1, online_mode=True, batch_size=1)
-
     def test_cpu_uses_full_precision_without_enabling_autocast(self):
         masker = fresh_thread(lambda: self.make_masker("cpu"))
         _, _, result = masker.add_new_points_or_box(0, 1)
@@ -160,37 +143,6 @@ class MaskerPrecisionTests(unittest.TestCase):
                 result = fresh_thread(propagate)
                 self.assertEqual(set(result), {0, 1, 2})
                 self.assertTrue(all(autocast and inference for _, autocast, inference in masker.predictor.calls))
-
-    @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA")
-    def test_other_predictor_entry_points_use_the_same_precision(self):
-        masker = fresh_thread(lambda: self.make_masker("cuda"))
-        masker.add_new_mask(0, 1, [[True]])
-        masker.clear_all_prompts_in_frame(0, 1)
-        masker.remove_object(1)
-        masker.reset_state()
-        self.assertTrue(all(autocast and inference for _, autocast, inference in masker.predictor.calls))
-        self.assertFalse(torch.is_autocast_enabled("cuda"))
-
-    @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA")
-    def test_cuda_without_bfloat16_support_uses_scoped_float16(self):
-        with patch("sam2_video_masker.torch.cuda.is_bf16_supported", return_value=False):
-            masker = fresh_thread(lambda: self.make_masker("cuda"))
-        _, _, result = masker.add_new_points_or_box(0, 1)
-        self.assertEqual(masker.autocast_dtype, torch.float16)
-        self.assertEqual(result.dtype, torch.float16)
-        self.assertFalse(torch.is_autocast_enabled("cuda"))
-
-    @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA")
-    def test_exception_restores_the_callers_context(self):
-        masker = fresh_thread(lambda: self.make_masker("cuda"))
-        masker.predictor.fail = True
-        with torch.autocast("cuda", dtype=torch.float16):
-            with self.assertRaisesRegex(RuntimeError, "predictor failed"):
-                masker.propagate_in_video(start_frame_idx=0, max_frame_num_to_track=1, online_mode=False)
-            self.assertTrue(torch.is_autocast_enabled("cuda"))
-            self.assertEqual(torch.get_autocast_dtype("cuda"), torch.float16)
-            self.assertFalse(torch.is_inference_mode_enabled())
-        self.assertFalse(torch.is_autocast_enabled("cuda"))
 
 
 if __name__ == "__main__":

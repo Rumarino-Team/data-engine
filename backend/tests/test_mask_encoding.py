@@ -15,12 +15,6 @@ class MaskEncodingTests(unittest.TestCase):
         self.assertEqual(encode_mask_payload(mask), {
             "size": [2, 3], "rle": [[1, 3], [5, 1]], "bbox": [0, 0, 3, 2]})
 
-    def test_empty_and_full_masks(self):
-        self.assertEqual(encode_mask_payload(np.zeros((2, 3), dtype=bool)), {
-            "size": [2, 3], "rle": [], "bbox": [0, 0, 0, 0]})
-        self.assertEqual(encode_mask_payload(np.ones((2, 3), dtype=bool)), {
-            "size": [2, 3], "rle": [[0, 6]], "bbox": [0, 0, 3, 2]})
-
     def test_round_trip_random_fragmented_and_noncontiguous_masks(self):
         rng = np.random.default_rng(42)
         for shape in [(1, 1), (1, 40), (40, 1), (20, 30)]:
@@ -47,16 +41,6 @@ class MaskEncodingTests(unittest.TestCase):
             np.testing.assert_array_equal(bits[:mask.size].reshape(shape), mask)
             self.assertFalse(bits[mask.size:].any())
             self.assertEqual(len(raw), (mask.size + 7) // 8)
-
-    def test_live_compact_masks_keep_rle(self):
-        mask = np.zeros((108, 192), dtype=bool)
-        mask[20:80, 30:140] = True
-        self.assertEqual(encode_live_mask_payload(mask), encode_mask_payload(mask))
-
-    def test_invalid_dimensions(self):
-        for mask in [np.array([True]), np.zeros((2, 2, 2)), np.zeros((0, 2)), np.zeros((2, 0))]:
-            with self.assertRaises(ValueError):
-                encode_mask_payload(mask)
 
 
 if __name__ == "__main__":

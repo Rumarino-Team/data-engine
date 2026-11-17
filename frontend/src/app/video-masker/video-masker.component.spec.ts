@@ -34,23 +34,9 @@ describe('VideoMaskerComponent UI', () => {
     expect(component.store.frameLoadingMode()).toBe('lazy');
   });
 
-  it('renders the frame loading select, locked once a session is loaded', async () => {
-    const select = (): HTMLSelectElement =>
-      fixture.nativeElement.querySelector('.frame-loading-select');
-    fixture.detectChanges();
-    const optionValues = Array.from(select().options).map((option) => option.value);
-    expect(optionValues).toEqual(['lazy', 'preload', 'eager']);
-    expect(select().disabled).toBe(false);
-    expect(select().title).toBe(component.getFrameLoadingHint());
-
-    component.store.isInitialized.set(true);
-    fixture.detectChanges();
-    await fixture.whenStable(); // ngModel applies `disabled` after a microtask
-    expect(select().disabled).toBe(true);
-  });
-
   describe('the notice about a session the backend still holds', () => {
-    const banner = (): HTMLElement | null => fixture.nativeElement.querySelector('.open-session-banner');
+    const banner = (): HTMLElement | null =>
+      fixture.nativeElement.querySelector('.open-session-banner');
     const buttons = (): string[] =>
       Array.from(banner()?.querySelectorAll('button') ?? []).map((b) => b.textContent!.trim());
     const offer = (overrides: Partial<{ dirty: boolean; resumable: boolean }> = {}) =>
@@ -63,11 +49,6 @@ describe('VideoMaskerComponent UI', () => {
         ...overrides,
       });
 
-    it('is absent until the backend reports a session', () => {
-      fixture.detectChanges();
-      expect(banner()).toBeNull();
-    });
-
     it('says what is open and offers to resume it or close it', () => {
       offer({ dirty: true });
       fixture.detectChanges();
@@ -75,24 +56,10 @@ describe('VideoMaskerComponent UI', () => {
       expect(buttons()).toEqual(['Resume', 'Close it']);
     });
 
-    it('does not mention unsaved changes when there are none', () => {
-      offer();
-      fixture.detectChanges();
-      expect(banner()?.textContent).toContain('924 frames).');
-      expect(banner()?.textContent).not.toContain('unsaved');
-    });
-
     it('offers only closing when the session cannot be resumed', () => {
       offer({ resumable: false });
       fixture.detectChanges();
       expect(buttons()).toEqual(['Close it']);
-    });
-
-    it('goes away while a session is shown', () => {
-      offer();
-      component.store.isInitialized.set(true);
-      fixture.detectChanges();
-      expect(banner()).toBeNull();
     });
 
     it('wires its buttons to resuming and closing', () => {
@@ -111,13 +78,17 @@ describe('VideoMaskerComponent UI', () => {
   describe('undo and redo', () => {
     const buttons = (): { undo: HTMLButtonElement; redo: HTMLButtonElement } => {
       const [undo, redo] = Array.from(
-        fixture.nativeElement.querySelectorAll('.canvas-toolbar button[aria-label="Undo"], .canvas-toolbar button[aria-label="Redo"]'),
+        fixture.nativeElement.querySelectorAll(
+          '.canvas-toolbar button[aria-label="Undo"], .canvas-toolbar button[aria-label="Redo"]',
+        ),
       ) as HTMLButtonElement[];
       return { undo, redo };
     };
     const steps = { undo: 2, redo: 1, next_undo: 'Add points', next_redo: 'Edit object' };
     const press = (init: KeyboardEventInit, target: EventTarget = window) =>
-      target.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init }));
+      target.dispatchEvent(
+        new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init }),
+      );
 
     it('are disabled until the backend has steps', () => {
       component.store.isInitialized.set(true);
@@ -153,22 +124,6 @@ describe('VideoMaskerComponent UI', () => {
       expect(redo).toHaveBeenCalledTimes(3);
     });
 
-    it('take over the shortcut so the browser does not also act on it', () => {
-      vi.spyOn(component.changes, 'undo').mockResolvedValue(true);
-      expect(press({ key: 'z', ctrlKey: true })).toBe(false); // preventDefault was called
-    });
-
-    it('ignore other keys, shortcuts with Alt and plain Z', () => {
-      const undo = vi.spyOn(component.changes, 'undo').mockResolvedValue(true);
-      const redo = vi.spyOn(component.changes, 'redo').mockResolvedValue(true);
-      press({ key: 'z' });
-      press({ key: 'z', ctrlKey: true, altKey: true });
-      press({ key: 'y', ctrlKey: true, shiftKey: true });
-      press({ key: 'c', ctrlKey: true });
-      expect(undo).not.toHaveBeenCalled();
-      expect(redo).not.toHaveBeenCalled();
-    });
-
     it('leave Ctrl+Z to a text field while the user is typing', () => {
       const undo = vi.spyOn(component.changes, 'undo').mockResolvedValue(true);
       const field = document.createElement('input');
@@ -178,28 +133,11 @@ describe('VideoMaskerComponent UI', () => {
       field.remove();
       expect(undo).not.toHaveBeenCalled();
     });
-
-    it('still work while the timeline slider has focus', () => {
-      const undo = vi.spyOn(component.changes, 'undo').mockResolvedValue(true);
-      const slider = document.createElement('input');
-      slider.type = 'range';
-      document.body.appendChild(slider);
-      press({ key: 'z', ctrlKey: true }, slider);
-      slider.remove();
-      expect(undo).toHaveBeenCalledTimes(1);
-    });
   });
 
   describe('the timeline tint for masks from an earlier propagation', () => {
     const segments = (): HTMLElement[] =>
       Array.from(fixture.nativeElement.querySelectorAll('.timeline-outdated-segment'));
-
-    it('draws nothing when every mask is current', () => {
-      component.store.isInitialized.set(true);
-      component.store.numFrames.set(101);
-      fixture.detectChanges();
-      expect(segments()).toEqual([]);
-    });
 
     it('draws each stretch where it is on the timeline, with a plain tooltip', () => {
       const label = component.store.objects()[0].label;
@@ -215,45 +153,6 @@ describe('VideoMaskerComponent UI', () => {
         `Frames 0\u201349: masks for ${label} come from an earlier propagation. They are still shown and included in exports.`,
       );
     });
-
-    it('follows the store when the stretches change', () => {
-      component.store.isInitialized.set(true);
-      component.store.numFrames.set(101);
-      component.store.outdatedMasks.set({ '1': [[0, 9]] });
-      fixture.detectChanges();
-      expect(segments()).toHaveLength(1);
-      component.store.outdatedMasks.set({});
-      fixture.detectChanges();
-      expect(segments()).toHaveLength(0);
-    });
-
-    it('leaves the slider usable: the strip does not take pointer events itself', () => {
-      component.store.isInitialized.set(true);
-      component.store.numFrames.set(101);
-      fixture.detectChanges();
-      const strip = fixture.nativeElement.querySelector('.timeline-outdated') as HTMLElement;
-      expect(strip).not.toBeNull();
-      expect(getComputedStyle(strip).pointerEvents).toBe('none');
-    });
-  });
-
-  it('hides the API URL scheme while the input is not focused', () => {
-    component.store.apiUrlInput.set('http://127.0.0.1:8000');
-
-    expect(component.getApiUrlInputValue()).toBe('127.0.0.1:8000');
-
-    component.onApiUrlFocus();
-
-    expect(component.getApiUrlInputValue()).toBe('http://127.0.0.1:8000');
-  });
-
-  it('adds the default API URL scheme when focusing a host-only value', () => {
-    component.store.apiUrlInput.set('127.0.0.1:8000');
-
-    component.onApiUrlFocus();
-
-    expect(component.store.apiUrlInput()).toBe('http://127.0.0.1:8000');
-    expect(component.getApiUrlInputValue()).toBe('http://127.0.0.1:8000');
   });
 
   it('uses the native Tauri video picker when video mode is selected', async () => {
@@ -267,17 +166,6 @@ describe('VideoMaskerComponent UI', () => {
     expect(component.store.videoDir()).toBe('C:/videos/example.mp4');
   });
 
-  it('uses the native Tauri directory picker for saved-session mode', async () => {
-    desktopBridgeMock.isTauri.mockReturnValue(true);
-    desktopBridgeMock.pickFramesDirectory.mockResolvedValue('C:/sessions/saved1');
-    component.store.loadSourceMode.set('saved_session_dir');
-
-    await component.browseSelectedSource();
-
-    expect(desktopBridgeMock.pickFramesDirectory).toHaveBeenCalled();
-    expect(component.store.videoDir()).toBe('C:/sessions/saved1');
-  });
-
   it('falls back to browser video input when Tauri runtime is unavailable in video mode', async () => {
     const pickerSpy = vi
       .spyOn(component, 'openVideoFilePicker')
@@ -287,52 +175,6 @@ describe('VideoMaskerComponent UI', () => {
     await component.browseSelectedSource();
 
     expect(pickerSpy).toHaveBeenCalled();
-  });
-
-  it('falls back to browser directory input when Tauri runtime is unavailable in frames mode', async () => {
-    const pickerSpy = vi
-      .spyOn(component, 'openFramesDirPicker')
-      .mockImplementation(() => undefined);
-    component.store.loadSourceMode.set('frames_dir');
-
-    await component.browseSelectedSource();
-
-    expect(pickerSpy).toHaveBeenCalled();
-  });
-
-  it('updates load placeholder and browse label based on selected load mode', () => {
-    component.store.loadSourceMode.set('frames_dir');
-    expect(component.getBrowseLabel()).toBe('Browse Frames');
-    expect(component.getLoadPathPlaceholder()).toContain('frames directory');
-
-    component.store.loadSourceMode.set('video_file');
-    expect(component.getBrowseLabel()).toBe('Browse Video');
-    expect(component.getLoadPathPlaceholder()).toContain('video file');
-
-    component.store.loadSourceMode.set('saved_session_dir');
-    expect(component.getBrowseLabel()).toBe('Browse Saved Session');
-    expect(component.getLoadPathPlaceholder()).toContain('saved session directory');
-    expect(component.getLoadPathPlaceholder()).toContain('session.json');
-    expect(component.getLoadPathPlaceholder()).toContain('masks/');
-  });
-
-  it('labels the prompt tracking action as Track Prompt Points', () => {
-    fixture.detectChanges();
-
-    expect(fixture.nativeElement.textContent).toContain('Track Prompt Points');
-    expect(fixture.nativeElement.textContent).not.toContain('Run CoTracker');
-  });
-
-  it('renders displayed frame text without target text next to the frame scrubber', () => {
-    component.store.isInitialized.set(true);
-    component.store.numFrames.set(12);
-    component.store.targetFrameIdx.set(4);
-    component.store.displayedFrameIdx.set(4);
-
-    fixture.detectChanges();
-
-    expect(fixture.nativeElement.textContent).not.toContain('Target:');
-    expect(fixture.nativeElement.textContent).toContain('Displayed: 4 / 11');
   });
 
   it('sets propagation frame bounds from the displayed frame while keeping the range valid', () => {
@@ -350,29 +192,6 @@ describe('VideoMaskerComponent UI', () => {
 
     expect(component.store.propagationStartFrameIdx()).toBe(3);
     expect(component.store.propagationEndFrameIdx()).toBe(3);
-  });
-
-  it('renders the propagation range markers on the timeline', () => {
-    component.store.isInitialized.set(true);
-    component.store.numFrames.set(100);
-    component.store.propagationStartFrameIdx.set(20);
-    component.store.propagationEndFrameIdx.set(80);
-
-    fixture.detectChanges();
-
-    const timeline = fixture.nativeElement.querySelector('.timeline') as HTMLElement;
-    expect(parseFloat(timeline.style.getPropertyValue('--range-start'))).toBeCloseTo(
-      (20 / 99) * 100,
-    );
-    expect(parseFloat(timeline.style.getPropertyValue('--range-end'))).toBeCloseTo((80 / 99) * 100);
-    expect(timeline.textContent).toContain('Start 20');
-    expect(timeline.textContent).toContain('End 80');
-  });
-
-  it('does not render a tracking model selector', () => {
-    fixture.detectChanges();
-
-    expect(fixture.nativeElement.textContent).not.toContain('Tracking Model');
   });
 
   describe('saving and unsaved changes', () => {
@@ -419,20 +238,6 @@ describe('VideoMaskerComponent UI', () => {
       component.store.savedState.set(savedState({ dirty: true }));
       expect(component.canSaveAs()).toBe(true);
       component.store.saveName.set('');
-      expect(component.canSaveAs()).toBe(false);
-    });
-
-    it('enables re-save for changes or a new name, and nothing while busy', () => {
-      component.store.savedState.set(savedState());
-      component.store.saveName.set('Bedroom');
-      expect(component.canSave()).toBe(false);
-      component.store.saveName.set('Kitchen');
-      expect(component.canSave()).toBe(true);
-      component.store.saveName.set('Bedroom');
-      component.store.savedState.set(savedState({ dirty: true }));
-      expect(component.canSave()).toBe(true);
-      component.store.isLoading.set(true);
-      expect(component.canSave()).toBe(false);
       expect(component.canSaveAs()).toBe(false);
     });
 

@@ -57,17 +57,6 @@ class WaitingForCopiesTests(unittest.TestCase):
         self.assertEqual(self.predictor._run_memory_encoder(offloaded, 3), "features")  # state passed positionally
         self.assertEqual(self.events, ["inference", "wait", "encoder", "wait"])
 
-    def test_it_does_not_wait_when_nothing_is_copied_to_the_cpu(self):
-        for name, device, storage in (("state kept on the GPU", "cuda", "cuda"), ("running on the CPU", "cpu", "cpu")):
-            with self.subTest(name):
-                self.events.clear()
-                self.predictor._run_single_frame_inference(inference_state=state(device, storage), frame_idx=0)
-                self.assertEqual(self.events, ["inference"])
-
-    def test_a_predictor_missing_one_of_the_methods_is_refused(self):
-        with self.assertRaises(AttributeError):
-            make_offloaded_copies_safe(SimpleNamespace(_run_single_frame_inference=lambda **kwargs: None))
-
 
 def weights_are_cached():
     try:

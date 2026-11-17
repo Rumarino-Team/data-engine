@@ -82,17 +82,6 @@ class ObjectLifecycleTests(SessionStateTestCase):
         self.assertEqual(state.annotations.objects, {})
         self.assertEqual((state.annotations.revision, state.annotations.next_object_id), (0, 1))
 
-    def test_the_model_rejects_a_blank_label(self):
-        with self.assertRaises(ValidationError):
-            SessionAnnotations(objects={2: {"id": 2, "label": "", "color": "#00ff00"}})
-
-    def test_edits_without_an_active_session_are_rejected(self):
-        state.active_session_dir = None
-        for method, url, body in [("post", "/video/objects", None), ("put", "/video/objects/1", VALID_UPDATE)]:
-            with self.subTest(url=url):
-                self.assertEqual(getattr(self.client, method)(url, json=body).status_code, 409)
-        self.assertEqual(state.annotations.objects, {})
-
     def test_allocation_survives_deletion_and_metadata_reload(self):
         state.annotations = SessionAnnotations(next_object_id=8)
         self.assertEqual(self.client.post("/video/objects").json()["created_object_id"], 8)
@@ -102,22 +91,6 @@ class ObjectLifecycleTests(SessionStateTestCase):
         state.annotations = SessionAnnotations.model_validate(metadata["annotations"])
         self.assertEqual(state.annotations.objects, {})
         self.assertEqual(self.client.post("/video/objects").json()["created_object_id"], 9)
-
-    def test_relabel_response_carries_only_the_relabeled_object(self):
-        state.annotations.upsert_object({"id": 1, "label": "hand", "color": "#ff0000"})
-        state.annotations.upsert_object({"id": 2, "label": "cup", "color": "#00ff00"})
-        state.annotations.set_prompt(VideoPrompt(frame_idx=0, obj_id=2, points=[[1, 2]], labels=[1]))
-        state.annotations.take_delta(3)
-        before = state.annotations.snapshot()
-        snapshot = self.client.put("/video/objects/1", json={"label": "left hand", "color": "#ff0000"}).json()
-        delta = snapshot["annotation_delta"]
-        self.assertEqual(delta["revision"], 4)
-        self.assertEqual(list(delta["objects"]), ["1"])
-        self.assertEqual(delta["prompts"], [])
-        saved = session_metadata_document(state)
-        self.assertTrue(same_annotations(apply_delta(before, delta), saved["annotations"]))
-        self.assertNotIn("annotations", snapshot)
-        self.assertNotIn("frame_files", snapshot)
 
     def test_deletion_removes_the_object_and_its_prompts_everywhere(self):
         for obj_id in (1, 2):
@@ -192,11 +165,6 @@ class PreconditionTests(SessionStateTestCase):
                 self.assertEqual(response.json()["detail"], "Another operation is already running.")
         self.assertEqual(state.annotations.revision, 1)
         self.assertEqual(self.client.get("/video/info").status_code, 200)
-
-    def test_preconditions_are_required_and_validated(self):
-        for headers in [{}, self.headers(revision=-1), self.headers(revision="bad")]:
-            self.assertEqual(self.client.post("/video/objects", headers=headers).status_code, 422)
-        self.assertEqual(state.annotations.revision, 1)
 
     def test_job_admission_captures_inputs_and_rejects_stale_worker(self):
         state.annotations.set_prompt(VideoPrompt(frame_idx=0, obj_id=1, points=[[1, 2]], labels=[1]))

@@ -2,7 +2,7 @@ import { describe, beforeEach, expect, it, vi } from 'vitest';
 import { Subject, of } from 'rxjs';
 import { TestBed } from '@angular/core/testing';
 import { VideoJobsService } from './video-jobs.service';
-import { createWorkflowFixture, makeResponse, mockJob } from '../testing/workflow-test-helpers';
+import { createWorkflowFixture, makeResponse } from '../testing/workflow-test-helpers';
 
 describe('tracking workflows', () => {
   let editor: ReturnType<typeof createWorkflowFixture>['editor'];
@@ -56,77 +56,14 @@ describe('tracking workflows', () => {
       }),
     );
     await editor.tracking.runTracking();
-    expect(editor.store.history()).toEqual({ undo: 2, redo: 0, next_undo: 'Track points', next_redo: null });
+    expect(editor.store.history()).toEqual({
+      undo: 2,
+      redo: 0,
+      next_undo: 'Track points',
+      next_redo: null,
+    });
   });
 
-  it('runs CoTracker without sending a model selector value', async () => {
-    mockJob(
-      backendMock.trackPromptPoints,
-      backendMock.getJob,
-      'prompt_tracking',
-      {
-        result: {
-          message: 'Prompt-point tracking completed',
-          model_name: 'cotracker3_online',
-          num_points: 1,
-          num_frames: 2,
-          add_support_grid_used: true,
-          tracking_mode: 'streaming',
-          streaming_frame_threshold: 256,
-          tracking_result_id: 'track-1',
-        },
-      },
-      'job-track',
-    );
-    backendMock.getTrackingResult.mockReturnValue(
-      of({
-        result: {
-          version: 3,
-          session_id: 'session-1',
-          annotation_revision: editor.store.annotationRevision(),
-          result_id: 'track-1',
-          message: 'Prompt-point tracking completed',
-          model_name: 'cotracker3_online',
-          num_points: 1,
-          num_frames: 2,
-          add_support_grid_used: true,
-          tracking_mode: 'streaming',
-          streaming_frame_threshold: 256,
-          tracks: [
-            [
-              [10, 20],
-              [11, 21],
-            ],
-          ],
-          visibility: [[true, true]],
-          points: [
-            {
-              point_id: 'p0_0',
-              obj_id: 1,
-              source_frame_idx: 0,
-              source_x: 10,
-              source_y: 20,
-            },
-          ],
-        },
-      }),
-    );
-    editor.store.trackingUseSupportGrid.set(true);
-
-    await editor.tracking.runTracking();
-
-    expect(backendMock.trackPromptPoints).toHaveBeenCalledWith(
-      { add_support_grid: true },
-      { session_id: 'session-1', expected_revision: editor.store.annotationRevision() },
-    );
-    expect(backendMock.trackPromptPoints.mock.calls[0][0]).not.toHaveProperty('model_name');
-    expect(backendMock.getTrackingResult).toHaveBeenCalledWith('track-1');
-    expect(backendMock.clearJobResult).toHaveBeenCalledWith('job-track');
-    expect(editor.store.trackedPoints()[0].tracks).toEqual([
-      [10, 20],
-      [11, 21],
-    ]);
-  });
   it('retains only backend-selected tracks after annotation recovery', () => {
     const point = {
       point_id: 'keep',

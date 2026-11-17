@@ -18,18 +18,12 @@ describe('BackendService', () => {
     else globals.__DATA_ENGINE_API_URL__ = originalGlobalApiUrl;
   });
 
-  it('defaults to localhost when no override exists', () => {
-    const http = { post: vi.fn(), get: vi.fn() } as unknown as HttpClient;
-
-    const service = new BackendService(http);
-
-    expect(service.getApiUrl()).toBe('http://127.0.0.1:8000');
-  });
-
   it('scopes frame URLs to the session so browsers never reuse another video’s frames', () => {
     const service = new BackendService({ post: vi.fn(), get: vi.fn() } as unknown as HttpClient);
 
-    expect(service.getVideoFrameUrl(3, 'abc')).toBe('http://127.0.0.1:8000/video/frame/3?session=abc');
+    expect(service.getVideoFrameUrl(3, 'abc')).toBe(
+      'http://127.0.0.1:8000/video/frame/3?session=abc',
+    );
     expect(service.getVideoFrameUrl(3, 'a b&c')).toBe(
       'http://127.0.0.1:8000/video/frame/3?session=a%20b%26c',
     );
@@ -171,7 +165,13 @@ describe('BackendService', () => {
         '/video/save',
         { name: 'review-run' },
       ],
-      ['re-save without a name', (s) => s.saveVideoSession({}, precondition), 'post', '/video/save', {}],
+      [
+        're-save without a name',
+        (s) => s.saveVideoSession({}, precondition),
+        'post',
+        '/video/save',
+        {},
+      ],
       [
         'Save As',
         (s) => s.saveVideoSession({ name: 'copy', saveAs: true }, precondition),

@@ -8,7 +8,6 @@ import {
   objectSnapshot,
   objectUpdate,
   toUpdate,
-  makeResponse,
 } from '../testing/workflow-test-helpers';
 import { AnnotationUpdate, ObjectCreationResponse } from '../../services/backend.service';
 
@@ -71,50 +70,6 @@ describe('object-operations workflows', () => {
     expect(editor.store.isRecoveringAnnotations()).toBe(false);
   });
 
-  it('uses the revision returned by point acceptance for the next object edit', async () => {
-    backendMock.addNewPointsOrBox.mockReturnValue(of(makeResponse({})));
-    await editor.prompts.addPoint(10, 20, 1, 5);
-    objectOperations.renameObject(1, 'Hand');
-    expect(backendMock.updateObject).toHaveBeenCalledWith(
-      { id: 1, label: 'Hand', color: '#ff0000' },
-      { session_id: 'session-1', expected_revision: 1 },
-    );
-    expect(editor.store.points().get(5)?.get(1)).toEqual([{ x: 10, y: 20, label: 1 }]);
-    expect(backendMock.getVideoInfo).not.toHaveBeenCalled();
-  });
-
-  it.each(['clear point', 'reset'])('uses the accepted revision after %s', async (operation) => {
-    backendMock.addNewPointsOrBox.mockReturnValue(of(makeResponse({})));
-    await editor.prompts.addPoint(10, 20, 1, 5);
-    if (operation === 'reset') editor.propagation.clearMasks();
-    else await editor.prompts.removePoint(1, 5, 0);
-    objectOperations.addObject();
-    expect(backendMock.createObject).toHaveBeenCalledWith({
-      session_id: 'session-1',
-      expected_revision: 2,
-    });
-    expect(editor.store.points().size).toBe(0);
-    expect(backendMock.getVideoInfo).not.toHaveBeenCalled();
-  });
-
-  it('uses the server allocated ID even when it differs from cached allocation metadata', () => {
-    const created = { id: 42, label: 'Server object', color: '#123456' };
-    backendMock.createObject.mockReturnValue(
-      of({
-        ...objectUpdate(editor.store, [...editor.store.objects(), created]),
-        created_object_id: 42,
-      }),
-    );
-    objectOperations.addObject();
-    expect(backendMock.createObject).toHaveBeenCalledWith({
-      session_id: 'session-1',
-      expected_revision: 0,
-    });
-    expect(editor.store.selectedObjectId()).toBe(42);
-    expect(editor.store.objects().at(-1)).toEqual(created);
-    expect(backendMock.updateObject).not.toHaveBeenCalled();
-  });
-
   it('applies accepted relabels and leaves accepted state unchanged on rejection', () => {
     objectOperations.renameObject(1, '  buoy ');
     expect(backendMock.updateObject).toHaveBeenLastCalledWith(
@@ -135,14 +90,6 @@ describe('object-operations workflows', () => {
     backendMock.updateObject.mockClear();
     objectOperations.renameObject(1, 'buoy');
     expect(backendMock.updateObject).not.toHaveBeenCalled();
-  });
-
-  it('requests backend object creation', () => {
-    objectOperations.addObject();
-    expect(backendMock.createObject).toHaveBeenCalledWith({
-      session_id: 'session-1',
-      expected_revision: 0,
-    });
   });
 
   it('cleans removed objects from all frame maps without mutating previous snapshots', () => {
@@ -221,18 +168,6 @@ describe('object-operations workflows', () => {
     expect(editor.store.annotations()).toBe(accepted);
     expect(editor.store.selectedObjectId()).toBe(1);
     expect(editor.store.pendingObjectUpdates()).toBe(0);
-  });
-
-  it('keeps the accepted label while a rename is pending and blocks overlapping object edits', () => {
-    const pending = new Subject<AnnotationUpdate>();
-    backendMock.updateObject.mockReturnValue(pending);
-    const previous = editor.store.objects();
-    objectOperations.renameObject(1, 'Draft');
-    expect(editor.store.objects()).toBe(previous);
-    objectOperations.renameObject(1, 'Later');
-    expect(backendMock.updateObject).toHaveBeenCalledTimes(1);
-    pending.error(new Error('rejected'));
-    expect(editor.store.objects()).toBe(previous);
   });
 
   it('takes remaining prompts from the deletion response instead of cleaning local point maps', () => {

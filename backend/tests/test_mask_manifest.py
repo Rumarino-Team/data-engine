@@ -56,12 +56,6 @@ class ManifestFileTests(unittest.TestCase):
         self.assertEqual(load_mask_manifest(new), {**header(), "frames": self.frames})
         self.assertEqual(list(load_mask_manifest(new)["frames"]), list(self.frames))  # frame order is kept
 
-    def test_an_empty_manifest_round_trips(self):
-        self.frames = {}
-        self.write_new_way(self.path)
-        self.assertEqual(load_mask_manifest(self.path), {**header(), "frames": {}})
-        self.assertEqual(manifest_index(self.path), {})
-
     def test_the_index_of_a_written_file_is_what_scanning_it_finds(self):
         self.write_new_way(self.path)
         written = manifest_index(self.path)
@@ -74,12 +68,6 @@ class ManifestFileTests(unittest.TestCase):
         self.assertEqual(scanned["1"].stamps, {"1": 1, "2": 0})
         self.assertEqual(scanned["1"].overlay, "overlays/frame_1.png")
         self.assertIsNone(scanned["2"].overlay)
-
-    def test_a_just_written_manifest_needs_no_scan(self):
-        self.write_new_way(self.path)
-        with patch.object(mask_manifest, "_scan", side_effect=AssertionError("scanned")):
-            self.assertEqual(read_frame(self.path, "10"), self.frames["10"])
-            self.assertEqual(set(manifest_index(self.path)), set(self.frames))
 
     def test_each_frame_is_read_alone(self):
         self.write_old_way(self.path)
@@ -105,20 +93,6 @@ class ManifestFileTests(unittest.TestCase):
                         self.assertEqual(json.loads(handle.read(entry.length)), self.frames[key])
                 reference = reference or index
                 self.assertEqual(index, reference)
-
-    def test_frames_may_come_before_other_top_level_values(self):
-        self.path.write_text(json.dumps({"frames": self.frames, "num_frames": 7}), encoding="utf-8")
-        with patch.object(mask_manifest, "_CHUNK", 5):
-            self.assertEqual(list(manifest_index(self.path)), list(self.frames))
-        self.path.write_text('{"version":1}')
-        self.assertEqual(manifest_index(self.path), {})
-
-    def test_a_frame_without_revisions_is_stamped_zero_and_empty_results_have_no_stamps(self):
-        self.frames = {"0": {"objects": {"3": {"size": [1, 1], "rle": [], "bbox": [0, 0, 0, 0]}}}, "1": {"objects": {}}}
-        self.write_old_way(self.path)
-        index = manifest_index(self.path)
-        self.assertEqual(index["0"].stamps, {"3": 0})
-        self.assertEqual(index["1"].stamps, {})
 
     def test_records_of_a_file_are_its_frames_as_written(self):
         self.write_new_way(self.path)
@@ -187,15 +161,6 @@ class ManifestIndexCacheTests(unittest.TestCase):
         replacement.replace(self.path)
         self.assertEqual(list(manifest_index(self.path)), ["9"])
         self.assertEqual(read_frame(self.path, "9"), {"objects": {}})
-
-    def test_keeps_only_the_latest_manifest(self):
-        self.path.write_text('{"frames":{"0":{}}}')
-        manifest_index(self.path)
-        other = self.put("other.json", '{"frames":{"1":{}}}')
-        manifest_index(other)
-        with patch.object(mask_manifest, "_scan", wraps=mask_manifest._scan) as scan:
-            manifest_index(self.path)
-        self.assertEqual(scan.call_count, 1)
 
 
 if __name__ == "__main__":

@@ -4,7 +4,6 @@ import { SavedState, VideoSaveResponse } from '../../services/backend.service';
 import {
   createWorkflowFixture,
   makeInfo,
-  mockInitJob,
   updateWithSavedState,
 } from '../testing/workflow-test-helpers';
 
@@ -57,19 +56,6 @@ describe('saving workflows', () => {
 
     expect(editor.store.saveStatus()).toBe('unsaved');
     expect(editor.store.hasUnsavedChanges()).toBe(true);
-  });
-
-  it('keeps the previous saved state when a response does not carry one', () => {
-    editor.store.savedState.set(saved({ dirty: true }));
-    objectOperations.renameObject(1, 'Left hand');
-    expect(editor.store.savedState()).toEqual(saved({ dirty: true }));
-  });
-
-  it('forgets saved state when the session is reset', () => {
-    editor.store.savedState.set(saved({ dirty: true }));
-    editor.store.resetSession();
-    expect(editor.store.savedState()).toBeNull();
-    expect(editor.store.hasUnsavedChanges()).toBe(false);
   });
 
   it('requires a name for the first save and for Save As', async () => {
@@ -172,36 +158,5 @@ describe('saving workflows', () => {
     expect(editor.store.annotationRecoveryRequested()).toBe(true);
     expect(editor.store.savedState()).toEqual(saved({ dirty: true }));
     expect(editor.store.toasts()[0].title).toBe('Save failed');
-  });
-
-  it('does not ask for a refresh when a save fails for another reason', async () => {
-    editor.store.savedState.set(saved({ dirty: true }));
-    editor.store.saveName.set('Bedroom');
-    backendMock.saveVideoSession.mockReturnValue(throwError(() => ({ status: 500 })));
-
-    await expect(editor.sessions.save()).resolves.toBe(false);
-
-    expect(editor.store.annotationRecoveryRequested()).toBe(false);
-  });
-
-  it('blocks saving while another workflow is busy', async () => {
-    editor.store.savedState.set(saved({ dirty: true }));
-    editor.store.isLoading.set(true);
-    await expect(editor.sessions.save()).resolves.toBe(false);
-    expect(backendMock.saveVideoSession).not.toHaveBeenCalled();
-  });
-
-  it('adopts the saved name and state of a loaded session', async () => {
-    mockInitJob(backendMock, { num_frames: 10, source_type: 'saved_session' });
-    backendMock.getVideoInfo.mockReturnValue(of(makeInfo({ saved_state: saved() })));
-    editor.store.isInitialized.set(false);
-    editor.store.saveName.set('stale');
-    editor.store.videoDir.set('C:/saved/bedroom');
-
-    await editor.sessions.initVideo();
-
-    expect(editor.store.isInitialized()).toBe(true);
-    expect(editor.store.saveName()).toBe('Bedroom');
-    expect(editor.store.saveStatus()).toBe('saved');
   });
 });

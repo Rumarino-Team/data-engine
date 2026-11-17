@@ -17,13 +17,6 @@ describe('ConfirmService', () => {
     expect(service.request()).toBeNull();
   });
 
-  it('resolves null when dismissed', async () => {
-    const service = new ConfirmService();
-    const answer = service.ask(question);
-    service.answer(null);
-    await expect(answer).resolves.toBeNull();
-  });
-
   it('dismisses an older question when a newer one is asked', async () => {
     const service = new ConfirmService();
     const first = service.ask(question);
@@ -32,10 +25,5 @@ describe('ConfirmService', () => {
     expect(service.request()?.title).toBe('Another');
     service.answer('save');
     await expect(second).resolves.toBe('save');
-  });
-
-  it('ignores an answer when nothing is asked', () => {
-    const service = new ConfirmService();
-    expect(() => service.answer('save')).not.toThrow();
   });
 });

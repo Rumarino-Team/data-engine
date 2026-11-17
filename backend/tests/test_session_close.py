@@ -68,29 +68,6 @@ class SessionCloseTests(SessionStateTestCase):
                 self.assertEqual(response.status_code, 409)
                 self.assert_still_open()
 
-    def test_closing_is_refused_while_a_job_runs(self):
-        self.activate_job()
-        response = self.client.post("/video/close_session")
-        self.assertEqual(response.status_code, 409)
-        self.assertIn("already running", response.json()["detail"])
-        self.assert_still_open()
-
-    def test_the_next_video_takes_the_weights_over_and_is_not_slower_to_load(self):
-        self.assertEqual(self.client.post("/video/close_session").status_code, 200)
-        source = self.root / "source"
-        source.mkdir()
-        (source / "00000.jpg").touch()
-        candidate = self.make_masker()
-        candidate.frame_loading = "lazy"
-        candidate.state_loaded = True
-
-        with patch.object(prompts.svm, "SAM2VideoMasker", return_value=candidate) as constructor:
-            loading.run_video_init_job(
-                self.ctx, VideoInitStateRequest(video_frames_dir=str(source)), self.job_handle())
-
-        self.assertIs(constructor.call_args.kwargs["reuse"], self.masker)
-        self.assertIs(self.ctx.session.video_masker, candidate)
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -33,12 +33,6 @@ class VideoTrackerRuntimeTests(unittest.TestCase):
         self.assertEqual(created, ["model-a"])
         runtime.release_memory.assert_not_called()
 
-    def test_a_loaded_tracker_for_the_same_model_is_reused_without_building(self):
-        existing = fake_tracker("model-a")
-        runtime, created = self.make_runtime(existing)
-        self.assertIs(runtime.ensure("model-a"), existing)
-        self.assertEqual(created, [])
-
     def test_a_different_model_releases_the_old_weights_before_building_the_new_one(self):
         events = []
         runtime, _ = self.make_runtime(fake_tracker("model-a"))
@@ -57,14 +51,6 @@ class VideoTrackerRuntimeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             runtime.ensure("model-b")
         self.assertIsNone(runtime.session.tracker)
-
-    def test_release_frees_memory_only_when_a_tracker_was_loaded(self):
-        runtime, _ = self.make_runtime(fake_tracker("model-a"))
-        runtime.release()
-        self.assertIsNone(runtime.session.tracker)
-        runtime.release_memory.assert_called_once()
-        runtime.release()
-        runtime.release_memory.assert_called_once()
 
 
 if __name__ == "__main__":

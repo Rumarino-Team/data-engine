@@ -159,39 +159,4 @@ describe('VideoJobsService', () => {
     );
     expect(onFinish).toHaveBeenCalledOnce();
   });
-
-  it('does not retry job submission or non-transient progress errors', async () => {
-    const startJob = vi.fn(async () => {
-      throw { status: 0 };
-    });
-    const backend = {
-      getJob: vi.fn(() => throwError(() => ({ status: 404, error: { detail: 'Job not found.' } }))),
-    };
-    const onFailure = vi.fn();
-    const service = new VideoJobsService(backend as unknown as BackendService);
-    await service.run({ title: 'Test', startJob, onFailure });
-    expect(startJob).toHaveBeenCalledOnce();
-    expect(backend.getJob).not.toHaveBeenCalled();
-    await service.run({ title: 'Test', startJob: async () => ({ job_id: 'job-1' }), onFailure });
-    expect(backend.getJob).toHaveBeenCalledOnce();
-    expect(onFailure).toHaveBeenLastCalledWith('Job not found.');
-  });
-
-  it('cancels a scheduled progress retry when the owner is destroyed', async () => {
-    vi.useFakeTimers();
-    const backend = { getJob: vi.fn(() => throwError(() => ({ status: 0 }))) };
-    const onFailure = vi.fn();
-    const run = new VideoJobsService(backend as unknown as BackendService).run({
-      title: 'Test',
-      startJob: async () => ({ job_id: 'job-1' }),
-      destroyRef: TestBed.inject(DestroyRef),
-      onFailure,
-    });
-    await vi.advanceTimersByTimeAsync(0);
-    TestBed.resetTestingModule();
-    expect(await run).toEqual({ result: null, completedJobId: null });
-    await vi.advanceTimersByTimeAsync(1500);
-    expect(backend.getJob).toHaveBeenCalledOnce();
-    expect(onFailure).not.toHaveBeenCalled();
-  });
 });

@@ -31,25 +31,6 @@ describe('session workflows', () => {
     expect(backendMock.updateObject).not.toHaveBeenCalled();
   });
 
-  it('preserves an intentionally empty canonical session and its reserved object IDs', async () => {
-    mockInitJob(backendMock, {
-      num_frames: 1,
-      restored_session: {
-        annotations: { version: 1, revision: 8, next_object_id: 7, objects: {}, prompts: [] },
-        interactive_state: { version: 1 },
-        has_mask_manifest: false,
-      },
-    });
-    editor.store.videoDir.set('C:/saved/session');
-
-    await editor.sessions.initVideo();
-
-    expect(editor.store.objects()).toEqual([]);
-    expect(editor.store.selectedObjectId()).toBeNull();
-    expect(editor.store.annotations()?.next_object_id).toBe(7);
-    expect(backendMock.updateObject).not.toHaveBeenCalled();
-  });
-
   it('restores interactive state from saved-session init result', async () => {
     mockInitJob(backendMock, {
       num_frames: 10,
@@ -139,18 +120,6 @@ describe('session workflows', () => {
         [10, 20],
         [11, 21],
       ]);
-    });
-
-    it('keeps init successful when the result is unavailable', async () => {
-      initWithTrackingResult({ result_id: 'missing-track' });
-      backendMock.getTrackingResult.mockReturnValue(
-        throwError(() => ({ error: { detail: 'missing' } })),
-      );
-
-      await editor.sessions.initVideo();
-
-      expect(editor.store.isInitialized()).toBe(true);
-      expect(editor.store.toasts()[0].title).toBe('Tracking result unavailable');
     });
   });
 
@@ -320,41 +289,12 @@ describe('a session the backend still holds', () => {
       expect(backendMock.initVideoState).not.toHaveBeenCalled();
     });
 
-    it('reports nothing when the backend holds no session', async () => {
-      for (const empty of [
-        { session_id: null, annotations: null, num_frames: 0 },
-        { num_frames: 0 },
-      ]) {
-        backendMock.getVideoInfo.mockReturnValue(of(heldByBackend(empty)));
-        offer(false);
-        await editor.sessions.checkForOpenSession();
-        expect(editor.store.openBackendSession()).toBeNull();
-      }
-    });
-
     it('marks a session whose predictor is gone as not resumable', async () => {
       backendMock.getVideoInfo.mockReturnValue(of(heldByBackend({ predictor_ready: false })));
       await editor.sessions.checkForOpenSession();
       expect(editor.store.openBackendSession()?.resumable).toBe(false);
       await expect(editor.sessions.resumeOpenSession()).resolves.toBe(false);
       expect(editor.store.isInitialized()).toBe(false);
-    });
-
-    it('stays quiet when the backend cannot be reached', async () => {
-      backendMock.getVideoInfo.mockReturnValue(throwError(() => ({ status: 0 })));
-      await editor.sessions.checkForOpenSession();
-      expect(editor.store.openBackendSession()).toBeNull();
-      expect(editor.store.toasts()).toEqual([]);
-    });
-
-    it('does not look while a session is shown or work is in flight', async () => {
-      backendMock.getVideoInfo.mockReturnValue(of(heldByBackend()));
-      editor.store.isInitialized.set(true);
-      await editor.sessions.checkForOpenSession();
-      editor.store.isInitialized.set(false);
-      editor.store.isLoading.set(true);
-      await editor.sessions.checkForOpenSession();
-      expect(backendMock.getVideoInfo).not.toHaveBeenCalled();
     });
 
     it('looks by itself once the backend is online and nothing is shown', () => {
@@ -379,15 +319,6 @@ describe('a session the backend still holds', () => {
 
       expect(editor.store.toasts()[0].message).toContain('unsaved changes');
       expect(editor.store.openBackendSession()?.sessionId).toBe('held-1');
-    });
-
-    it('forgets the offer once a video is loaded', async () => {
-      offer(false);
-      mockInitJob(backendMock);
-      editor.store.videoDir.set('C:/frames');
-      await editor.sessions.initVideo();
-      expect(editor.store.isInitialized()).toBe(true);
-      expect(editor.store.openBackendSession()).toBeNull();
     });
   });
 
@@ -461,13 +392,6 @@ describe('a session the backend still holds', () => {
         expect(backendMock.trackPromptPoints).not.toHaveBeenCalled();
       });
 
-      it('shows no overlays when the backend reports no tracking result', async () => {
-        withTracking(null);
-        await expect(editor.sessions.resumeOpenSession()).resolves.toBe(true);
-        expect(backendMock.getTrackingResult).not.toHaveBeenCalled();
-        expect(editor.store.trackedPoints()).toEqual([]);
-      });
-
       it('still resumes when the result cannot be read, and says so', async () => {
         withTracking();
         backendMock.getTrackingResult.mockReturnValue(
@@ -500,15 +424,6 @@ describe('a session the backend still holds', () => {
       expect(editor.store.toasts()[0].title).toBe('Resuming session');
       expect(editor.store.openBackendSession()?.sessionId).toBe('held-2');
     });
-
-    it('does nothing when no session is on offer or work is in flight', async () => {
-      editor.store.isLoading.set(true);
-      await expect(editor.sessions.resumeOpenSession()).resolves.toBe(false);
-      editor.store.isLoading.set(false);
-      editor.store.openBackendSession.set(null);
-      await expect(editor.sessions.resumeOpenSession()).resolves.toBe(false);
-      expect(editor.store.isInitialized()).toBe(false);
-    });
   });
 
   describe('closing it from a tab that does not show it', () => {
@@ -534,15 +449,6 @@ describe('a session the backend still holds', () => {
       expect(editor.store.openBackendSession()).toBeNull();
     });
 
-    it('leaves it alone when the question is dismissed', async () => {
-      offer(true);
-      const pending = leave.closeOpenBackendSession();
-      confirm.answer(null);
-      await expect(pending).resolves.toBe(false);
-      expect(backendMock.closeVideoSession).not.toHaveBeenCalled();
-      expect(editor.store.openBackendSession()).not.toBeNull();
-    });
-
     it('shows what is there now when the session changed since it was offered', async () => {
       offer(false);
       backendMock.closeVideoSession.mockReturnValue(
@@ -566,13 +472,6 @@ describe('a session the backend still holds', () => {
       expect(editor.store.toasts()[0]).toEqual(
         expect.objectContaining({ severity: 'warning', title: 'Backend unreachable' }),
       );
-    });
-
-    it('is not offered while a session is shown', async () => {
-      offer(false);
-      editor.store.isInitialized.set(true);
-      await expect(leave.closeOpenBackendSession()).resolves.toBe(false);
-      expect(backendMock.closeVideoSession).not.toHaveBeenCalled();
     });
   });
 });

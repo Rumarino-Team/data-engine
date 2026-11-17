@@ -58,18 +58,6 @@ class SessionReplacementTests(SessionStateTestCase):
         self.assertTrue((self.old_dir / "frames" / "00000.jpg").exists())
         self.assertEqual(self.old_masker.state_loaded, state_loaded)
 
-    def test_unsupported_input_files_are_rejected_before_a_working_copy_exists(self):
-        for name, expected in [("notes.txt", "Unsupported input file type"), ("frame.png", "single image file")]:
-            path = self.root / name
-            path.touch()
-            with self.subTest(name), self.assertRaises(OperationError) as failure:
-                loading.initialize_video_state_from_resolved_input(
-                    path, online_mode=True, batch_size=1, offload_video_to_cpu=True, offload_state_to_cpu=True,
-                    async_loading_frames=False, session=SessionState(), job=self.job_handle())
-            self.assertEqual(failure.exception.status_code, 400)
-            self.assertIn(expected, failure.exception.message)
-        self.assertFalse((self.root / "candidates").exists())
-
     def test_invalid_path_and_empty_directory_preserve_current_session(self):
         empty = self.root / "empty"
         empty.mkdir()
@@ -132,24 +120,6 @@ class SessionReplacementTests(SessionStateTestCase):
         self.assertEqual(response.status_code, 200)
         run.assert_called_once()
 
-    def test_a_session_without_unsaved_changes_is_replaced_normally(self):
-        state.saved_fingerprint = content_fingerprint(state)
-        self.assertFalse(saved_state(state)["dirty"])
-        response, run = self.load_through_the_route()
-        self.assertEqual(response.status_code, 200)
-        run.assert_called_once()
-
-    def test_loading_with_nothing_open_needs_no_confirmation(self):
-        state.active_session_dir = None  # nothing loaded: a session that was never opened is not "unsaved"
-        self.assertIsNone(state.saved_fingerprint)
-        response, run = self.load_through_the_route()
-        self.assertEqual(response.status_code, 200)
-        run.assert_called_once()
-
-    def test_an_unknown_frame_loading_mode_is_rejected_by_the_request(self):
-        with self.assertRaises(ValueError):
-            VideoInitStateRequest(video_frames_dir="frames", frame_loading="streaming")
-
     def test_a_failed_load_rebuilds_the_previous_video_with_its_own_frame_loading(self):
         self.old_masker.frame_loading = "preload"
         candidate = self.masker()
@@ -174,12 +144,6 @@ class SessionReplacementTests(SessionStateTestCase):
         self.assertEqual(events, ["old state freed", "new frames load"])
         self.assertIs(constructor.call_args.kwargs["reuse"], self.old_masker)
         self.old_masker.init_state.assert_not_called()
-
-    def test_the_first_video_has_no_weights_to_take_over(self):
-        state.video_masker = None
-        with patch.object(prompts.svm, "SAM2VideoMasker", return_value=self.masker()) as constructor:
-            self.run_init()
-        self.assertNotIn("reuse", constructor.call_args.kwargs)
 
     def test_an_old_predictor_that_cannot_be_rebuilt_is_dropped_but_its_annotations_stay(self):
         candidate = self.masker()

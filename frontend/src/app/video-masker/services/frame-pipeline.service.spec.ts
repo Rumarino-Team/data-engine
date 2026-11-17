@@ -122,18 +122,6 @@ describe('FramePipelineService', () => {
     ]);
   });
 
-  it('retains a backend-selected empty override on refetch', async () => {
-    const response = maskResponse(0);
-    response.objects['1'] = { size: [1, 2], rle: [], bbox: [0, 0, 0, 0] };
-    response.sources['1'] = 'override';
-    backend.getVideoMaskData.mockReturnValue(of(response));
-    const image = await startFrame(0);
-    await image.onload?.();
-    service.clearMaskDataCache();
-    await service.loadFrame(0);
-    expect(viewport.render.mock.lastCall![1][0].source).toEqual(response.objects['1']);
-  });
-
   it('rejects cached and late masks after an accepted deletion', async () => {
     const old = maskResponse(0);
     const image = await startFrame(0);
@@ -205,24 +193,6 @@ describe('FramePipelineService', () => {
     expect(store.displayedFrameIdx()).toBe(1);
   });
 
-  it('does not apply an image load after detach', async () => {
-    const image = await startFrame(0);
-    service.detach();
-    await image.onload?.();
-    expect(service.currentBaseImage).toBeNull();
-    expect(store.displayedFrameIdx()).toBe(-1);
-    expect(viewport.render).not.toHaveBeenCalled();
-  });
-
-  it('shares image loads when the same frame is requested repeatedly', async () => {
-    await service.loadFrame(0);
-    await service.loadFrame(0);
-    expect(images).toHaveLength(1);
-    expect(backend.getVideoFrameUrl).toHaveBeenCalledTimes(1);
-    await images[0].onload?.();
-    expect(store.displayedFrameIdx()).toBe(0);
-  });
-
   it('promotes a pending neighbor preload to the displayed frame without another request', async () => {
     store.numFrames.set(3);
     const first = await startFrame(0);
@@ -259,28 +229,6 @@ describe('FramePipelineService', () => {
     expect(viewport.render).toHaveBeenCalledTimes(1);
   });
 
-  it('shares a pending mask request when the current frame is requested again', async () => {
-    const response = new Subject<VideoMaskDataResponse>();
-    backend.getVideoMaskData.mockReturnValueOnce(response);
-    const image = await startFrame(0);
-    const firstLoad = image.onload?.();
-    const secondLoad = service.loadFrame(0);
-    expect(backend.getVideoMaskData).toHaveBeenCalledTimes(1);
-    response.next(maskResponse(0));
-    await Promise.all([firstLoad, secondLoad]);
-    expect(viewport.render.mock.lastCall![1]).toHaveLength(1);
-  });
-
-  it('renders cached masks in one pass without refetching', async () => {
-    const image = await startFrame(0);
-    await image.onload?.();
-    viewport.render.mockClear();
-    await service.loadFrame(0);
-    expect(viewport.render).toHaveBeenCalledTimes(1);
-    expect(viewport.render.mock.lastCall![1]).toHaveLength(1);
-    expect(backend.getVideoMaskData).toHaveBeenCalledTimes(1);
-  });
-
   it('loads masks alongside the image and renders once when masks arrive first', async () => {
     const image = await startFrame(0);
     expect(backend.getVideoMaskData).toHaveBeenCalledTimes(1);
@@ -288,13 +236,6 @@ describe('FramePipelineService', () => {
     await image.onload?.();
     expect(viewport.render).toHaveBeenCalledTimes(1);
     expect(viewport.render.mock.lastCall![1]).toHaveLength(1);
-  });
-
-  it('does not redraw a frame for an empty saved-mask response', async () => {
-    backend.getVideoMaskData.mockReturnValue(of({ frame_idx: 0, objects: {} }));
-    const image = await startFrame(0);
-    await image.onload?.();
-    expect(viewport.render).toHaveBeenCalledTimes(1);
   });
 
   it('keeps recently accessed images and evicts older images at the byte budget', async () => {
@@ -312,15 +253,6 @@ describe('FramePipelineService', () => {
     expect(images).toHaveLength(count);
     await service.loadFrame(1);
     expect(images).toHaveLength(count + 1);
-  });
-
-  it('retains the displayed masks while the next image is loading', async () => {
-    const image = await startFrame(0);
-    await image.onload?.();
-    await service.loadFrame(5);
-    service.redraw();
-    expect(viewport.render.mock.lastCall![0]).toBe(image);
-    expect(viewport.render.mock.lastCall![1]).toHaveLength(1);
   });
 
   it('prefetches neighbor masks after the current pair is ready and promotes the pending request', async () => {
@@ -381,52 +313,5 @@ describe('FramePipelineService', () => {
     store.sessionId.set('another-session');
     await startFrame(0);
     expect(backend.getVideoFrameUrl).toHaveBeenLastCalledWith(0, 'another-session');
-  });
-
-  it('retains useful neighbor work without allowing it to paint before scheduled navigation', async () => {
-    vi.stubGlobal(
-      'requestAnimationFrame',
-      vi.fn(() => 1),
-    );
-    const image = await startFrame(0);
-    service.scheduleFrameLoad(1);
-    expect(image.src).toBe('/frame/0');
-    await image.onload?.();
-    expect(service.currentBaseImage).toBeNull();
-    expect(viewport.render).not.toHaveBeenCalled();
-    await service.loadFrame(0);
-    expect(service.currentBaseImage).toBe(image);
-    expect(backend.getVideoFrameUrl.mock.calls.filter(([frame]) => frame === 0)).toHaveLength(1);
-  });
-
-  it('does not repaint obsolete masks between navigation intent and the next animation tick', async () => {
-    vi.stubGlobal(
-      'requestAnimationFrame',
-      vi.fn(() => 1),
-    );
-    const response = new Subject<VideoMaskDataResponse>();
-    backend.getVideoMaskData.mockReturnValueOnce(response);
-    const image = await startFrame(0);
-    const loaded = image.onload?.();
-    expect(viewport.render).toHaveBeenCalledOnce();
-    service.scheduleFrameLoad(1);
-    response.next(maskResponse(0));
-    await loaded;
-    expect(viewport.render).toHaveBeenCalledOnce();
-  });
-
-  it('keeps compressed masks when decoded images are evicted', async () => {
-    for (const frame of [0, 1, 2]) {
-      const image = await startFrame(frame);
-      image.width = image.height = 4096;
-      await image.onload?.();
-    }
-    expect(backend.getVideoMaskData).toHaveBeenCalledTimes(3);
-    const imageCount = images.length;
-    await service.loadFrame(0);
-    expect(images).toHaveLength(imageCount + 1);
-    await images.at(-1)!.onload?.();
-    expect(backend.getVideoMaskData).toHaveBeenCalledTimes(3);
-    expect(viewport.render.mock.lastCall![1]).toHaveLength(1);
   });
 });

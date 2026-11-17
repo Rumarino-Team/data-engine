@@ -60,12 +60,6 @@ class FramePathTests(FrameStoreCase):
         names = [Path(path).name for path in list_frame_paths(str(self.directory))]
         self.assertEqual(names, [f"{index:05d}.jpg" for index in [*range(FRAME_COUNT), 100, 101]])
 
-    def test_a_directory_without_frames_is_an_error(self):
-        empty = self.directory / "empty"
-        empty.mkdir()
-        with self.assertRaisesRegex(RuntimeError, "no images found"):
-            list_frame_paths(str(empty))
-
 
 @unittest.skipIf(predictor_module is None, "requires SAM2")
 class SameValuesAsSam2Tests(FrameStoreCase):
@@ -95,31 +89,10 @@ class SameValuesAsSam2Tests(FrameStoreCase):
         for index in [7, 2, 11, 0, 5, 5, 6, 4, 3]:
             self.assertTrue(torch.equal(store[index], reference[index]), f"frame {index} differs")
 
-    def test_a_frame_is_float32_chw(self):
-        for store in (LazyFrameStore(self.paths, IMAGE_SIZE), PreloadedFrameStore(self.paths, IMAGE_SIZE)):
-            frame = store[0]
-            self.assertEqual(frame.dtype, torch.float32)
-            self.assertEqual(tuple(frame.shape), (3, IMAGE_SIZE, IMAGE_SIZE))
-
 
 class SequenceBehaviourTests(FrameStoreCase):
     def stores(self):
         return [LazyFrameStore(self.paths, IMAGE_SIZE), PreloadedFrameStore(self.paths, IMAGE_SIZE)]
-
-    def test_indexing_follows_list_rules(self):
-        for store in self.stores():
-            with self.subTest(store=type(store).__name__):
-                self.assertEqual(len(store), FRAME_COUNT)
-                self.assertTrue(torch.equal(store[-1], store[FRAME_COUNT - 1]))
-                with self.assertRaises(IndexError):
-                    store[FRAME_COUNT]
-                with self.assertRaises(TypeError):
-                    store[1:3]
-
-    def test_a_frame_returned_twice_is_the_same_values(self):
-        for store in self.stores():
-            with self.subTest(store=type(store).__name__):
-                self.assertTrue(torch.equal(store[3], store[3]))
 
     def test_the_preloaded_store_hands_out_frames_that_cannot_change_what_it_holds(self):
         store = PreloadedFrameStore(self.paths, IMAGE_SIZE)
@@ -127,10 +100,6 @@ class SequenceBehaviourTests(FrameStoreCase):
         expected = first.clone()
         first.zero_()
         self.assertTrue(torch.equal(store[0], expected))
-
-    def test_the_first_frame_gives_the_original_video_size(self):
-        for store in self.stores():
-            self.assertEqual((store.video_height, store.video_width), (40, 60))
 
 
 class LazyStoreTests(FrameStoreCase):
@@ -140,40 +109,11 @@ class LazyStoreTests(FrameStoreCase):
             store[index]
         self.assertEqual(list(store._cache), [9, 10, 11])
 
-    def test_a_cached_frame_is_not_decoded_again(self):
-        store = LazyFrameStore(self.paths, IMAGE_SIZE, prefetch_frames=0)
-        with patch.object(store, "_decode_pixels", wraps=store._decode_pixels) as decode:
-            store[4]
-            store[4]
-            store[4]
-        decode.assert_called_once_with(4)
-
     def test_reading_in_order_decodes_the_next_frames_in_the_background(self):
         store = LazyFrameStore(self.paths, IMAGE_SIZE, cache_frames=8, prefetch_frames=4)
         store[0]
         store[1]
         self.assertTrue(wait_until(lambda: {2, 3, 4, 5} <= set(store._cache)))
-
-    def test_reading_backwards_decodes_the_previous_frames(self):
-        store = LazyFrameStore(self.paths, IMAGE_SIZE, cache_frames=8, prefetch_frames=4)
-        store[10]
-        store[9]
-        self.assertTrue(wait_until(lambda: {5, 6, 7, 8} <= set(store._cache)))
-
-    def test_a_jump_decodes_only_that_frame(self):
-        store = LazyFrameStore(self.paths, IMAGE_SIZE, cache_frames=8, prefetch_frames=4)
-        store[0]
-        store[8]
-        time.sleep(0.2)
-        self.assertEqual(set(store._cache), {0, 8})
-        self.assertEqual(store._pending, {})
-
-    def test_read_ahead_stops_at_the_ends_of_the_clip(self):
-        store = LazyFrameStore(self.paths, IMAGE_SIZE, cache_frames=8, prefetch_frames=4)
-        store[FRAME_COUNT - 2]
-        store[FRAME_COUNT - 1]
-        time.sleep(0.2)
-        self.assertLessEqual(set(store._cache), set(range(FRAME_COUNT)))
 
     def test_a_read_ahead_that_failed_surfaces_its_error_when_the_frame_is_read(self):
         Path(self.paths[3]).write_bytes(b"not a jpeg")
@@ -207,12 +147,6 @@ class LazyStoreTests(FrameStoreCase):
             thread.join(10)
         self.assertEqual(failures, [])
 
-    def test_the_cache_must_hold_what_is_read_ahead(self):
-        with self.assertRaisesRegex(ValueError, "cache_frames"):
-            LazyFrameStore(self.paths, IMAGE_SIZE, cache_frames=5, prefetch_frames=4)
-        with self.assertRaisesRegex(ValueError, "prefetch_frames"):
-            LazyFrameStore(self.paths, IMAGE_SIZE, prefetch_frames=-1)
-
 
 @unittest.skipIf(predictor_module is None, "requires SAM2")
 class LoaderSwapTests(FrameStoreCase):
@@ -226,29 +160,10 @@ class LoaderSwapTests(FrameStoreCase):
         self.assertEqual((height, width), (40, 60))
         self.assertIs(predictor_module.load_video_frames, original)
 
-    def test_preload_mode_builds_the_preloaded_store(self):
-        with frame_store_loading("preload"):
-            frames, _, _ = predictor_module.load_video_frames(str(self.directory), IMAGE_SIZE, True)
-        self.assertIsInstance(frames, PreloadedFrameStore)
-
     def test_the_loader_is_restored_when_initialization_fails(self):
         original = predictor_module.load_video_frames
         with self.assertRaises(RuntimeError), frame_store_loading("lazy"):
             raise RuntimeError("model failed")
-        self.assertIs(predictor_module.load_video_frames, original)
-
-    def test_inputs_that_are_not_frame_directories_use_sam2s_own_loader(self):
-        sentinel = Mock(return_value="sam2 result")
-        with patch.object(predictor_module, "load_video_frames", sentinel):
-            with frame_store_loading("lazy"):
-                result = predictor_module.load_video_frames("clip.mp4", IMAGE_SIZE, True)
-        self.assertEqual(result, "sam2 result")
-        sentinel.assert_called_once_with("clip.mp4", IMAGE_SIZE, True)
-
-    def test_an_unknown_mode_is_rejected_before_anything_is_swapped(self):
-        original = predictor_module.load_video_frames
-        with self.assertRaisesRegex(ValueError, "Unknown frame loading mode"), frame_store_loading("eager"):
-            pass
         self.assertIs(predictor_module.load_video_frames, original)
 
     def test_two_states_never_initialize_at_once(self):

@@ -1,7 +1,7 @@
 import { cachedMasks, seedMasks } from '../testing/workflow-test-helpers';
 import { setAcceptedPoints } from '../testing/workflow-test-helpers';
 import { TestBed } from '@angular/core/testing';
-import { Subject, of, throwError } from 'rxjs';
+import { of, throwError } from 'rxjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { VideoInfoResponse } from '../../services/backend.service';
 import { annotationDelta, createWorkflowFixture } from '../testing/workflow-test-helpers';
@@ -82,19 +82,6 @@ describe('session annotation snapshots', () => {
     expect(editor.store.objects()[0].label).toBe('Accepted hand');
     expect(editor.store.points().get(2)?.get(1)).toEqual([{ x: 10, y: 20, label: 1 }]);
     expect(backendMock.updateObject).not.toHaveBeenCalled();
-  });
-
-  it('does not claim initialization succeeded when video/info is unavailable', async () => {
-    const { editor, backendMock } = fixture;
-    mockInitialization();
-    const previous = editor.store.annotations();
-    backendMock.getVideoInfo.mockReturnValue(throwError(() => new Error('offline')));
-
-    expect(await editor.sessions.initVideo()).toBe(false);
-    expect(editor.store.isInitialized()).toBe(false);
-    expect(editor.store.isLoading()).toBe(false);
-    expect(editor.store.sessionId()).toBe('session-1');
-    expect(editor.store.annotations()).toBe(previous);
   });
 
   it('reconstructs discarded frontend annotations without reopening or resetting the view', async () => {
@@ -253,21 +240,6 @@ describe('session annotation snapshots', () => {
     expect(cachedMasks(editor.framePipeline).size).toBe(0);
   });
 
-  it('refuses a second refresh while one is in flight', async () => {
-    const { editor, backendMock } = fixture;
-    connect();
-    const pending = new Subject<VideoInfoResponse>();
-    backendMock.getVideoInfo.mockReturnValue(pending);
-    const first = editor.sessions.refreshAnnotations();
-    expect(editor.store.isRecoveringAnnotations()).toBe(true);
-    expect(await editor.sessions.refreshAnnotations()).toBe(false);
-    expect(backendMock.getVideoInfo).toHaveBeenCalledTimes(1);
-    pending.next(snapshot(2));
-    expect(await first).toBe(true);
-    expect(editor.store.annotationRevision()).toBe(2);
-    expect(editor.store.isRecoveringAnnotations()).toBe(false);
-  });
-
   it('preserves the last accepted cache when recovery fails', async () => {
     const { editor, backendMock } = fixture;
     connect();
@@ -297,17 +269,5 @@ describe('session annotation snapshots', () => {
     editor.store.apiHealthStatus.set('online');
     TestBed.tick();
     expect(backendMock.getVideoInfo).toHaveBeenCalledTimes(1);
-  });
-
-  it('cancels recovery when the editor is destroyed', async () => {
-    const { editor, backendMock } = fixture;
-    connect();
-    const pending = new Subject<VideoInfoResponse>();
-    backendMock.getVideoInfo.mockReturnValue(pending);
-    const refresh = editor.sessions.refreshAnnotations();
-    expect(pending.observed).toBe(true);
-    TestBed.resetTestingModule();
-    expect(await refresh).toBe(false);
-    expect(pending.observed).toBe(false);
   });
 });

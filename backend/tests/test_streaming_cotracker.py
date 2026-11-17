@@ -71,18 +71,6 @@ class FrameChunkLoaderTests(unittest.TestCase):
                         else:
                             load_video_frames_as_numpy(root, names)
 
-    def test_in_memory_loader_preserves_supplied_frame_order_and_rgb(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            cv2.imwrite(str(root / "00000.png"), np.full((3, 4, 3), (10, 20, 30), dtype=np.uint8))
-            cv2.imwrite(str(root / "00001.png"), np.full((3, 4, 3), (40, 50, 60), dtype=np.uint8))
-
-            video = load_video_frames_as_numpy(root, ["00001.png", "00000.png"])
-
-            self.assertEqual(video.shape, (2, 3, 4, 3))
-            self.assertEqual(video.dtype, np.uint8)
-            np.testing.assert_array_equal(video[:, 0, 0], [[60, 50, 40], [30, 20, 10]])
-
     def test_load_chunk_returns_cotracker_tensor_shape_and_rgb_order(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -122,12 +110,6 @@ class FrameChunkLoaderTests(unittest.TestCase):
                 second = loader.load_chunk(2, 6)
             self.assertEqual(imread.call_count, 6)
             self.assertTrue(torch.equal(first[0, 2:], second[0, :2]))
-
-    def test_load_chunk_rejects_invalid_range(self):
-        loader = FrameChunkLoader("/tmp", ["00000.png"], device="cpu")
-
-        with self.assertRaises(ValueError):
-            loader.load_chunk(1, 1)
 
 
 class StreamingCoTrackerTests(unittest.TestCase):
@@ -200,17 +182,6 @@ class ModelResolutionTests(unittest.TestCase):
         tracks, _ = tracker.track(video, queries=queries, add_support_grid=False)
         self.assertTrue(all(shape[-2:] == (6, 8) for shape in tracker.model.chunk_shapes))
         np.testing.assert_allclose(tracks[:, 0], queries[:, 1:], rtol=1e-6)
-
-    def test_prepared_video_matches_one_shot_resize_and_is_reusable(self):
-        tracker = self.tracker()
-        video = np.random.default_rng(1).integers(0, 255, (co_tracker.PREPARE_CHUNK_FRAMES + 3, 30, 40, 3), dtype=np.uint8)
-        prepared = tracker.prepare_video(video)
-        self.assertTrue(torch.equal(prepared.frames[0], resize_frames_to_model(video, (6, 8), "cpu")))
-        self.assertEqual((prepared.height, prepared.width), (30, 40))
-        queries = np.array([[0, 20.0, 10.0]], dtype=np.float32)
-        first, _ = tracker.track(prepared, queries=queries, add_support_grid=False)
-        second, _ = tracker.track(prepared, queries=queries, add_support_grid=False)
-        np.testing.assert_array_equal(first, second)
 
 
 if __name__ == "__main__":

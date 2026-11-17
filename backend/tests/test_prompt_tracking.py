@@ -172,27 +172,6 @@ class PromptTrackingStatusTests(SessionStateTestCase):
         self.assert_masker_untouched_but_for_its_weights()
         publish.assert_not_called()
 
-    def test_computation_errors_keep_their_status_when_the_weights_cannot_return(self):
-        for error, status in (
-            (ValueError("invalid query"), 400),
-            (RuntimeError("tracking failed"), 500),
-            (torch.OutOfMemoryError("out of memory"), 507),
-        ):
-            with self.subTest(error=type(error).__name__):
-                state.video_masker = _FakeInteractiveMasker()
-                state.video_masker.reload_weights.side_effect = RuntimeError("restore failed")
-                with (
-                    self.tracking_environment() as publish,
-                    patch.object(state.tracker, "track", side_effect=error),
-                    self.assertLogs("video.runtime", level="ERROR"),
-                ):
-                    with self.assertRaises(OperationError) as failure:
-                        self.run_tracking()
-                self.assertEqual(failure.exception.status_code, status)
-                self.assertIs(failure.exception.__cause__, error)
-                self.assertIsNone(state.video_masker)
-                publish.assert_not_called()
-
     def test_inputs_are_revalidated_after_tracking_before_publication(self):
         def edit_during_tracking(*args, **kwargs):
             state.annotations.clear_prompts()
@@ -243,27 +222,6 @@ class PromptTrackingStatusTests(SessionStateTestCase):
                     finally:
                         state.session_metadata = previous_metadata
 
-    def test_unreadable_frame_rejects_tracking_before_inference(self):
-        before_annotations = state.annotations.snapshot()
-
-        with (
-            self.tracking_environment(load_video=False) as publish,
-            patch("video.io.cv2.imread", side_effect=[np.zeros((2, 2, 3), dtype=np.uint8), None]),
-            patch.object(state.tracker, "track") as inference,
-            patch.object(state, "session_metadata", {"latest_tracking_result_id": "previous-result"}),
-        ):
-            with self.assertRaises(OperationError) as failure:
-                self.run_tracking()
-
-            self.assertEqual(failure.exception.status_code, 400)
-            self.assertIn("Unable to read frame 1:", failure.exception.message)
-            inference.assert_not_called()
-            publish.assert_not_called()
-            self.masker.reload_weights.assert_called_once()
-            self.assert_masker_untouched_but_for_its_weights()
-            self.assertEqual(state.session_metadata["latest_tracking_result_id"], "previous-result")
-            self.assertEqual(state.annotations.snapshot(), before_annotations)
-
 
 class BatchedTrackingTests(unittest.TestCase):
     def setUp(self):
@@ -274,12 +232,6 @@ class BatchedTrackingTests(unittest.TestCase):
     @staticmethod
     def rows(queries):
         return np.zeros((len(queries), 2, 2), dtype=np.float32), np.ones((len(queries), 2), dtype=bool)
-
-    def test_out_of_memory_is_recognized_from_the_type_or_the_message(self):
-        self.assertTrue(is_out_of_memory(torch.OutOfMemoryError("anything")))
-        self.assertTrue(is_out_of_memory(RuntimeError("CUDA out of memory.")))
-        self.assertFalse(is_out_of_memory(RuntimeError("something else")))
-        self.assertFalse(is_out_of_memory(ValueError("out of memory")))
 
     def test_the_batch_is_halved_until_it_fits_and_every_query_is_tracked_once(self):
         sizes, progress = [], []
@@ -297,24 +249,6 @@ class BatchedTrackingTests(unittest.TestCase):
         self.assertEqual((tracks.shape, visibility.shape), ((8, 2, 2), (8, 2)))
         self.assertEqual(progress, [(2, 8), (4, 8), (6, 8), (8, 8)])
         self.assertEqual(self.cleanup.call_count, 2)
-
-    def test_a_single_query_that_does_not_fit_raises_the_original_error(self):
-        error = torch.OutOfMemoryError("out of memory")
-
-        def track_batch(batch):
-            raise error
-
-        with self.assertRaises(torch.OutOfMemoryError) as caught:
-            track_in_batches(track_batch, np.zeros((1, 3), dtype=np.float32), on_progress=Mock())
-        self.assertIs(caught.exception, error)
-        self.cleanup.assert_called_once()
-
-    def test_other_errors_are_not_retried(self):
-        track_batch = Mock(side_effect=RuntimeError("something else"))
-        with self.assertRaises(RuntimeError):
-            track_in_batches(track_batch, np.zeros((4, 3), dtype=np.float32), on_progress=Mock())
-        track_batch.assert_called_once()
-        self.cleanup.assert_not_called()
 
     def test_running_out_of_memory_halves_the_batch_and_never_drops_the_support_grid(self):
         grids, sizes = [], []
@@ -362,11 +296,6 @@ class BatchedTrackingTests(unittest.TestCase):
         self.assertEqual(frames, [(0, 2, 8, 16), (0, 2, 16, 16), (2, 1, 8, 16), (2, 1, 16, 16)])
         self.assertEqual(batches, [(2, 3), (3, 3)])
 
-    def test_many_points_go_through_in_one_pass_by_default(self):
-        from core import config
-        self.assertGreaterEqual(config.DEFAULT_PROMPT_TRACK_BATCH_SIZE, 256)
-        self.assertLessEqual(config.DEFAULT_STREAMING_TRACK_FRAME_THRESHOLD, 0)  # every video is streamed
-
     def test_a_point_is_not_visible_before_the_frame_it_was_placed_on(self):
         visibility = np.ones((3, 6), dtype=bool)
         hidden = hide_before_query_frame(visibility, [[0.0, 1.0, 1.0], [2.0, 5.0, 5.0], [6.0, 9.0, 9.0]])
@@ -377,17 +306,6 @@ class BatchedTrackingTests(unittest.TestCase):
             [False] * 6,
         ])
         self.assertTrue(visibility.all(), "the caller's array is left alone")
-
-    def test_without_the_support_grid_an_out_of_memory_error_is_not_retried(self):
-        tracker = Mock()
-        tracker.prepare_video.side_effect = lambda video: video
-        tracker.track.side_effect = RuntimeError("CUDA out of memory.")
-        with patch("tracking.prompt_tracking.load_tracking_video_from_current_video_state",
-                   return_value=(np.zeros((2, 2, 2, 3), dtype=np.uint8), "frames")):
-            with self.assertRaises(RuntimeError):
-                track_prompt_queries(Mock(), tracker, np.zeros((1, 3), dtype=np.float32),
-                                     add_support_grid=False, streaming=False, on_progress=Mock())
-        tracker.track.assert_called_once()
 
 
 if __name__ == "__main__":

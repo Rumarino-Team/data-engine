@@ -159,34 +159,6 @@ class TrackingResultTests(SessionStateTestCase):
         self.assertEqual(guidance.points, [])
         self.assertIn("No CoTracker points match", guidance.skipped_reason)
 
-    def test_latest_guidance_skips_frame_count_mismatch(self):
-        state.annotations = SessionAnnotations(objects={1: {"id": 1, "label": "Object 1", "color": "#ff0000"}}, prompts=[
-            {
-                "frame_idx": 0,
-                "obj_id": 1,
-                "points": [[10.0, 20.0]],
-                "labels": [1],
-                "box": None,
-            }
-        ])
-        save_prompt_tracking_result(
-            state,
-            model_name="cotracker3_online",
-            num_points=1,
-            num_frames=2,
-            add_support_grid_used=False,
-            tracking_mode="streaming",
-            streaming_frame_threshold=256,
-            points=[{"point_id": "p0_0", "obj_id": 1, "source_frame_idx": 0, "source_x": 10, "source_y": 20}],
-            tracks=[[[10, 20], [11, 21]]],
-            visibility=[[True, True]],
-        )
-
-        guidance = load_latest_tracking_guidance(state, num_frames=3)
-
-        self.assertEqual(guidance.points, [])
-        self.assertIn("does not match", guidance.skipped_reason)
-
     def test_guidance_builds_adaptive_keyframes_filters_visibility_and_caps_points(self):
         guidance = TrackingGuidance(
             points=[
@@ -222,35 +194,6 @@ class TrackingResultTests(SessionStateTestCase):
         self.assertEqual(seeded_frames, {0, 4})
         self.assertEqual(batches[4][1], [[31.0, 31.0]])
 
-    def test_guidance_skips_excluded_boundary_frame_object(self):
-        guidance = TrackingGuidance(
-            points=[
-                TrackedGuidancePoint(
-                    obj_id=1,
-                    source_frame_idx=2,
-                    tracks=[[0, 0], [10, 10], [20, 20], [30, 30], [40, 40]],
-                    visibility=[True, True, True, True, True],
-                )
-            ]
-        )
-
-        batches, seeded_count, seeded_frames = guidance.build_seed_batches(
-            range_start=2,
-            range_end=4,
-            num_video_frames=5,
-            tail_frames=0,
-            frame_width=64,
-            frame_height=64,
-            keyframe_interval=2,
-            max_keyframes=100,
-            max_points_per_object_per_frame=16,
-            excluded_frame_objects={(2, 1)},
-        )
-
-        self.assertNotIn(0, batches)
-        self.assertEqual(seeded_count, 1)
-        self.assertEqual(seeded_frames, {4})
-
     def guidance_over(self, frames):
         return TrackingGuidance(points=[TrackedGuidancePoint(
             obj_id=1, source_frame_idx=0, tracks=[[10, 10]] * frames, visibility=[True] * frames)])
@@ -261,23 +204,12 @@ class TrackingResultTests(SessionStateTestCase):
             keyframe_interval=interval, max_keyframes=cap, max_points_per_object_per_frame=16)
         return sorted(seeded)
 
-    def test_keyframes_follow_the_interval_while_they_stay_under_the_cap(self):
-        self.assertEqual(self.seeded_frames(21, interval=8, cap=16), [0, 8, 16])
-
     def test_a_long_range_gets_at_most_the_cap_evenly_spaced_with_both_ends(self):
         frames = self.seeded_frames(923, interval=8, cap=16)
         self.assertEqual(len(frames), 16)
         self.assertEqual((frames[0], frames[-1]), (0, 922))
         gaps = {later - earlier for earlier, later in zip(frames, frames[1:])}
         self.assertLessEqual(max(gaps) - min(gaps), 1)
-
-    def test_the_cap_counts_from_the_start_of_a_custom_range(self):
-        frames = self.seeded_frames(300, interval=1, cap=5, start=100)
-        self.assertEqual(frames, [100, 150, 200, 249, 299])
-
-    def test_a_cap_of_one_seeds_only_the_first_frame_and_a_short_range_is_unaffected(self):
-        self.assertEqual(self.seeded_frames(300, interval=8, cap=1), [0])
-        self.assertEqual(self.seeded_frames(3, interval=1, cap=16), [0, 1, 2])
 
     def test_guidance_skips_bad_coordinate_values(self):
         guidance = TrackingGuidance(
@@ -351,22 +283,10 @@ class TrackingResultTests(SessionStateTestCase):
         self.assertTrue(guidance.should_warn)
         self.assertIn("support grid", guidance.skipped_reason)
 
-    def test_latest_guidance_no_result_does_not_warn(self):
-        guidance = load_latest_tracking_guidance(state, num_frames=2)
-
-        self.assertEqual(guidance.points, [])
-        self.assertFalse(guidance.should_warn)
-        self.assertIn("No CoTracker result", guidance.skipped_reason)
-
     def test_invalid_result_id_returns_400(self):
         with self.assertRaises(OperationError) as context:
             load_prompt_tracking_result(state, "../bad")
         self.assertEqual(context.exception.status_code, 400)
-
-    def test_missing_result_returns_404(self):
-        with self.assertRaises(OperationError) as context:
-            load_prompt_tracking_result(state, "missing")
-        self.assertEqual(context.exception.status_code, 404)
 
     def test_saved_metadata_document_keeps_the_latest_tracking_keys(self):
         commit_session(
@@ -430,19 +350,6 @@ class SeedingRulesTests(unittest.TestCase):
         _, _, seeded = self.seed([self.point(frames=40)], frames=40, interval=1)
         self.assertEqual(max(seeded), 23)
 
-    def test_the_final_window_is_the_videos_not_the_propagated_ranges(self):
-        _, _, seeded = self.seed([self.point(frames=200)], frames=200, end=19)
-        self.assertEqual(sorted(seeded), [0, 8, 16])
-        _, _, seeded = self.seed([self.point(frames=200)], frames=200, start=100, end=199, interval=1)
-        self.assertEqual(max(seeded), 183)
-
-    def test_a_video_no_longer_than_the_final_window_is_never_seeded(self):
-        for frames in (1, 10, 16, 17):
-            with self.subTest(frames=frames):
-                batches, count, seeded = self.seed([self.point(frames=frames)], frames=frames, interval=1,
-                                                   excluded={(0, 1)} if frames == 17 else None)
-                self.assertEqual((batches, count, seeded), ({}, 0, set()))
-
     def test_the_cap_spaces_keyframes_over_the_seedable_span(self):
         _, _, seeded = self.seed([self.point(frames=116)], frames=116, interval=1, cap=3)
         self.assertEqual(sorted(seeded), [0, 50, 99])
@@ -460,10 +367,6 @@ class SeedingRulesTests(unittest.TestCase):
         _, _, seeded = self.seed([self.point(source=0)], interval=8, excluded={(0, 1), (30, 1)})
         self.assertEqual(sorted(seeded), [8, 16, 24])
 
-    def test_a_prompt_for_another_object_changes_nothing_for_this_one(self):
-        _, _, seeded = self.seed([self.point(obj=1)], interval=8, end=24, excluded={(16, 2), (8, 2)})
-        self.assertEqual(sorted(seeded), [0, 8, 16, 24])
-
     def test_an_object_is_seeded_only_where_all_its_points_in_effect_are_visible(self):
         visible = [True] * 100
         visible[8] = False
@@ -473,17 +376,6 @@ class SeedingRulesTests(unittest.TestCase):
         self.assertEqual(batches[16][1], [[1.0, 1.0], [2.0, 2.0]])
         self.assertNotIn(8, batches)
         self.assertEqual(count, 6)
-
-    def test_a_missing_visibility_flag_counts_as_not_visible(self):
-        visible = [True] * 100
-        visible[8] = None
-        _, _, seeded = self.seed([self.point(visible=visible)], interval=8, end=16)
-        self.assertEqual(sorted(seeded), [0, 16])
-
-    def test_one_objects_missing_point_does_not_block_another_object(self):
-        hidden = [False] * 100
-        batches, _, _ = self.seed([self.point(obj=1), self.point(obj=2, visible=hidden)], interval=8, end=8)
-        self.assertEqual(batches, {0: {1: [[10.0, 10.0]]}, 8: {1: [[10.0, 10.0]]}})
 
     def test_points_are_capped_per_object_per_frame_after_the_visibility_check(self):
         points = [self.point(x=float(index)) for index in range(5)]

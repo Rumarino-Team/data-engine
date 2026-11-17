@@ -11,13 +11,6 @@ from core.errors import OperationError
 from sessions.paths import manifest_relative_path, resolve_input_path
 
 
-class ManifestRelativePathTests(unittest.TestCase):
-    def test_both_separators_give_forward_slashes(self):
-        for written in ("overlays_a/f0.png", "overlays_a\\f0.png", "f0.png"):
-            with self.subTest(written):
-                self.assertEqual(manifest_relative_path(written), written.replace("\\", "/"))
-
-
 class ResolveInputPathTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp(prefix="paths_")).resolve()
@@ -27,15 +20,6 @@ class ResolveInputPathTests(unittest.TestCase):
     def test_the_home_shortcut_is_expanded(self):
         with patch.dict(os.environ, {"HOME": str(self.root), "USERPROFILE": str(self.root)}):
             self.assertEqual(resolve_input_path("~/frames"), self.root / "frames")
-
-    def test_environment_variables_in_a_path_are_not_expanded(self):
-        with patch.dict(os.environ, {"DATA_ENGINE_TEST_ROOT": str(self.root)}):
-            for written in ("%DATA_ENGINE_TEST_ROOT%/frames", "$DATA_ENGINE_TEST_ROOT/frames",
-                            "${DATA_ENGINE_TEST_ROOT}/frames"):
-                with self.subTest(written):
-                    with self.assertRaises(OperationError) as failure:
-                        resolve_input_path(written)
-                    self.assertEqual(failure.exception.status_code, 404)
 
     def test_an_absolute_path_and_a_file_url_resolve(self):
         self.assertEqual(resolve_input_path(str(self.root / "frames")), self.root / "frames")

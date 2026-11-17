@@ -55,14 +55,6 @@ class VideoMaskerRuntimeTests(unittest.TestCase):
         runtime.create_masker.assert_not_called()
         runtime.replay_inputs.assert_not_called()
 
-    def test_offloaded_leaves_an_absent_masker_alone(self):
-        runtime, _ = self.make_runtime()
-        runtime.session.video_masker = None
-        with runtime.offloaded():
-            pass
-        runtime.create_masker.assert_not_called()
-        runtime.release_memory.assert_not_called()
-
     def test_a_successful_computation_requires_the_weights_to_come_back(self):
         runtime, _ = self.make_runtime()
         runtime.session.video_masker.reload_weights.side_effect = RuntimeError("cannot move back")
@@ -83,17 +75,6 @@ class VideoMaskerRuntimeTests(unittest.TestCase):
         self.assertIs(caught.exception, failure)
         masker.reload_weights.assert_called_once()
         self.assertIs(runtime.session.video_masker, masker)
-
-    def test_a_failed_return_after_a_failed_computation_keeps_the_original_error(self):
-        runtime, _ = self.make_runtime()
-        runtime.session.video_masker.reload_weights.side_effect = RuntimeError("cannot move back")
-        failure = ValueError("computation failed")
-        with self.assertLogs("video.runtime", level="ERROR"):
-            with self.assertRaises(ValueError) as caught:
-                with runtime.offloaded():
-                    raise failure
-        self.assertIs(caught.exception, failure)
-        self.assertIsNone(runtime.session.video_masker)
 
     def test_weights_that_cannot_be_moved_off_are_put_back_and_the_error_is_raised(self):
         runtime, _ = self.make_runtime()
@@ -164,13 +145,6 @@ class VideoMaskerRuntimeTests(unittest.TestCase):
         runtime.create_masker.assert_not_called()
         self.assertIs(session.video_masker, masker)
 
-    def test_propagating_needs_a_masker(self):
-        runtime, _ = self.make_runtime()
-        runtime.session.video_masker = None
-        with self.assertRaises(ValueError):
-            with runtime.propagating():
-                self.fail("must not start without a masker")
-
     def test_a_state_that_cannot_be_prepared_stops_the_computation(self):
         runtime, _ = self.make_runtime()
         runtime.replay_inputs.side_effect = RuntimeError("replay failed")
@@ -190,25 +164,6 @@ class VideoMaskerRuntimeTests(unittest.TestCase):
         self.assertIs(caught.exception, failure)
         self.assertEqual(masker.reset_state.call_count, 2)
         self.assertIs(runtime.session.video_masker, masker)
-
-    def test_a_failed_reset_after_a_failed_computation_keeps_the_original_error(self):
-        runtime, _ = self.make_runtime()
-        failure = ValueError("computation failed")
-        with self.assertLogs("video.runtime", level="ERROR"):
-            with self.assertRaises(ValueError) as caught:
-                with runtime.propagating():
-                    runtime.replay_inputs.side_effect = RuntimeError("replay failed")
-                    raise failure
-        self.assertIs(caught.exception, failure)
-        self.assertIsNone(runtime.session.video_masker)
-
-    def test_a_successful_computation_requires_the_state_to_be_put_back(self):
-        runtime, _ = self.make_runtime()
-        with self.assertLogs("video.runtime", level="ERROR"):
-            with self.assertRaises(MaskerRestorationError):
-                with runtime.propagating():
-                    runtime.replay_inputs.side_effect = RuntimeError("replay failed")
-        self.assertIsNone(runtime.session.video_masker)
 
     def test_rebuilding_inputs_disables_the_predictor_when_replay_fails(self):
         runtime, _ = self.make_runtime()

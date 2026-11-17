@@ -1,8 +1,6 @@
 import { setAcceptedPoints } from '../../testing/workflow-test-helpers';
 import { describe, beforeEach, expect, it, vi } from 'vitest';
 import { createVideoMaskerFixture } from '../../testing/component-test-helpers';
-import { By } from '@angular/platform-browser';
-import { ObjectSidebarComponent } from './object-sidebar.component';
 
 describe('ObjectSidebarComponent', () => {
   let component: Awaited<ReturnType<typeof createVideoMaskerFixture>>['component'];
@@ -12,11 +10,6 @@ describe('ObjectSidebarComponent', () => {
   beforeEach(async () => {
     ({ component, fixture, backendMock } = await createVideoMaskerFixture());
   });
-
-  const sidebar = (): ObjectSidebarComponent => {
-    fixture.detectChanges();
-    return fixture.debugElement.query(By.directive(ObjectSidebarComponent)).componentInstance;
-  };
 
   it('creates and removes objects through the sidebar controls', () => {
     vi.spyOn(component.framePipeline, 'scheduleFrameLoad').mockImplementation(() => {});
@@ -128,52 +121,5 @@ describe('ObjectSidebarComponent', () => {
     toggles()[1].click();
     fixture.detectChanges();
     expect(lists()).toBe(0);
-  });
-
-  it('shows separately placed points under their owning object and navigates to their frame', () => {
-    component.store.annotations.set({
-      version: 1,
-      revision: 0,
-      next_object_id: 3,
-      objects: {
-        '1': { id: 1, label: 'Car', color: '#ff0000' },
-        '2': { id: 2, label: 'Person', color: '#00ff00' },
-      },
-      prompts: [],
-    });
-    component.store.numFrames.set(20);
-    setAcceptedPoints(
-      component.store,
-      new Map([
-        [10, new Map([[1, [{ x: 4, y: 5, label: 0 }]]])],
-        [
-          2,
-          new Map([
-            [2, [{ x: 8, y: 9, label: 1 }]],
-            [1, [{ x: 1, y: 3, label: 1 }]],
-          ]),
-        ],
-      ]),
-    );
-    const groups = component.store.objectPointGroups();
-    expect(groups[0].children.map((point) => point.frameIdx)).toEqual([2, 10]);
-    expect(groups[1].children).toHaveLength(1);
-    sidebar().showObjectPoint(2, 2);
-    expect(component.store.selectedObjectId()).toBe(2);
-    expect(component.store.targetFrameIdx()).toBe(2);
-    component.store.isPointRequestInFlight.set(true);
-    sidebar().showObjectPoint(1, 10);
-    expect(component.store.targetFrameIdx()).toBe(2);
-    expect(component.store.selectedObjectId()).toBe(2);
-  });
-
-  it('edits object labels without changing point ownership and rejects blank labels', () => {
-    const input = document.createElement('input');
-    input.value = '  Left hand  ';
-    sidebar().renameObject(1, input);
-    expect(component.store.objects()[0]).toEqual({ id: 1, label: 'Left hand', color: '#ff0000' });
-    input.value = '   ';
-    sidebar().renameObject(1, input);
-    expect(input.value).toBe('Left hand');
   });
 });

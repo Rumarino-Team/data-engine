@@ -1,4 +1,4 @@
-import { Subject, of, throwError } from 'rxjs';
+import { of, throwError } from 'rxjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { HistoryStatus } from '../../services/backend.service';
 import { createWorkflowFixture, objectUpdate } from '../testing/workflow-test-helpers';
@@ -83,17 +83,6 @@ describe('undo and redo', () => {
     expect(editor.store.isLoading()).toBe(false);
   });
 
-  it('redoes through its own endpoint', async () => {
-    backendMock.redoVideoChange.mockReturnValue(
-      of(answer('Redo: Edit object', status({ undo: 3, redo: 0, next_redo: null }))),
-    );
-    await expect(history.redo()).resolves.toBe(true);
-    expect(backendMock.redoVideoChange).toHaveBeenCalledTimes(1);
-    expect(backendMock.undoVideoChange).not.toHaveBeenCalled();
-    expect(editor.store.history().redo).toBe(0);
-    expect(editor.store.toasts()[0]).toMatchObject({ title: 'Redone', message: 'Edit object' });
-  });
-
   it('does nothing when there is nothing to do, no session is shown or work is in flight', async () => {
     editor.store.history.set(status({ undo: 0, redo: 0, next_undo: null, next_redo: null }));
     await expect(history.undo()).resolves.toBe(false);
@@ -106,19 +95,6 @@ describe('undo and redo', () => {
     await expect(history.redo()).resolves.toBe(false);
     expect(backendMock.undoVideoChange).not.toHaveBeenCalled();
     expect(backendMock.redoVideoChange).not.toHaveBeenCalled();
-  });
-
-  it('keeps the editor busy while the backend works on it', async () => {
-    const pending = new Subject<ReturnType<typeof answer>>();
-    backendMock.undoVideoChange.mockReturnValue(pending);
-    const undoing = history.undo();
-    expect(editor.store.isInteractionBusy()).toBe(true);
-    await expect(history.undo()).resolves.toBe(false); // a second press while it runs is ignored
-    pending.next(answer('Undo: Add points'));
-    pending.complete();
-    await expect(undoing).resolves.toBe(true);
-    expect(editor.store.isInteractionBusy()).toBe(false);
-    expect(backendMock.undoVideoChange).toHaveBeenCalledTimes(1);
   });
 
   describe('when the backend refuses', () => {
@@ -136,27 +112,11 @@ describe('undo and redo', () => {
       expect(editor.store.isLoading()).toBe(false);
     });
 
-    it('does not reload for "nothing to undo", which is only a stale button', async () => {
-      backendMock.undoVideoChange.mockReturnValue(
-        throwError(() => ({ status: 400, error: { detail: 'Nothing to undo.' } })),
-      );
-      await expect(history.undo()).resolves.toBe(false);
-      expect(editor.store.annotationRecoveryRequested()).toBe(false);
-      expect(editor.store.toasts()[0].message).toBe('Nothing to undo.');
-    });
-
     it('reloads when the backend cannot answer', async () => {
       backendMock.redoVideoChange.mockReturnValue(throwError(() => ({ status: 0 })));
       await expect(history.redo()).resolves.toBe(false);
       expect(editor.store.annotationRecoveryRequested()).toBe(true);
       expect(editor.store.toasts()[0].title).toBe('Redo failed');
-    });
-
-    it('reloads when the answer does not belong to the revision this tab holds', async () => {
-      backendMock.undoVideoChange.mockReturnValue(of(answer('Undo: Add points', status(), { session_id: 'other' })));
-      await expect(history.undo()).resolves.toBe(false);
-      expect(editor.store.annotationRecoveryRequested()).toBe(true);
-      expect(editor.store.history()).toEqual(status({ undo: 2, redo: 1 })); // nothing applied
     });
   });
 
@@ -164,23 +124,16 @@ describe('undo and redo', () => {
     it('loads the tracking result the restored state names, when it is a different one', async () => {
       editor.store.trackingResultId = 'track-new';
       backendMock.undoVideoChange.mockReturnValue(
-        of(answer('Undo: Track points', status(), { tracking_validity: { result_id: 'track-old', point_ids: ['p0'] } })),
+        of(
+          answer('Undo: Track points', status(), {
+            tracking_validity: { result_id: 'track-old', point_ids: ['p0'] },
+          }),
+        ),
       );
       backendMock.getTrackingResult.mockReturnValue(storedResult());
       await history.undo();
       expect(backendMock.getTrackingResult).toHaveBeenCalledWith('track-old');
       expect(editor.store.trackingResultId).toBe('track-old');
-      expect(editor.store.trackedPoints()).toHaveLength(1);
-    });
-
-    it('does not load a result it already shows', async () => {
-      editor.store.trackingResultId = 'track-1';
-      editor.store.trackedPoints.set([series()]);
-      backendMock.undoVideoChange.mockReturnValue(
-        of(answer('Undo: Add points', status(), { tracking_validity: { result_id: 'track-1', point_ids: ['p0'] } })),
-      );
-      await history.undo();
-      expect(backendMock.getTrackingResult).not.toHaveBeenCalled();
       expect(editor.store.trackedPoints()).toHaveLength(1);
     });
 

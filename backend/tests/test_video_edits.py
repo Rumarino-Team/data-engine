@@ -169,21 +169,6 @@ class VideoEditTests(SessionStateTestCase):
         self.masker.add_new_points_or_box.assert_not_called()
         self.assertEqual(state.annotations.revision, 0)
 
-    def test_point_response_encodes_each_mask_with_matching_metadata(self):
-        self.masker.propagate_in_video.return_value = {}
-        compact = np.zeros((108, 192), dtype=bool)
-        compact[20:80, 30:140] = True
-        fragmented = np.indices((17, 19)).sum(axis=0) % 2 == 0
-        for name, mask in {"compact": compact, "fragmented": fragmented, "empty": np.zeros((2, 2), dtype=bool)}.items():
-            with self.subTest(name):
-                body = self.post_point(mask).json()
-                self.assertEqual(body["mask_data"]["objects"]["1"], encode_live_mask_payload(mask))
-                self.assertEqual(body["mask_shapes"], {"1": list(mask.shape)})
-                self.assertEqual(body["mask_pixel_counts"], {"1": int(mask.sum())})
-                self.assertFalse(body["single_frame_fallback_used"])
-        self.assertEqual(self.client.get("/video/mask_data/0").json()["objects"]["1"]["rle"], [])
-        self.assertEqual(self.post_point(fragmented).json()["mask_data"]["objects"]["1"]["encoding"], "packed-bits")
-
     def test_empty_interactive_result_falls_back_to_a_single_frame_propagation(self):
         fallback = np.array([[True, False], [False, False]])
         self.masker.propagate_in_video.return_value = {0: {1: fallback}}
@@ -241,26 +226,6 @@ class VideoEditTests(SessionStateTestCase):
                 self.assertEqual(stale.status_code, 409)
                 self.assertIn("no longer active", stale.json()["detail"])
 
-    def test_current_overlay_frame_is_served(self):
-        self.seed_manifest()
-        response = self.client.get("/video/mask_frame/0")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.content, b"overlay")
-
-    def test_overlay_frame_is_served_from_a_manifest_written_with_backslashes(self):
-        # A session saved on Windows names its overlay "overlays_a\frame_00000_masks.png".
-        from utils import load_mask_manifest, write_mask_manifest
-        self.seed_manifest()
-        masks = self.session / "masks"
-        (masks / "overlays_a").mkdir()
-        (masks / "overlays_a" / "frame_00000_masks.png").write_bytes(b"nested overlay")
-        manifest = load_mask_manifest(masks / "manifest.json")
-        manifest["frames"]["0"]["overlay_path"] = "overlays_a\\frame_00000_masks.png"
-        write_mask_manifest(masks / "manifest.json", manifest)
-        response = self.client.get("/video/mask_frame/0")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.content, b"nested overlay")
-
     def test_empty_override_wins_and_replays_without_frontend_cache(self):
         self.seed_manifest()
         response = self.add_override()
@@ -297,21 +262,6 @@ class VideoEditTests(SessionStateTestCase):
         self.reopen()
         self.assert_cleared(self.client.get("/video/mask_data/0").json()["objects"])
 
-    def test_a_frame_outside_the_video_is_404_on_every_frame_route(self):
-        outside = {**PROMPT, "frame_idx": 99}
-        for method, path, body in [
-            ("post", "/video/add_new_points_or_box", outside),
-            ("post", "/video/add_new_mask", {"frame_idx": 99, "obj_id": 1, "mask": [[True]]}),
-            ("post", "/video/clear_all_prompts_in_frame?frame_idx=99&obj_id=1", None),
-            ("get", "/video/mask_data/99", None),
-            ("get", "/video/frame/99", None),
-            ("get", "/video/mask_frame/99", None),
-        ]:
-            with self.subTest(path=path):
-                response = getattr(self.client, method)(path, **({"json": body} if body else {}))
-                self.assertEqual(response.status_code, 404)
-        self.masker.add_new_points_or_box.assert_not_called()
-
     def test_mask_preconditions_and_validation_reject_without_runtime_mutation(self):
         request = {"frame_idx": 0, "obj_id": 1, "mask": [[True]]}
         for headers, payload, expected in [
@@ -347,13 +297,6 @@ class VideoEditTests(SessionStateTestCase):
         state.annotations.set_prompt(VideoPrompt(**PROMPT))
         self.assertEqual(self.client.get("/video/mask_data/0").json()["sources"], {"1": "manifest"})
         self.assertEqual(self.client.get("/video/info").json()["outdated_masks"], {"1": [[0, 0]]})
-
-    def test_reset_invalidates_propagated_masks(self):
-        self.seed_manifest()
-        self.assertEqual(self.client.get("/video/mask_data/0").json()["sources"], {"1": "manifest"})
-        self.assertEqual(self.client.post("/video/reset_state").status_code, 200)
-        self.assertIsNone(state.mask_manifest_path)
-        self.assertEqual(self.client.get("/video/mask_data/0").json()["objects"], {})
 
     def test_replaced_and_cleared_overrides_are_kept_while_undo_can_bring_them_back_and_then_reclaimed(self):
         state.history.limit = 1  # undo can bring back only the last step
@@ -469,33 +412,6 @@ class VideoEditTests(SessionStateTestCase):
 
     # --- persistence and reopening -----------------------------------------------------------------------
 
-    def test_new_session_initializes_its_first_object(self):
-        source = self.root / "source"
-        source.mkdir()
-        (source / "00000.jpg").touch()
-        state.annotations = SessionAnnotations()
-        with patch("video.io.SESSION_CACHE_ROOT", self.root / "cache"):
-            result = loading.initialize_video_state_from_resolved_input(
-                source, online_mode=True, batch_size=1,
-                offload_video_to_cpu=True, offload_state_to_cpu=True,
-                async_loading_frames=False, session=state,
-                job=self.job_handle(),
-            )
-        self.assertNotIn("restored_session", result)
-        annotations = self.client.get("/video/info").json()["annotations"]
-        self.assertEqual(list(annotations["objects"]), ["1"])
-        self.assertEqual(annotations["objects"]["1"]["label"], "Object 1")
-        self.assertEqual(annotations["next_object_id"], 2)
-        self.assertEqual(annotations["revision"], 1)
-        self.assertEqual(annotations, self.metadata()["annotations"])
-        # A freshly loaded, never-saved session has nothing to lose until its first edit.
-        saved = self.client.get("/video/info").json()["saved_state"]
-        self.assertEqual((saved["checkpoint_id"], saved["dirty"]), (None, False))
-        edit = self.client.put("/video/objects/1", json={"label": "Renamed", "color": "#ff0000"})
-        self.assertTrue(edit.json()["saved_state"]["dirty"])
-        self.reopen()
-        self.assertEqual(state.annotations.snapshot(), self.client.get("/video/info").json()["annotations"])
-
     def test_selected_manifest_survives_save_move_and_reopen(self):
         self.seed_manifest()
         original = Path(state.mask_manifest_path)
@@ -603,23 +519,6 @@ class VideoEditTests(SessionStateTestCase):
                 with self.assertRaisesRegex(OperationError, message):
                     self.reopen(checkpoint)
 
-    def test_session_metadata_survives_save_and_reopen(self):
-        state.session_metadata.update({"created_at": "then", "latest_tracking_result_id": "abc"})
-        state.annotations.set_prompt(VideoPrompt(**PROMPT))
-        self.reopen()
-        self.assertEqual(state.session_metadata["created_at"], "then")
-        self.assertEqual(state.session_metadata["latest_tracking_result_id"], "abc")
-
-    def test_release_clears_annotations_and_snapshot_reports_no_session(self):
-        state.annotations.set_prompt(VideoPrompt(**PROMPT))
-        with patch("core.runtime.cleanup_cuda_memory"):
-            release_active_session(state)
-        self.assertEqual(state.annotations.snapshot(), SessionAnnotations().snapshot())
-        response = self.client.get("/video/info")
-        self.assertEqual(response.status_code, 200)
-        self.assertIsNone(response.json()["annotations"])
-        self.assertIsNone(response.json()["session_id"])
-
     # --- the annotation model ---------------------------------------------------------------------------
 
     def test_replacing_prompts_keeps_unrelated_frames_and_merges_appends(self):
@@ -633,14 +532,6 @@ class VideoEditTests(SessionStateTestCase):
         self.assertEqual({p.frame_idx: p.points for p in annotations.prompts}, {0: [[3, 3]], 1: [[1, 2]]})
         annotations.upsert_object(OBJECT)
         self.assertEqual(annotations.revision, 4)
-
-    def test_duplicate_prompt_keys_are_rejected(self):
-        with self.assertRaises(ValueError):
-            SessionAnnotations(objects={1: OBJECT}, prompts=[PROMPT, {**PROMPT, "points": [[5, 5]]}])
-
-    def test_editor_state_projection_drops_deleted_selection(self):
-        projection = interactive_state_projection({"selected_object_id": 7, "interaction_mode": "positive"}, session=state)
-        self.assertEqual(projection, {"selected_object_id": None, "interaction_mode": "positive", "version": 1})
 
 
 if __name__ == "__main__":

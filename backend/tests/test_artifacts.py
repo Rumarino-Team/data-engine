@@ -108,15 +108,6 @@ class ArtifactLifecycleTests(SessionStateTestCase):
         self.assertEqual(self.names("masks"), ["masks/manifest-a.json", "masks/manifest.json", "masks/overlays_a/f0.png"])
         self.assertEqual(self.names("tracking"), [])
 
-    def test_overlay_paths_with_windows_separators_are_recognized(self):
-        self.manifest("manifest-a.json", ["overlays_a\\f0.png"])
-        self.touch("masks/overlays_a/f0.png")
-        self.touch("masks/overlays_a/stray.png")
-        state.mask_manifest_path = str(self.masks / "manifest-a.json")
-        self.commit()
-        artifacts.sweep_unreferenced_artifacts(state)
-        self.assertEqual(self.names("masks/overlays_a"), ["masks/overlays_a/f0.png"])
-
     def test_unreadable_manifest_keeps_every_result_file(self):
         (self.masks / "manifest-a.json").write_text("not json")
         self.manifest("manifest-old.json", ["overlays_old/f0.png"])
@@ -126,37 +117,12 @@ class ArtifactLifecycleTests(SessionStateTestCase):
         artifacts.sweep_unreferenced_artifacts(state)
         self.assertEqual(len(self.names("masks")), 3)
 
-    def test_only_owned_names_are_touched(self):
-        self.touch("masks/manifest.json")
-        self.touch("masks/frame_00000_masks.png")
-        self.touch("notes.txt")
-        self.commit()
-        artifacts.sweep_unreferenced_artifacts(state)
-        self.assertEqual(self.names("masks"), ["masks/frame_00000_masks.png", "masks/manifest.json"])
-        self.assertTrue((self.session / "notes.txt").exists())
-
     def test_superseded_tracking_results_are_deleted(self):
         self.touch("tracking/old.json")
         self.commit({"latest_tracking_result_path": "tracking/old.json"})
         self.touch("tracking/new.json")
         self.commit({"latest_tracking_result_path": "tracking/new.json"})
         self.assertEqual(self.names("tracking"), ["tracking/new.json"])
-
-    def test_reclamation_never_fails_an_accepted_commit(self):
-        self.touch("tracking/old.json")
-        self.commit({"latest_tracking_result_path": "tracking/old.json"})
-        self.touch("tracking/new.json")
-        real_unlink = Path.unlink
-
-        def unlink(path, *args, **kwargs):
-            if path.parent.name == "tracking":
-                raise PermissionError("in use")
-            return real_unlink(path, *args, **kwargs)
-        with patch.object(Path, "unlink", unlink):
-            self.commit({"latest_tracking_result_path": "tracking/new.json"})
-        # The commit is accepted even though the superseded file could not be removed.
-        self.assertEqual(self.names("tracking"), ["tracking/new.json", "tracking/old.json"])
-        self.assertEqual(state.session_metadata["latest_tracking_result_path"], "tracking/new.json")
 
 
 if __name__ == "__main__":

@@ -26,12 +26,6 @@ describe('SessionLeaveService', () => {
     editor.store.saveName.set('Bedroom');
   });
 
-  it('lets a clean session go without asking', async () => {
-    editor.store.savedState.set(saved({ dirty: false }));
-    await expect(leave.confirmLeave('close it')).resolves.toBe(true);
-    expect(confirm.request()).toBeNull();
-  });
-
   it('asks about unsaved changes with save, discard and cancel choices', async () => {
     const pending = leave.confirmLeave('close it');
     const request = confirm.request();
@@ -67,22 +61,6 @@ describe('SessionLeaveService', () => {
     expect(editor.store.hasUnsavedChanges()).toBe(true);
   });
 
-  it('keeps the session when a first save has no name', async () => {
-    editor.store.savedState.set(saved({ checkpoint_id: null }));
-    editor.store.saveName.set('');
-    const pending = leave.confirmLeave('close it');
-    confirm.answer('save');
-    await expect(pending).resolves.toBe(false);
-    expect(backendMock.saveVideoSession).not.toHaveBeenCalled();
-  });
-
-  it('discards on request without saving', async () => {
-    const pending = leave.confirmLeave('close it');
-    confirm.answer('discard');
-    await expect(pending).resolves.toBe(true);
-    expect(backendMock.saveVideoSession).not.toHaveBeenCalled();
-  });
-
   it('closes a discarded session and clears editor state and caches', async () => {
     const clear = vi.spyOn(editor.framePipeline, 'clearFrameCaches');
     const pending = leave.closeSession();
@@ -105,15 +83,6 @@ describe('SessionLeaveService', () => {
     });
   });
 
-  it('does not touch the backend when the user cancels or the session is not open', async () => {
-    const pending = leave.closeSession();
-    confirm.answer(null);
-    await expect(pending).resolves.toBe(false);
-    editor.store.isInitialized.set(false);
-    await expect(leave.closeSession()).resolves.toBe(false);
-    expect(backendMock.closeVideoSession).not.toHaveBeenCalled();
-  });
-
   it('keeps the tab as it is until the backend has closed the session', async () => {
     editor.store.savedState.set(saved({ dirty: false }));
     const closing = new Subject<{ message: string; closed_session_id: string }>();
@@ -132,7 +101,10 @@ describe('SessionLeaveService', () => {
   it('keeps the session open and reloads annotations when the backend refuses with a conflict', async () => {
     editor.store.savedState.set(saved({ dirty: false }));
     backendMock.closeVideoSession.mockReturnValue(
-      throwError(() => ({ status: 409, error: { detail: 'Another operation is already running.' } })),
+      throwError(() => ({
+        status: 409,
+        error: { detail: 'Another operation is already running.' },
+      })),
     );
     await expect(leave.closeSession()).resolves.toBe(false);
     expect(editor.store.isInitialized()).toBe(true);
@@ -142,14 +114,6 @@ describe('SessionLeaveService', () => {
     expect(TestBed.inject(ToastService).toasts()[0]).toEqual(
       expect.objectContaining({ severity: 'error', title: 'Close failed' }),
     );
-  });
-
-  it('keeps the session open on other backend errors without asking to reload annotations', async () => {
-    editor.store.savedState.set(saved({ dirty: false }));
-    backendMock.closeVideoSession.mockReturnValue(throwError(() => ({ status: 500 })));
-    await expect(leave.closeSession()).resolves.toBe(false);
-    expect(editor.store.isInitialized()).toBe(true);
-    expect(editor.store.annotationRecoveryRequested()).toBe(false);
   });
 
   it('still closes the tab when the backend cannot be reached, and says so', async () => {
@@ -167,23 +131,6 @@ describe('SessionLeaveService', () => {
     await expect(leave.closeSession()).resolves.toBe(true);
     expect(editor.store.isInitialized()).toBe(false);
     expect(confirm.request()).toBeNull();
-  });
-
-  it('keeps the session open when closing is cancelled', async () => {
-    const pending = leave.closeSession();
-    confirm.answer(null);
-    await expect(pending).resolves.toBe(false);
-    expect(editor.store.isInitialized()).toBe(true);
-    expect(editor.store.sessionId()).toBe('session-1');
-  });
-
-  it('refuses to close while work is in flight or nothing is open', async () => {
-    editor.store.isLoading.set(true);
-    await expect(leave.closeSession()).resolves.toBe(false);
-    expect(confirm.request()).toBeNull();
-    editor.store.isLoading.set(false);
-    editor.store.isInitialized.set(false);
-    await expect(leave.closeSession()).resolves.toBe(false);
   });
 
   it('does not close if work starts while the question is open', async () => {

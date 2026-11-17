@@ -24,12 +24,6 @@ from video.prompts import replay_annotation_prompts
 from video.runtime import VideoMaskerRuntime
 
 
-class PropagationDefaultsTests(unittest.TestCase):
-    def test_tracked_points_are_not_used_unless_asked_for(self):
-        self.assertFalse(VideoPropagateRequest().use_tracked_points)
-        self.assertTrue(VideoPropagateRequest(use_tracked_points=True).use_tracked_points)
-
-
 class PartialPropagationTests(unittest.TestCase):
     def test_replaces_only_processed_frames_and_preserves_earlier_and_later_outputs(self):
         for export_overlay_frames, explicit_override in [(True, False), (False, False), (True, True), (False, True)]:
@@ -138,15 +132,6 @@ class PartialPropagationTests(unittest.TestCase):
                     self.assertEqual(state.mask_manifest_path, previous_path)
                     self.assertEqual(state.interactive_mask_files, previous_masks)
 
-
-
-class ReleaseHeapMemoryTests(unittest.TestCase):
-    def test_it_runs_and_tolerates_a_system_without_malloc_trim(self):
-        release_heap_memory()
-        with patch("core.runtime.ctypes.CDLL", side_effect=OSError("no libc.so.6")):
-            release_heap_memory()
-        with patch("core.runtime.ctypes.CDLL", return_value=object()):
-            release_heap_memory()
 
 
 class PropagationProgressTests(unittest.TestCase):

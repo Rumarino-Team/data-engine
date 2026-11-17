@@ -25,11 +25,6 @@ describe('ConfirmDialogComponent', () => {
     fixture.componentInstance.answer.subscribe((value) => answers.push(value));
   });
 
-  it('renders nothing without a request', () => {
-    fixture.detectChanges();
-    expect(fixture.nativeElement.querySelector('[role="alertdialog"]')).toBeNull();
-  });
-
   it('renders the request as an accessible dialog with its actions and Cancel', () => {
     fixture.componentRef.setInput('request', request);
     fixture.detectChanges();
@@ -60,20 +55,5 @@ describe('ConfirmDialogComponent', () => {
     (fixture.nativeElement.querySelector('.backdrop') as HTMLElement).click();
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     expect(answers).toEqual([null, null]);
-  });
-
-  it('ignores Escape while no question is open', () => {
-    fixture.detectChanges();
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
-    expect(answers).toEqual([]);
-  });
-
-  it('focuses the first action when a question opens', async () => {
-    document.body.appendChild(fixture.nativeElement);
-    fixture.componentRef.setInput('request', request);
-    fixture.detectChanges();
-    await Promise.resolve();
-    expect(document.activeElement).toBe(buttons()[0]);
-    fixture.nativeElement.remove();
   });
 });

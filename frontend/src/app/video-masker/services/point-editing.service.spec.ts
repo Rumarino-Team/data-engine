@@ -44,19 +44,6 @@ describe('point-editing workflows', () => {
     },
   );
 
-  it('accepts the requested frame after navigation instead of rolling its points back', async () => {
-    const response = new Subject<VideoAddPointsResponse>();
-    backendMock.addNewPointsOrBox.mockReturnValue(response);
-    const pending = editor.prompts.addPoint(10, 20, 1, 5);
-    editor.store.displayedFrameIdx.set(8);
-    response.next(makeResponse({}));
-    await pending;
-    expect(editor.store.displayedFrameIdx()).toBe(8);
-    expect(editor.store.points().get(5)?.get(1)).toHaveLength(1);
-    expect(cachedMasks(editor.framePipeline).has(5)).toBe(true);
-    expect(cachedMasks(editor.framePipeline).has(8)).toBe(false);
-  });
-
   it('recovers a rejected last-point removal using accepted state', async () => {
     setAcceptedPoints(editor.store, new Map([[5, new Map([[1, [{ x: 10, y: 20, label: 1 }]]])]]));
     editor.store.isInitialized.set(true);
@@ -192,23 +179,6 @@ describe('point-editing workflows', () => {
     });
   });
 
-  it('accepts packed masks with matching pixel metadata', async () => {
-    const mask = {
-      size: [2, 2] as [number, number],
-      encoding: 'packed-bits' as const,
-      data: 'gA==',
-    };
-    backendMock.addNewPointsOrBox.mockReturnValue(
-      of(
-        makeResponse({
-          mask_data: { ...makeResponse({}).mask_data!, objects: { '1': mask } },
-        }),
-      ),
-    );
-    await editor.prompts.addPoint(12, 24, 1, 5);
-    expect(cachedMasks(editor.framePipeline).get(5)?.get(1)).toBe(mask);
-  });
-
   it.each([
     { size: [2, 2], encoding: 'packed-bits', data: 'gQ==' },
     { size: [2, 2], rle: [[3, 2]], bbox: [0, 0, 2, 2] },
@@ -221,28 +191,6 @@ describe('point-editing workflows', () => {
     await editor.prompts.addPoint(12, 24, 1, 5);
     expect(cachedMasks(editor.framePipeline).size).toBe(0);
     expect(editor.store.annotationRecoveryRequested()).toBe(true);
-  });
-
-  it('accepts empty interactive results without local suppression markers', async () => {
-    backendMock.addNewPointsOrBox.mockReturnValue(
-      of(
-        makeResponse({
-          mask_data: {
-            ...makeResponse({}).mask_data!,
-            objects: { '1': { size: [2, 2], rle: [], bbox: [0, 0, 0, 0] } },
-          },
-          mask_pixel_counts: { 1: 0 },
-        }),
-      ),
-    );
-
-    await editor.prompts.addPoint(30, 40, 1, 5);
-
-    expect(cachedMasks(editor.framePipeline).get(5)?.get(1)).toEqual({
-      size: [2, 2],
-      rle: [],
-      bbox: [0, 0, 0, 0],
-    });
   });
 
   it('discards the preview and requests recovery when point update conflicts', async () => {

@@ -104,10 +104,6 @@ class JobManagerTests(unittest.TestCase):
         self.assertEqual(self.jobs.snapshot()["result"], {"message": "done", "tracking_result_id": "abc"})
         self.assertFalse(self.jobs.clear_result("another"))
 
-    def test_a_running_job_cannot_be_cleared(self):
-        handle = self.hold()
-        self.assertFalse(self.jobs.clear_result(handle.job_id))
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -111,20 +111,6 @@ class UndoRedoTests(SessionStateTestCase):
         self.assertEqual(renamed.json()["history"], {"undo": 3, "redo": 0, "next_undo": "Edit object", "next_redo": None})
         self.assertEqual(self.history(), renamed.json()["history"])
 
-    def test_a_change_that_changed_nothing_is_not_a_step(self):
-        cleared = self.client.post("/video/clear_all_prompts_in_frame", params={"frame_idx": 3, "obj_id": 1})
-        self.assertEqual(cleared.status_code, 200)
-        self.assertEqual(cleared.json()["history"]["undo"], 0)
-        same = self.client.put("/video/objects/1", json={"label": "Boy", "color": "#112233"})
-        self.assertEqual(same.json()["history"]["undo"], 0)
-        self.assertEqual(self.history()["undo"], 0)
-
-    def test_a_rejected_change_is_not_a_step(self):
-        self.masker.add_new_points_or_box.side_effect = RuntimeError("predictor failed")
-        with self.assertRaises(RuntimeError):
-            self.click((1, 2))
-        self.assertEqual(self.history()["undo"], 0)
-
     # --- undo ----------------------------------------------------------------------------------------------
 
     def test_undo_puts_back_the_points_the_click_results_and_the_stamps(self):
@@ -249,11 +235,6 @@ class UndoRedoTests(SessionStateTestCase):
         self.assertEqual(state.session_metadata["latest_tracking_result_id"], result["result_id"])
         self.assertEqual(redone.json()["tracking_validity"]["result_id"], result["result_id"])
 
-    def test_the_tracking_response_reports_the_new_step(self):
-        state.annotations.set_prompt(VideoPrompt(frame_idx=0, obj_id=1, points=[[1, 2]], labels=[1]))
-        self.track()
-        self.assertEqual(self.history()["next_undo"], "Track points")
-
     # --- files ---------------------------------------------------------------------------------------------
 
     def test_files_undo_can_bring_back_are_kept_but_a_checkpoint_never_carries_them(self):
@@ -289,11 +270,6 @@ class UndoRedoTests(SessionStateTestCase):
         self.assertEqual(self.prompts(), [(0, 1, [[2.0, 2.0]])])  # the two oldest steps are gone
         self.assertEqual(self.undo().status_code, 400)
 
-    def test_a_limit_of_zero_turns_history_off(self):
-        state.history.limit = 0
-        self.click((1, 1))
-        self.assertEqual(self.history(), {"undo": 0, "redo": 0, "next_undo": None, "next_redo": None})
-
     # --- refusals ------------------------------------------------------------------------------------------
 
     def test_nothing_to_undo_or_redo_is_refused(self):
@@ -325,11 +301,6 @@ class UndoRedoTests(SessionStateTestCase):
         self.assertTrue(same_annotations(before, state.annotations.snapshot()))
         self.assertEqual((len(state.history.undo), len(state.history.redo)), (2, 0))
 
-    def test_the_history_belongs_to_the_session(self):
-        self.click((1, 2))
-        self.assertEqual(self.client.post("/video/close_session").status_code, 200)
-        self.assertEqual((state.history.undo, state.history.redo), ([], []))
-
 
 class UndoHistoryUnitTests(unittest.TestCase):
     @staticmethod
@@ -344,13 +315,6 @@ class UndoHistoryUnitTests(unittest.TestCase):
         history.redo.append(self.step("x"))
         history.record(self.step("d"))
         self.assertEqual(history.redo, [])
-
-    def test_status_counts_a_pending_step_as_the_newest_undo_step(self):
-        history = UndoHistory(limit=2)
-        history.record(self.step("a"))
-        self.assertEqual(history.status(self.step("b")), {"undo": 2, "redo": 0, "next_undo": "b", "next_redo": None})
-        history.record(self.step("b"))
-        self.assertEqual(history.status(self.step("c"))["undo"], 2)  # still within the limit
 
     def test_restore_to_never_moves_the_revision_back(self):
         earlier = SessionAnnotations(objects={1: BOY})

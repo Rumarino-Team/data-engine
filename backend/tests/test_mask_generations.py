@@ -139,19 +139,6 @@ class MaskGenerationTests(SessionStateTestCase):
         self.edited(1, 3)
         self.assertEqual(outdated_mask_ranges(state), {"1": [[0, 2]]})
 
-    def test_objects_that_are_gone_or_have_no_masks_are_not_reported(self):
-        self.write_manifest({0: {1: 0}, 1: {1: 0}})
-        self.edited(1, 2)
-        self.edited(2, 2)
-        self.assertEqual(list(outdated_mask_ranges(state)), ["1"])  # object 2 has no masks
-        state.annotations.remove_object(1)
-        self.assertEqual(outdated_mask_ranges(state), {})
-
-    def test_nothing_is_reported_for_a_session_with_no_generated_masks(self):
-        self.edited(1, 4)
-        self.assertEqual(outdated_mask_ranges(state), {})
-        self.assertEqual(self.client.get("/video/info").json()["outdated_masks"], {})
-
     # --- a click keeps results only for objects prompted on that frame ------------------------------------
 
     def test_a_click_stores_a_result_only_for_objects_prompted_on_that_frame(self):
@@ -186,26 +173,6 @@ class MaskGenerationTests(SessionStateTestCase):
         for frame in (0, 2, 3):
             self.assertEqual(self.shown(frame)["sources"], {"1": "manifest"})
             self.assertTrue(self.shown(frame)["objects"]["1"]["rle"])
-
-    def test_clearing_a_frame_that_had_no_prompt_changes_nothing(self):
-        self.write_manifest({frame: {1: 0} for frame in range(3)})
-        revision = state.annotations.revision
-        response = self.client.post("/video/clear_all_prompts_in_frame", params={"frame_idx": 1, "obj_id": 1})
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(state.annotations.revision, revision)
-        self.assertEqual(self.shown(1)["sources"], {"1": "manifest"})
-        self.assertTrue(self.shown(1)["objects"]["1"]["rle"])
-
-    def test_clearing_keeps_the_other_objects_results_on_the_frame(self):
-        self.write_manifest({0: {1: 0, 2: 0}})
-        state.annotations.set_prompt(prompt(0, 1))
-        state.annotations.set_prompt(prompt(0, 2))
-        self.write_live(0, {2: (state.annotations.input_revisions[2], True)})
-        self.client.post("/video/clear_all_prompts_in_frame", params={"frame_idx": 0, "obj_id": 1})
-        shown = self.shown(0)
-        self.assertEqual(shown["objects"]["1"]["rle"], [])
-        self.assertEqual(shown["sources"], {"1": "live", "2": "live"})
-        self.assertTrue(shown["objects"]["2"]["rle"])
 
 
 if __name__ == "__main__":

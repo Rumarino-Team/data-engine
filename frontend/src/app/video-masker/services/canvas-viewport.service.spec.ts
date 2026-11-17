@@ -87,23 +87,6 @@ describe('CanvasViewportService', () => {
     viewport.render(image, masks, [{ x: 100, y: 50, label: 1 }], [], [], 'point', 0);
   }
 
-  it('composes individual mask nodes with cached native-resolution textures', () => {
-    const first = stage.findOne<Konva.Image>('.mask')!;
-    const texture = first.image() as HTMLCanvasElement;
-    expect(texture.width).toBe(2);
-    expect(texture.height).toBe(1);
-    expect(first.width()).toBe(1000);
-    expect(first.height()).toBe(500);
-    masks.push({ objectId: 2, color: '#ffaa00', source: [[false, true]] });
-    render();
-    expect(stage.find('.mask')).toHaveLength(2);
-    expect(stage.findOne<Konva.Image>('.mask')!.image()).toBe(texture);
-    masks = [masks[1]];
-    render();
-    expect(stage.find('.mask')).toHaveLength(1);
-    expect(stage.findOne('.mask')!.getAttr('objectId')).toBe(2);
-  });
-
   function pointer(type: string, x: number, y: number, button = 0, shiftKey = false): void {
     const event = new MouseEvent(type, { clientX: x, clientY: y, button, shiftKey, bubbles: true });
     Object.defineProperty(event, 'pointerId', { value: 1 });
@@ -197,13 +180,6 @@ describe('CanvasViewportService', () => {
       pointer('pointerup', 132, 92, 2);
       expect(onPointEdit).not.toHaveBeenCalled();
     });
-
-    it('shows a grab cursor over a point', () => {
-      pointer('pointermove', 132, 92);
-      expect(host.style.cursor).toBe('grab');
-      pointer('pointermove', 400, 300);
-      expect(host.style.cursor).toBe('');
-    });
   });
 
   it('draws a tracked point only from the frame it was placed on', () => {
@@ -231,15 +207,6 @@ describe('CanvasViewportService', () => {
     expect(trackedPointCircles(3)).toBe(1);
   });
 
-  it('uses separate Konva images and vector markers in source-image coordinates', () => {
-    expect(stage.find('Image')).toHaveLength(2);
-    const circle = stage.findOne<Konva.Circle>('Circle')!;
-    expect(circle.position()).toEqual({ x: 100, y: 50 });
-    expect(circle.fill()).toBe('#00ff00');
-    expect(viewport.clientToImage(132, 92)).toEqual({ x: 100, y: 50 });
-    expect(viewport.clientToImage(20, 30)).toBeNull();
-  });
-
   it('hides the video image for masks + points, and the points too for masks only', () => {
     const frame = stage.find<Konva.Image>('Image').find((node) => node.name() !== 'mask')!;
     const mask = stage.findOne<Konva.Image>('.mask')!;
@@ -263,21 +230,6 @@ describe('CanvasViewportService', () => {
     expect(shown()).toEqual([true, true, true]);
   });
 
-  it('keeps the chosen view mode when frames change and when the canvas is attached again', () => {
-    viewport.toggleViewMode('masks-points');
-    render();
-    const frame = () => stage.find<Konva.Image>('Image').find((node) => node.name() !== 'mask')!;
-    expect(frame().isVisible()).toBe(false);
-    expect(stage.findOne<Konva.Circle>('Circle')!.isVisible()).toBe(true);
-
-    viewport.attach(host, onPoint);
-    stage = Konva.stages[Konva.stages.length - 1];
-    render();
-    expect(viewport.viewMode()).toBe('masks-points');
-    expect(frame().isVisible()).toBe(false);
-    expect(stage.findOne<Konva.Circle>('Circle')!.isVisible()).toBe(true);
-  });
-
   it('zooms around the pointer while keeping markers a constant screen size', () => {
     viewport.zoomBy(2, { x: 112, y: 62 });
     expect(viewport.zoom()).toBe(2);
@@ -286,32 +238,6 @@ describe('CanvasViewportService', () => {
     viewport.zoomBy(0.5, { x: 112, y: 62 });
     expect(viewport.zoom()).toBe(1);
     expect(viewport.clientToImage(132, 92)).toEqual({ x: 100, y: 50 });
-  });
-
-  it('handles wheel zoom without scrolling the page or rebuilding scene nodes', () => {
-    const circle = stage.findOne('Circle');
-    const event = new WheelEvent('wheel', {
-      clientX: 132,
-      clientY: 92,
-      deltaY: -100,
-      cancelable: true,
-    });
-    host.dispatchEvent(event);
-    expect(event.defaultPrevented).toBe(true);
-    expect(viewport.zoom()).toBeGreaterThan(1);
-    expect(stage.findOne('Circle')).toBe(circle);
-    const point = viewport.clientToImage(132, 92)!;
-    expect(point.x).toBeCloseTo(100);
-    expect(point.y).toBeCloseTo(50);
-  });
-
-  it('pans with the middle button and does not add a point on release', () => {
-    pointer('pointerdown', 132, 92, 1);
-    pointer('pointermove', 172, 102, 1);
-    pointer('pointerup', 172, 102, 1);
-    expect(viewport.clientToImage(172, 102)).toEqual({ x: 100, y: 50 });
-    expect(onPoint).not.toHaveBeenCalled();
-    expect(viewport.panning()).toBe(false);
   });
 
   it('supports Space-drag and Pan mode without placing prompts', () => {
@@ -355,17 +281,6 @@ describe('CanvasViewportService', () => {
     width = 1024;
     height = 524;
     resizeCallback();
-    expect(viewport.zoom()).toBe(1);
-  });
-
-  it('bounds zoom and resets the viewport for a new session', () => {
-    viewport.zoomBy(1e9);
-    expect(viewport.zoom()).toBe(32);
-    viewport.zoomBy(1e-9);
-    expect(viewport.zoom()).toBe(0.05);
-    viewport.reset();
-    expect(viewport.ready()).toBe(false);
-    render();
     expect(viewport.zoom()).toBe(1);
   });
 

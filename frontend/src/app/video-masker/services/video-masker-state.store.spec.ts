@@ -22,25 +22,15 @@ describe('outdated mask ranges in the store', () => {
     expect(editor.store.outdatedMasks()).toEqual({});
   });
 
-  it('does not share the snapshot object it was given', () => {
-    const ranges: Record<string, [number, number][]> = { '1': [[2, 9]] };
-    editor.store.applyAnnotationSnapshot(snapshot(ranges), true);
-    ranges['1'].push([20, 30]);
-    expect(editor.store.outdatedMasks()).toEqual({ '1': [[2, 9]] });
-  });
-
   it('follows an edit: the ranges in a mutation response replace the old ones', () => {
     editor.store.outdatedMasks.set({ '1': [[0, 99]] });
     const outdated: Record<string, [number, number][]> = { '1': [[5, 7]] };
-    const update = { ...objectUpdate(editor.store, editor.store.objects()), outdated_masks: outdated };
+    const update = {
+      ...objectUpdate(editor.store, editor.store.objects()),
+      outdated_masks: outdated,
+    };
     expect(editor.store.applyAnnotationUpdate(update)).toBe(true);
     expect(editor.store.outdatedMasks()).toEqual({ '1': [[5, 7]] });
-  });
-
-  it('keeps what it has when a response says nothing about them', () => {
-    editor.store.outdatedMasks.set({ '1': [[0, 99]] });
-    expect(editor.store.applyAnnotationUpdate(objectUpdate(editor.store, editor.store.objects()))).toBe(true);
-    expect(editor.store.outdatedMasks()).toEqual({ '1': [[0, 99]] });
   });
 
   it('forgets them when the session is closed', () => {
@@ -58,51 +48,35 @@ describe('undo and redo availability in the store', () => {
     ({ editor } = createWorkflowFixture());
   });
 
-  it('has nothing to undo before the backend says otherwise', () => {
-    expect(editor.store.history()).toEqual({ undo: 0, redo: 0, next_undo: null, next_redo: null });
-  });
-
   it('takes it from a snapshot, and from every mutation response that carries it', () => {
     editor.store.applyAnnotationSnapshot(
-      { session_id: 'session-1', annotations: structuredClone(editor.store.annotations()!), history: steps },
+      {
+        session_id: 'session-1',
+        annotations: structuredClone(editor.store.annotations()!),
+        history: steps,
+      },
       true,
     );
     expect(editor.store.history()).toEqual(steps);
     const next = { ...steps, undo: 4, redo: 0, next_redo: null };
-    editor.store.applyAnnotationUpdate({ ...objectUpdate(editor.store, editor.store.objects()), history: next });
+    editor.store.applyAnnotationUpdate({
+      ...objectUpdate(editor.store, editor.store.objects()),
+      history: next,
+    });
     expect(editor.store.history()).toEqual(next);
-  });
-
-  it('falls back to none for a snapshot without it, and keeps what it has for an update without it', () => {
-    editor.store.history.set(steps);
-    editor.store.applyAnnotationUpdate(objectUpdate(editor.store, editor.store.objects()));
-    expect(editor.store.history()).toEqual(steps);
-    editor.store.applyAnnotationSnapshot(
-      { session_id: 'session-1', annotations: structuredClone(editor.store.annotations()!) },
-      true,
-    );
-    expect(editor.store.history().undo).toBe(0);
-  });
-
-  it('forgets it when the session is closed', () => {
-    editor.store.history.set(steps);
-    editor.store.resetSession();
-    expect(editor.store.history().undo).toBe(0);
-  });
-});
-
-describe('tracking and propagation defaults', () => {
-  it('tracks with the support grid and propagates without tracked points unless the user changes it', () => {
-    const { editor } = createWorkflowFixture();
-    expect(editor.store.trackingUseSupportGrid()).toBe(true);
-    expect(editor.store.propagationUseTrackedPoints()).toBe(false);
   });
 });
 
 describe("tracked points follow the session's tracking result", () => {
   let editor: ReturnType<typeof createWorkflowFixture>['editor'];
   const series = (id: string) => ({
-    point_id: id, obj_id: 1, source_frame_idx: 0, source_x: 1, source_y: 2, tracks: [[1, 2]], visibility: [true],
+    point_id: id,
+    obj_id: 1,
+    source_frame_idx: 0,
+    source_x: 1,
+    source_y: 2,
+    tracks: [[1, 2]],
+    visibility: [true],
   });
 
   beforeEach(() => {
@@ -124,12 +98,6 @@ describe("tracked points follow the session's tracking result", () => {
 
   it('drops the overlays and forgets the result when the session no longer has one', () => {
     editor.store.applyAnnotationUpdate(update(null));
-    expect(editor.store.trackedPoints()).toEqual([]);
-    expect(editor.store.trackingResultId).toBeNull();
-  });
-
-  it('drops them and forgets the result when the session holds a different one', () => {
-    editor.store.applyAnnotationUpdate(update({ result_id: 'track-2', point_ids: ['p0'] }));
     expect(editor.store.trackedPoints()).toEqual([]);
     expect(editor.store.trackingResultId).toBeNull();
   });

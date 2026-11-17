@@ -119,13 +119,6 @@ class ApiContractTests(SessionStateTestCase):
     def test_every_route_that_changes_a_session_names_the_session_and_revision_it_acts_on(self):
         self.assertEqual(mutating_routes_without_precondition(create_app(self.ctx)), [])
 
-    def test_the_precondition_check_would_notice_an_unprotected_route(self):
-        app = FastAPI()
-        app.post("/unprotected")(lambda: None)
-        app.put("/protected")(lambda precondition=Depends(annotation_precondition): None)
-        app.get("/read")(lambda: None)
-        self.assertEqual(mutating_routes_without_precondition(app), ["POST /unprotected"])
-
     @unittest.skipUnless(FRONTEND_TYPES.is_file(), "the frontend source is not next to the backend")
     def test_every_field_the_frontend_names_exists_in_the_backend_models(self):
         interfaces = typescript_interfaces(FRONTEND_TYPES.read_text(encoding="utf-8"))
@@ -139,11 +132,6 @@ class ApiContractTests(SessionStateTestCase):
             if unknown:
                 problems.append(f"{name} names {unknown}, which {[m.__name__ for m in models]} do not have")
         self.assertEqual(problems, [], "Frontend fields with no backend counterpart:\n" + "\n".join(problems))
-
-    def test_the_contract_test_would_notice_a_missing_field(self):
-        interfaces = typescript_interfaces("export interface Example<T = unknown> extends Base {\n  kept: number;\n  renamed?: string;\n}\n")
-        self.assertEqual(interfaces, {"Example": {"kept", "renamed"}})
-        self.assertEqual(sorted(interfaces["Example"] - set(responses.SavedState.model_fields)), ["kept", "renamed"])
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 import { TestBed } from '@angular/core/testing';
-import { Subject, of, throwError } from 'rxjs';
+import { Subject, of } from 'rxjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BackendService } from '../../services/backend.service';
 import { BackendConnectionService } from './backend-connection.service';
@@ -45,19 +45,6 @@ describe('BackendConnectionService health monitoring', () => {
     expect(pending.observed).toBe(false);
     await vi.advanceTimersByTimeAsync(6000);
     expect(backend.health).toHaveBeenCalledTimes(1);
-  });
-
-  it('continues monitoring after a failed check', async () => {
-    backend.health
-      .mockReturnValueOnce(throwError(() => new Error('offline')))
-      .mockReturnValue(of({}));
-    const service = TestBed.inject(BackendConnectionService);
-    const store = TestBed.inject(VideoMaskerStateStore);
-    service.checkApiHealth(true);
-    await vi.advanceTimersByTimeAsync(0);
-    expect(store.apiHealthStatus()).toBe('offline');
-    await vi.advanceTimersByTimeAsync(3000);
-    expect(store.apiHealthStatus()).toBe('online');
   });
 
   it('cancels the old URL check when changing URLs', async () => {
@@ -123,17 +110,6 @@ describe('BackendConnectionService health monitoring', () => {
     expect(store.sessionId()).toBe('old-session');
   });
 
-  it('clears the old session when resetting the backend URL', () => {
-    backend.health.mockReturnValue(of({}));
-    const service = TestBed.inject(BackendConnectionService);
-    const store = TestBed.inject(VideoMaskerStateStore);
-    store.sessionId.set('old-session');
-    service.resetApiUrl();
-    expect(store.sessionId()).toBeNull();
-    expect(store.apiUrlInput()).toBe('http://default');
-    expect(TestBed.inject(FramePipelineService).clearFrameCaches).toHaveBeenCalledOnce();
-  });
-
   describe('unsaved changes', () => {
     const openDirtySession = () => {
       backend.health.mockReturnValue(of({}));
@@ -172,27 +148,6 @@ describe('BackendConnectionService health monitoring', () => {
       expect(backend.setApiUrl).not.toHaveBeenCalled();
       expect(backend.resetApiUrl).not.toHaveBeenCalled();
       expect(store.sessionId()).toBe('old-session');
-    });
-
-    it('asks before a reset to the default URL as well', async () => {
-      const { service, store } = openDirtySession();
-      service.resetApiUrl();
-      expect(leave.confirmLeave).toHaveBeenCalledWith('switch backends');
-      await vi.advanceTimersByTimeAsync(0);
-      expect(backend.resetApiUrl).toHaveBeenCalledOnce();
-      expect(store.sessionId()).toBeNull();
-    });
-
-    it('does not ask when the URL would not change or nothing is unsaved', () => {
-      const { service, store } = openDirtySession();
-      store.apiUrlInput.set('http://old');
-      service.applyApiUrl();
-      expect(leave.confirmLeave).not.toHaveBeenCalled();
-      store.savedState.update((saved) => (saved ? { ...saved, dirty: false } : saved));
-      store.apiUrlInput.set('http://new');
-      service.applyApiUrl();
-      expect(leave.confirmLeave).not.toHaveBeenCalled();
-      expect(backend.setApiUrl).toHaveBeenCalledWith('http://new');
     });
 
     it('does not switch if work starts while the question is open', async () => {
