@@ -118,6 +118,30 @@ class PromptTrackingStatusTests(SessionStateTestCase):
         self.assert_masker_untouched_but_for_its_weights()
         self.assertEqual(result["tracking_result_id"], "track-1")
 
+    def test_a_streamed_job_shows_the_frame_it_has_reached(self):
+        def track_streaming(loader, *, queries, add_support_grid, on_frames):
+            on_frames(1, 2)
+            on_frames(2, 2)
+            return np.array([[[10.0, 20.0], [11.0, 21.0]]], dtype=np.float32), np.array([[True, True]])
+
+        with (self.tracking_environment(streaming=True) as saved,
+              patch("tracking.prompt_tracking.cot.FrameChunkLoader"),
+              patch.object(state.tracker, "track_streaming", side_effect=track_streaming, create=True)):
+            saved.return_value = {"result_id": "track-1", "summary": {}}
+            self.run_tracking()
+
+        shown = [(call.kwargs["current"], call.kwargs["total"], call.kwargs["message"], round(call.kwargs["progress"], 3))
+                 for call in self.job.enter_stage.call_args_list if call.args[0] == "tracking_points"]
+        self.assertEqual(shown[:2], [
+            (1, 2, "Tracked frame 1 of 2 for 1 prompt points", 0.5),
+            (2, 2, "Tracked frame 2 of 2 for 1 prompt points", 1.0),
+        ])
+        # Nothing but the tracking moves the bar: no progress before it, full while SAM2 is moved back.
+        progress = {call.args[0]: call.kwargs["progress"] for call in self.job.enter_stage.call_args_list}
+        self.assertIsNone(progress["loading_tracker"])
+        self.assertIsNone(progress["loading_frames"])
+        self.assertEqual(progress["restoring_masker"], 1.0)
+
     def test_the_published_result_hides_frames_before_the_prompt_frame(self):
         state.annotations.prompts[0].frame_idx = 1  # the fake tracker reports both frames visible
 
@@ -315,6 +339,28 @@ class BatchedTrackingTests(unittest.TestCase):
         self.assertEqual(sizes, [4, 2, 2])
         self.assertEqual(set(grids), {True})
         self.assertEqual((tracks.shape, visibility.shape), ((4, 2, 2), (4, 2)))
+
+    def test_a_streamed_batch_reports_frames_together_with_the_points_already_done(self):
+        frames, batches = [], []
+
+        class Tracker:
+            device, model_resolution = "cpu", (2, 2)
+
+            def track_streaming(self, loader, *, queries, add_support_grid, on_frames):
+                for done in (8, 16):
+                    on_frames(done, 16)
+                return BatchedTrackingTests.rows(queries)
+
+        session = Mock(video_dir="frames", video_frame_files=["0.jpg", "1.jpg"])
+        with (patch("tracking.prompt_tracking.cot.FrameChunkLoader"),
+              patch("tracking.prompt_tracking.DEFAULT_PROMPT_TRACK_BATCH_SIZE", 2)):
+            track_prompt_queries(
+                session, Tracker(), np.zeros((3, 3), dtype=np.float32), add_support_grid=True, streaming=True,
+                on_progress=lambda *args: batches.append(args), on_frames=lambda *args: frames.append(args))
+
+        # (points done before this batch, points in this batch, frames done, frames in the video)
+        self.assertEqual(frames, [(0, 2, 8, 16), (0, 2, 16, 16), (2, 1, 8, 16), (2, 1, 16, 16)])
+        self.assertEqual(batches, [(2, 3), (3, 3)])
 
     def test_many_points_go_through_in_one_pass_by_default(self):
         from core import config

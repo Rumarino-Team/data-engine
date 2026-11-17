@@ -3,6 +3,7 @@ from core.errors import OperationError
 from pathlib import Path
 from typing import Any
 import numpy as np
+from tqdm import tqdm
 import co_tracker as cot
 from core.config import DEFAULT_PROMPT_TRACK_BATCH_SIZE, DEFAULT_STREAMING_TRACK_FRAME_THRESHOLD
 from core.context import AppContext
@@ -50,13 +51,25 @@ def track_in_batches(track_batch, queries: np.ndarray, *, on_progress) -> tuple[
 
 def track_prompt_queries(
     session, tracker: VideoTracker, queries: np.ndarray, *, add_support_grid: bool, streaming: bool, on_progress,
+    on_frames=None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Track the query points with the session's tracker, in memory or streamed from the frame files.
 
     Returns the tracks and their visibility. When the GPU runs out of memory the batch is halved; the support grid is
     never dropped, because it adds almost no memory and without it a point that is covered by something else is
     still reported visible (COTRACKER_AND_SAM2_FINDINGS.md).
+
+    `on_progress(points_done, points_total)` is called after each batch of points. A streamed batch also calls
+    `on_frames(points_done, batch_points, frames_done, frames_total)` as it moves through the video, which is the
+    only progress there is when every point fits in one batch.
     """
+    points_done = 0
+
+    def batch_done(done: int, total: int) -> None:
+        nonlocal points_done
+        points_done = done
+        on_progress(done, total)
+
     if streaming:
         if session.video_dir is None or not session.video_frame_files:
             raise ValueError("Video is not initialized for streaming tracking.")
@@ -66,7 +79,11 @@ def track_prompt_queries(
         )
 
         def batch_tracker(grid: bool):
-            return lambda batch: tracker.track_streaming(loader, queries=batch, add_support_grid=grid)
+            def track_batch(batch):
+                report = None if on_frames is None else (
+                    lambda done, total: on_frames(points_done, len(batch), done, total))
+                return tracker.track_streaming(loader, queries=batch, add_support_grid=grid, on_frames=report)
+            return track_batch
     else:
         video, _ = load_tracking_video_from_current_video_state(session)
         # Resize once; every query batch reuses the same model-resolution frames.
@@ -74,7 +91,7 @@ def track_prompt_queries(
 
         def batch_tracker(grid: bool):
             return lambda batch: tracker.track(prepared, queries=batch, add_support_grid=grid)
-    return track_in_batches(batch_tracker(add_support_grid), queries, on_progress=on_progress)
+    return track_in_batches(batch_tracker(add_support_grid), queries, on_progress=batch_done)
 
 
 def hide_before_query_frame(visibility: np.ndarray, queries) -> np.ndarray:
@@ -135,19 +152,40 @@ def track_prompts(session, tracker_runtime: VideoTrackerRuntime, request, job: J
     total_queries = len(queries)
     job.enter_stage(
         "loading_frames", "Preparing tracking frames",
-        progress=0.35,
+        progress=None,
         current=0,
         total=total_queries,
         message="Preparing video frames for prompt tracking",
     )
 
+    # The terminal's counterpart of the job progress: frames of the video tracked. Shown only in a terminal.
+    bar = tqdm(total=len(session.video_frame_files), desc="track prompt points", unit="frame")
+
+    # The bar is the tracking itself, frame by frame. Before it the bar is indeterminate and after it full; the
+    # stage text says what is happening (loading the tracker, moving SAM2 back).
     def report_progress(done: int, total: int) -> None:
         job.enter_stage(
             "tracking_points", "Tracking prompt points",
-            progress=0.35 + (0.55 * (done / total)),
+            progress=done / total,
             current=done,
             total=total,
             message=f"Tracked {done} of {total} prompt points",
+        )
+
+    def report_frames(points_done: int, batch_points: int, frames_done: int, frames_total: int) -> None:
+        # The frame counter is what moves: all the points of a batch advance through the video together.
+        fraction = (points_done + batch_points * frames_done / frames_total) / total_queries
+        points = (f"{total_queries} prompt points" if batch_points == total_queries
+                  else f"prompt points {points_done + 1} to {points_done + batch_points} of {total_queries}")
+        bar.total = frames_total
+        bar.n = frames_done  # set, not added: a batch that ran out of memory starts the video again
+        bar.set_description(f"track {points}")
+        job.enter_stage(
+            "tracking_points", "Tracking prompt points",
+            progress=fraction,
+            current=frames_done,
+            total=frames_total,
+            message=f"Tracked frame {frames_done} of {frames_total} for {points}",
         )
 
     try:
@@ -155,7 +193,7 @@ def track_prompts(session, tracker_runtime: VideoTrackerRuntime, request, job: J
         support_grid_used = bool(request.add_support_grid)
         tracks, visibility = track_prompt_queries(
             session, tracker, np.asarray(queries, dtype=np.float32), add_support_grid=support_grid_used,
-            streaming=streaming, on_progress=report_progress,
+            streaming=streaming, on_progress=report_progress, on_frames=report_frames,
         )
         expected_frames = len(session.video_frame_files)
         expected_tracks_shape = (total_queries, expected_frames, 2)
@@ -177,6 +215,8 @@ def track_prompts(session, tracker_runtime: VideoTrackerRuntime, request, job: J
         raise OperationError(500, f"Prompt-point tracking failed: {error}") from error
     except Exception as error:
         raise OperationError(500, f"Prompt-point tracking failed: {error}") from error
+    finally:
+        bar.close()
     return TrackingOutput(tracker, tracks, visibility, support_grid_used, "streaming" if streaming else "in_memory")
 
 
@@ -190,14 +230,14 @@ def run_prompt_tracking_job(
     job.enter_stage(
         "collecting_prompts", "Collecting prompts",
         status="running",
-        progress=0.05,
+        progress=None,
         message="Collecting positive prompt points",
     )
     queries, point_metadata = collect_prompt_points(session)
     total_queries = len(queries)
     job.enter_stage(
         "loading_tracker", "Loading tracker",
-        progress=0.2,
+        progress=None,
         current=0,
         total=total_queries,
         message=f"Preparing tracker for {total_queries} prompt points",
@@ -213,7 +253,7 @@ def run_prompt_tracking_job(
             cleanup_cuda_memory()
             job.enter_stage(
                 "restoring_masker", "Restoring interactive masking state",
-                progress=0.95,
+                progress=1.0,
                 current=int(output.tracks.shape[0]),
                 total=total_queries,
                 message="Moving SAM2 back to the GPU after prompt tracking",

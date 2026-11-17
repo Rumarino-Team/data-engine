@@ -154,6 +154,19 @@ class StreamingCoTrackerTests(unittest.TestCase):
         self.assertLessEqual(tracker.model.calls[1]["shape"][1], 4)
         self.assertLessEqual(tracker.model.calls[2]["shape"][1], 4)
 
+    def test_streaming_reports_how_far_through_the_video_it_is_after_each_chunk(self):
+        tracker = object.__new__(CoTracker)
+        tracker.device = "cpu"
+        tracker.model = FakeOnlineModel(step=2, num_frames=9)
+        progress = []
+
+        tracker.track_streaming(
+            FakeFrameLoader(num_frames=9), queries=np.array([[0, 1.0, 2.0]], dtype=np.float32),
+            on_frames=lambda done, total: progress.append((done, total)),
+        )
+
+        self.assertEqual(progress, [(4, 9), (6, 9), (8, 9), (9, 9)])
+
 
 class CoordinateRoundTripModel:
     """Echoes model-space queries as tracks for every frame."""

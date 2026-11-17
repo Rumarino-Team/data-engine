@@ -195,9 +195,12 @@ class CoTracker:
         queries: np.ndarray,
         *,
         add_support_grid: bool = True,
+        on_frames=None,
     ):
         """
         Tracks query points while loading only CoTracker online chunks onto GPU.
+
+        `on_frames(done, total)` is called after each chunk with the number of frames tracked so far.
 
         Returns the same shapes as track():
         - tracks: (N, T, 2)
@@ -226,6 +229,7 @@ class CoTracker:
             frame_loader,
             queries_torch,
             add_support_grid=add_support_grid,
+            on_frames=on_frames,
         )
         pred_tracks = self._tracks_from_model(pred_tracks, height, width)
 
@@ -294,7 +298,7 @@ class CoTracker:
 
         return pred_tracks, pred_visibility
 
-    def _track_online_streaming(self, frame_loader, queries_torch, add_support_grid):
+    def _track_online_streaming(self, frame_loader, queries_torch, add_support_grid, on_frames=None):
         step = self.model.step
         num_frames = int(frame_loader.num_frames)
         chunk_len = max(1, int(step) * 2)
@@ -325,6 +329,8 @@ class CoTracker:
                 )
             finally:
                 del video_chunk
+            if on_frames is not None:
+                on_frames(end_idx, num_frames)
 
         if pred_tracks is None or pred_visibility is None:
             raise ValueError(

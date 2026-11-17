@@ -18,7 +18,7 @@ class VideoTracker(Protocol):
     def track(self, video: Any, *, queries: np.ndarray, add_support_grid: bool) -> tuple[np.ndarray, np.ndarray]: ...
 
     def track_streaming(
-        self, frame_loader: Any, *, queries: np.ndarray, add_support_grid: bool,
+        self, frame_loader: Any, *, queries: np.ndarray, add_support_grid: bool, on_frames: Any = None,
     ) -> tuple[np.ndarray, np.ndarray]: ...
 
 
