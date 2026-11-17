@@ -25,7 +25,7 @@ Add the `--host xxx.xxx.xxx.xxx` and/or `--port xxxx` args to change its ip and 
 ## Angular Web Frontend
 Mainly for developing the frontend, for production its recommended to use the Tauri Desktop env instead
 
-1. Change into `frontend-ng/data-engine`
+1. Change into `frontend`
 2. Install dependencies with `npm install`
 3. Start the frontend with `npm run start`
 4. Keep the Python backend running separately
@@ -35,7 +35,7 @@ The frontend defaults to `http://127.0.0.1:8000` for backend requests and also e
 ## Tauri Desktop Frontend
 Please install Rust (Cargo) before proceeding with the Tauri build.
 
-1. Change into `frontend-ng/data-engine`
+1. Change into `frontend`
 2. Install JavaScript dependencies with `npm install`
 3. Install the Rust toolchain and Tauri prerequisites for your OS
 4. Start the Python backend separately
@@ -49,7 +49,7 @@ The Tauri app only wraps the Angular frontend. It does not bundle or launch the 
 Open the repository root in VS Code and use the debug panel.
 
 - `Backend: FastAPI` starts the API on `http://127.0.0.1:8000` through Uvicorn with `PYTHONPATH` set for both `backend/` and `sam2/`.
-- `Frontend: Angular (Chrome)` starts `npm run start` in `frontend-ng/data-engine` and opens Chrome at `http://localhost:4200/` with Angular source maps enabled.
+- `Frontend: Angular (Chrome)` starts `npm run start` in `frontend` and opens Chrome at `http://localhost:4200/` with Angular source maps enabled.
 - `Frontend: Angular tests (Chrome)` starts the frontend test runner and attaches Chrome to `http://localhost:9876/debug.html`.
 - `Full stack: Backend + Angular` launches the backend and Angular debug sessions together.
 

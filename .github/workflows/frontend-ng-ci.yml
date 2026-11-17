@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'frontend-ng/data-engine/**'
+      - 'frontend/**'
       - '.github/workflows/frontend-ng-ci.yml'
 
 jobs:
@@ -12,14 +12,14 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: frontend-ng/data-engine
+        working-directory: frontend
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: frontend-ng/data-engine/package-lock.json
+          cache-dependency-path: frontend/package-lock.json
       - run: npm ci
       - run: npm run build
       - run: npm run test -- --watch=false
